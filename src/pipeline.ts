@@ -162,6 +162,7 @@ export async function runHead(
     // changes the plan — the human chose that — so the gate and the rebuttal see
     // the merged view. review.json stays exactly as the reviewer wrote it, and
     // audit.json is what records why the view differs.
+    note("review read — matching verdicts to claims and proposed checks");
     const checks = await runProposedChecks(review, {
       repo,
       planText,

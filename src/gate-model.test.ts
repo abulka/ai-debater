@@ -42,10 +42,11 @@ const review: Review = {
 };
 
 describe("buildItems", () => {
-  test("a judgment call always offers 'leave it open'", () => {
+  test("a judgment call always offers 'leave it open', saying what that means", () => {
     const [item] = buildItems(claims, review);
     expect(item?.kind).toBe("judgment");
-    expect(item?.options).toEqual(["in-process", "redis", "leave it open"]);
+    expect(item?.options[1]).toBe("redis");
+    expect(item?.options[2]).toContain("leave it open — don't decide now");
     expect(item?.values).toEqual(["in-process", "redis", "open"]);
   });
 
@@ -58,7 +59,8 @@ describe("buildItems", () => {
     const finding = buildItems(claims, review).find((i) => i.id === "E1");
     expect(finding?.kind).toBe("finding");
     expect(finding?.evidence).toBe("src/http.ts:88");
-    expect(finding?.values).toEqual(["accepted", "dismissed"]);
+    expect(finding?.values).toEqual(["accepted", "dismissed", "untriaged"]);
+    expect(finding?.options[0]).toContain("yes");
   });
 });
 

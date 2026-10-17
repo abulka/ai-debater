@@ -91,7 +91,10 @@ function answerPrompt(i: DraftInput): string {
   return `Answer the question below, thoroughly and concretely.
 
 RULES
-- Every factual assertion must be checkable. Cite a URL for it where you can.
+- Lead with the answer in one sentence, then the detail. No preamble.
+- Every factual assertion must be checkable. Put sources at the END as numbered
+  footnotes, with markers such as [1] in the text. Never write a URL inline in
+  prose or inside a table cell: a wall of links is unreadable.
 - Answer from what you know. Do NOT browse, fetch or search to do it yourself:
   a separate reviewer checks your facts against sources, and it has the tools for
   that. Mark anything you are unsure of plainly rather than asserting it.
@@ -144,6 +147,12 @@ ${verifyRule}
 - For every judgment call, list trade-offs for each option against the criteria.
   Do not recommend one, and do not resolve it.
 - You may add problems the author did not list. Give them ids E1, E2, ...
+  Each finding is at most TWO sentences: the first says what is wrong, the second
+  says what would fix it. No essays, no restating the whole answer.
+- A finding must be actionable. "The table is badly formed" is not a finding;
+  "Row 4 cites a disambiguation page [url]; replace it with the song article" is.
+- If the problem is a choice between options rather than an error, it is a
+  judgment call, not a finding. Findings are for things that are wrong.
 - A judgment call must have at least TWO real options. If the text already picked
   one, that is not a judgment call — say so instead.
 

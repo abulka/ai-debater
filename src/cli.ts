@@ -195,6 +195,8 @@ async function finalize(
       claims,
       review,
       checks,
+      models,
+      includeDiff: true,
     })}`,
   );
   console.log(`\nartifacts: ${displayPath(paths.dir)}`);

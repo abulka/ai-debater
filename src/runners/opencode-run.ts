@@ -163,6 +163,7 @@ export class OpencodeRunRunner implements Runner {
       prompt: reviewPrompt(input),
       schema: ReviewSchema,
       extract: extractJson,
+      normalize: normalizeReviewJson,
     });
     return value;
   }
@@ -319,10 +320,14 @@ export class OpencodeRunRunner implements Runner {
     prompt: string;
     schema: z.ZodType<T>;
     extract: (text: string) => unknown;
+    /** Repair the parsed JSON before validation; never invents content. */
+    normalize?: (raw: unknown) => unknown;
   }): Promise<{ value: T }> {
     const attempt = (text: string): { ok: true; value: T } | { ok: false; error: string } => {
       try {
-        return { ok: true, value: params.schema.parse(params.extract(text)) };
+        const raw = params.extract(text);
+        const shaped = params.normalize ? params.normalize(raw) : raw;
+        return { ok: true, value: params.schema.parse(shaped) };
       } catch (err) {
         return { ok: false, error: formatError(err) };
       }
@@ -375,6 +380,28 @@ const extractJson = (text: string): unknown => {
   if (json === null) throw new Error("no fenced ```json block found in the reply");
   return JSON.parse(json);
 };
+
+/**
+ * A reviewer sometimes puts a judgment call in the verdict list —
+ * `{"id":"J1","verdict":"judgment"}` — even though judgments get trade-offs, not
+ * verdicts. Throwing the whole review away over one extra entry costs a run and
+ * a retry and teaches nobody anything; the entry is dropped and the judgment is
+ * still handled by `tradeoffs`. A verdict with a typo'd value is dropped the same
+ * way, and the claim then shows up as "no verdict", which the gate reports.
+ */
+const VERDICTS = new Set(["confirmed", "refuted", "unverifiable"]);
+
+export function normalizeReviewJson(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const review = raw as { verdicts?: unknown };
+  if (!Array.isArray(review.verdicts)) return raw;
+  const verdicts = review.verdicts.filter((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const verdict = (entry as { verdict?: unknown }).verdict;
+    return typeof verdict === "string" && VERDICTS.has(verdict);
+  });
+  return { ...review, verdicts };
+}
 
 export function parseNdjson(stdout: string): RunEvent[] {
   const events: RunEvent[] = [];

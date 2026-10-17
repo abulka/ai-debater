@@ -1,5 +1,5 @@
-import { Box, Text, render, useApp, useInput } from "ink";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Box, Static, Text, render, useApp, useInput } from "ink";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
 import type { Config } from "./config.ts";
 import type { AuditRecord, Claims, Gate, Review } from "./contracts.ts";
@@ -11,6 +11,7 @@ import {
   clampOffset,
   gateWarnings,
   maxOffset,
+  parseEvidence,
   readEvidenceContext,
   statusLine,
   verdictCounts,
@@ -45,14 +46,6 @@ function Header({ right }: { right: string }) {
   );
 }
 
-function QuitHint() {
-  const { exit } = useApp();
-  useInput((input, key) => {
-    if (key.ctrl && input === "c") exit();
-  });
-  return null;
-}
-
 /** Terminal height for a scrollable pane, leaving room for the chrome. */
 const paneHeight = (chrome: number) => Math.max(6, (process.stdout.rows ?? 24) - chrome);
 
@@ -67,16 +60,19 @@ function Scroller({
   lines,
   footer,
   onClose,
+  onKey,
 }: {
   title: string;
   lines: string[];
   footer: string;
   onClose: () => void;
+  onKey?: (input: string) => boolean;
 }) {
   const height = paneHeight(7);
   const [offset, setOffset] = useState(0);
 
   useInput((input, key) => {
+    if (onKey?.(input)) return;
     if (key.escape || input === "q") {
       onClose();
       return;
@@ -108,7 +104,6 @@ function Scroller({
       <Box>
         <Text dimColor>{footer}</Text>
       </Box>
-      <QuitHint />
     </Box>
   );
 }
@@ -163,7 +158,6 @@ function Setup({
       <Box marginTop={1}>
         <Text dimColor>↑↓ choose · Enter to confirm · Ctrl+C to quit</Text>
       </Box>
-      <QuitHint />
     </Box>
   );
 }
@@ -264,7 +258,6 @@ function Start({
       <Box>
         <Text dimColor>models, criteria and decisions live in {repo}/.adv/</Text>
       </Box>
-      <QuitHint />
     </Box>
   );
 }
@@ -410,44 +403,69 @@ function Approve({
           <Text bold>y</Text> run it · <Text bold>n</Text> skip it
         </Text>
       </Box>
-      <QuitHint />
     </Box>
   );
 }
 
-function Busy({ label, log }: { label: string; log: string[] }) {
+/**
+ * The run log, and the one live line that goes with it.
+ *
+ * Finished lines go into Ink's <Static>: each is written to the terminal once
+ * and is never redrawn or erased. That is what keeps the log when the phase
+ * changes — the gate, the result, the exit — because the redrawn frame is
+ * everything *below* it, and the history stays on screen and in the scrollback.
+ * Before this, each phase replaced the whole frame, and the gate wiped the log
+ * exactly when the human wanted to know how the run got to that question.
+ *
+ * The live line is the spinner, labelled with what is happening. It is part of
+ * the frame, so it disappears with the phase — only settled lines are permanent.
+ */
+function Log({ log, label }: { log: string[]; label: string | null }) {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
+    if (label === null) return;
     const t = setInterval(() => setFrame((f) => f + 1), 120);
     return () => clearInterval(t);
-  }, []);
+  }, [label]);
   const spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[frame % 10];
 
-  // Keep the last few lines in view: a long run would otherwise scroll the
-  // interesting part (what is happening now) off the top.
-  const height = paneHeight(6);
-  const start = Math.max(0, log.length - height);
-
   return (
-    <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <Header right={label} />
-      </Box>
-      {log.length === 0 && <Text dimColor>{spinner} starting…</Text>}
-      {log.slice(start).map((line, i) => {
-        const last = start + i === log.length - 1;
-        return (
-          <Box key={start + i}>
-            <Text color="yellow">{last ? `${spinner} ` : "  "}</Text>
-            <Text dimColor={line.startsWith("!")} color={line.startsWith("!") ? "yellow" : undefined}>
-              {line}
-            </Text>
-          </Box>
-        );
-      })}
-      <QuitHint />
-    </Box>
+    <>
+      <Static items={log}>
+        {(line, i) => (
+          <Text key={i} dimColor={line.startsWith("!")} color={line.startsWith("!") ? "yellow" : undefined}>
+            {line}
+          </Text>
+        )}
+      </Static>
+      {label !== null && (
+        <Box>
+          <Text color="yellow">{spinner} </Text>
+          <Text dimColor>{label}</Text>
+        </Box>
+      )}
+    </>
   );
+}
+
+/** Wrap text to the terminal width, clipping to a few lines so a question fits. */
+function wrapText(text: string, maxLines: number): string[] {
+  const width = Math.max(40, (process.stdout.columns ?? 100) - 4);
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > width) {
+      if (line) lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length <= maxLines) return lines;
+  return [...lines.slice(0, maxLines - 1), `${lines[maxLines - 1] ?? ""}…`];
 }
 
 function GateView({
@@ -458,7 +476,8 @@ function GateView({
   selection,
   warnings,
   checks,
-  runDir,
+  models,
+  mode,
 }: {
   claims: Claims;
   review: Review;
@@ -467,79 +486,69 @@ function GateView({
   selection: number;
   warnings: string[];
   checks: AuditRecord[];
-  runDir: string;
+  models: { drafter: { ref: string }; reviewer: { ref: string } };
+  mode: Mode;
 }) {
   const item = items[index];
-  const counts = verdictCounts(claims, review);
-  const refuted = review.verdicts.filter((v) => v.verdict === "refuted");
   if (!item) return null;
+
+  const counts = verdictCounts(claims, review);
+  const decisions = items.filter((i) => i.kind === "judgment").length;
+  const findings = items.length - decisions;
+  const thing = mode === "answer" ? "answer" : "plan";
+  const author = models.drafter.ref;
+  const checker = models.reviewer.ref;
+  const refuted = review.verdicts.filter((v) => v.verdict === "refuted").length;
+  const extras = [
+    warnings.length ? `${warnings.length} warning${warnings.length === 1 ? "" : "s"}` : "",
+    checks.length ? `${checks.length} check${checks.length === 1 ? "" : "s"}` : "",
+    refuted ? `${refuted} refuted claim${refuted === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+
+  const detail: string[] = [];
+  for (const line of item.detail) detail.push(...wrapText(line, 2));
+  const clippedDetail = detail.slice(0, 4);
 
   return (
     <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <Header
-          right={`gate · ${index + 1} of ${items.length} · ${item.kind === "judgment" ? "your call" : "finding"}`}
-        />
+      <Header right={`gate · ${index + 1} of ${items.length} · ${item.kind}`} />
+      <Text dimColor>
+        {items.length} questions: {decisions} for you to decide, {findings} finding
+        {findings === 1 ? "" : "s"} to triage
+      </Text>
+      <Text dimColor>{statusLine(counts)}</Text>
+      {extras.length > 0 && <Text dimColor>! {extras.join(" · ")} — i for details</Text>}
+
+      <Box marginTop={1} flexDirection="column">
+        <Text>
+          {item.kind === "finding"
+            ? `${checker} noticed this in the ${thing} ${author} wrote:`
+            : `${author} left this open for you:`}
+        </Text>
       </Box>
 
-      {/* The state of the review, on every screen. It used to be shown once,
-          on the first item, and then vanish exactly when it mattered. */}
-      <Box marginBottom={1}>
-        <Text dimColor>{statusLine(counts)}</Text>
+      <Box flexDirection="column">
+        {wrapText(item.title, 4).map((line, i) => (
+          <Text key={i}>{line}</Text>
+        ))}
       </Box>
 
-      {checks.length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          {auditLines(checks).map((line, i) => {
-            const disagrees = line.includes("DISAGREES");
-            return (
-              <Text key={i} color={disagrees ? "red" : undefined} dimColor={!disagrees}>
-                {line}
-              </Text>
-            );
-          })}
-        </Box>
-      )}
-      {warnings.length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          {warnings.slice(0, 3).map((w, i) => (
-            <Text key={i} color="yellow">
-              ! {w}
+      {clippedDetail.length > 0 && (
+        <Box flexDirection="column">
+          {clippedDetail.map((line, i) => (
+            <Text key={i} dimColor>
+              {line}
             </Text>
           ))}
-          {warnings.length > 3 && (
-            <Text color="yellow">! … and {warnings.length - 3} more</Text>
-          )}
         </Box>
       )}
 
-      {index === 0 && refuted.length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text color="red">refuted by the reviewer ({refuted.length}) — these go to the rebuttal:</Text>
-          {refuted.map((v) => {
-            if (v.verdict !== "refuted") return null;
-            const text = claims.verifiable.find((c) => c.id === v.id)?.text ?? "";
-            return (
-              <Text key={v.id} dimColor>
-                {"  "}
-                {v.id}  {text}
-              </Text>
-            );
-          })}
-        </Box>
-      )}
-
-      <Box marginBottom={item.detail.length ? 1 : 0}>
-        <Text>{item.title}</Text>
-      </Box>
-
-      <Box flexDirection="column" marginBottom={1}>
-        {item.detail.map((d, i) => (
-          <Text key={i} dimColor>
-            {"  "}
-            {d}
-          </Text>
-        ))}
+      <Box marginTop={1}>
+        <Text>
+          {item.kind === "finding"
+            ? `Change the ${thing} to cover this?`
+            : `Which should the ${thing} do?`}
+        </Text>
       </Box>
 
       <Box flexDirection="column">
@@ -555,14 +564,10 @@ function GateView({
 
       <Box marginTop={1}>
         <Text dimColor>
-          ↑↓ choose · Enter confirm
-          {item.kind === "judgment" ? " · l leave open" : ""}
-          {" · d draft · v verdicts"}
-          {item.evidence ? " · e evidence" : ""}
+          {`↑↓ · Enter · w whole text · d ${thing} · v verdicts`}
+          {item.evidence ? " · e source" : ""}
+          {" · i summary · l log"}
         </Text>
-      </Box>
-      <Box>
-        <Text dimColor>artifacts in {runDir}</Text>
       </Box>
     </Box>
   );
@@ -570,7 +575,25 @@ function GateView({
 
 /* ------------------------------------------------------------------ */
 
-/** Human words for a finished call, in place of `draft/plan`. */
+/** What the spinner says while a model is thinking. */
+function workingLabel(log: string[], phase: Phase, mode: Mode): string | null {
+  if (phase === "working") {
+    return mode === "answer"
+      ? "rewriting the answer with the drafter…"
+      : "rewriting the plan with the drafter…";
+  }
+  if (phase !== "running") return null;
+  const last = [...log].reverse().find((line) => !line.startsWith("!")) ?? "";
+  if (last.startsWith("drafting")) return "waiting for the drafter…";
+  if (last.startsWith("reviewing")) return "waiting for the reviewer — usually the slow part…";
+  if (last.startsWith("review read") || last.startsWith("checking")) {
+    return "running the checks the reviewer asked for…";
+  }
+  if (last.startsWith("rebutting") || last.startsWith("in scope")) {
+    return "rewriting with the drafter…";
+  }
+  return log.length ? "working…" : "starting…";
+}
 function callLine(info: {
   kind: "draft" | "review" | "rebut";
   step: string;
@@ -593,6 +616,10 @@ function callLine(info: {
 
 function App({ repo }: { repo: string }) {
   const { exit } = useApp();
+  /* One handler for the whole app, in every phase, so no screen forgets it. */
+  useInput((input, key) => {
+    if (key.ctrl && input === "c") exit();
+  });
   const [cfg, setCfg] = useState<Config | null>(null);
   const [hasCriteria, setHasCriteria] = useState(false);
   const [phase, setPhase] = useState<Phase>("start");
@@ -615,6 +642,7 @@ function App({ repo }: { repo: string }) {
   const [saved, setSaved] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
+  const [showDiff, setShowDiff] = useState(false);
   const approvalResolver = useRef<((ok: boolean) => void) | null>(null);
 
   const addLog = (line: string) => setLog((l) => [...l, line]);
@@ -775,6 +803,21 @@ function App({ repo }: { repo: string }) {
   const items = useMemo(() => (head ? buildItems(head.claims, head.review) : []), [head]);
   const runDir = head ? displayPath(head.paths.dir) : "";
 
+  // One place for the review-level warnings: the gate shows a count, the `i`
+  // panel shows them in full, and both read from here.
+  const warnings = useMemo(
+    () =>
+      head
+        ? gateWarnings({
+            missing: head.missing,
+            evidenceIssues: head.evidenceIssues,
+            urlRepairs: head.urlRepairs,
+            hasCriteria: mode === "answer" ? true : hasCriteria,
+          })
+        : [],
+    [head, mode, hasCriteria],
+  );
+
   /* A same-family pair is a warning, unless this repo says the result is
      evidence — then it is a stop, before any money is spent. */
   function beginRun() {
@@ -788,6 +831,12 @@ function App({ repo }: { repo: string }) {
       setPhase("error");
       return;
     }
+    // The two things the human just chose. They belong in the log: without them
+    // the history starts at "drafting" and does not say what was asked or who is
+    // doing it.
+    addLog(`${mode === "answer" ? "answer mode" : "plan mode"} · ${cfg.models.drafter.ref} -> ${cfg.models.reviewer.ref}`);
+    addLog(`${mode === "answer" ? "question" : "task"}: ${task.trim()}`);
+    setShowDiff(false);
     setPhase("running");
   }
 
@@ -874,14 +923,45 @@ function App({ repo }: { repo: string }) {
     }
   }
 
-  /* Panels: the draft the calls are about, every verdict, the cited file. */
-  async function openPanel(kind: "draft" | "verdicts" | "evidence") {
+  /* Panels: the text the calls are about, every verdict, the cited source, the log. */
+  async function openPanel(kind: "text" | "verdicts" | "evidence" | "log" | "info" | "item") {
     if (!head) return;
     const item = items[index];
+    const thing = mode === "answer" ? "answer" : "plan";
 
-    if (kind === "draft") {
+    if (kind === "log") {
+      setPanel({ title: "run log", lines: log.length ? log : ["(nothing logged yet)"] });
+      return;
+    }
+
+    if (kind === "info") {
+      const lines: string[] = [];
+      if (warnings.length) lines.push("WARNINGS", ...warnings.map((w) => `  ${w}`), "");
+      if (head.checks.length) {
+        lines.push("CHECKS THE TOOL RAN", ...auditLines(head.checks).map((l) => `  ${l}`), "");
+      }
+      const refuted = head.review.verdicts.filter((v) => v.verdict === "refuted");
+      if (refuted.length) {
+        lines.push("REFUTED CLAIMS (these go to the rewrite)");
+        for (const v of refuted) {
+          lines.push(`  ${v.id}  ${head.claims.verifiable.find((c) => c.id === v.id)?.text ?? ""}`);
+        }
+      }
+      setPanel({ title: "the review at a glance", lines: lines.length ? lines : ["nothing to report"] });
+      return;
+    }
+
+    if (kind === "item") {
       setPanel({
-        title: "plan.v1 — the draft these calls are about",
+        title: item ? `${item.id} — the whole text` : "the whole text",
+        lines: item ? [item.title, "", ...item.detail] : ["nothing here"],
+      });
+      return;
+    }
+
+    if (kind === "text") {
+      setPanel({
+        title: `the ${thing} so far`,
         lines: head.plan.split("\n"),
       });
       return;
@@ -921,6 +1001,24 @@ function App({ repo }: { repo: string }) {
     }
 
     if (!item?.evidence) return;
+
+    // A URL is not a file. The old fallback told the human "this citation
+    // cannot be shown here — it is worth questioning", which reads as an
+    // accusation against a perfectly good URL. Say what it is instead.
+    const ref = parseEvidence(item.evidence);
+    if (ref?.kind === "url") {
+      setPanel({
+        title: `${item.id} — evidence`,
+        lines: [
+          item.evidence,
+          "",
+          "this is a source URL — the tool cannot display web pages here.",
+          "open it, and judge the finding on its merits before you choose",
+        ],
+      });
+      return;
+    }
+
     const context = await readEvidenceContext(repo, item.evidence);
     setPanel({
       title: `${item.id} — ${item.evidence}`,
@@ -958,7 +1056,7 @@ function App({ repo }: { repo: string }) {
         return;
       }
       if (input === "d") {
-        void openPanel("draft");
+        void openPanel("text");
         return;
       }
       if (input === "v") {
@@ -969,8 +1067,26 @@ function App({ repo }: { repo: string }) {
         void openPanel("evidence");
         return;
       }
-      if (input === "l" && item.kind === "judgment") {
+      if (input === "l") {
+        void openPanel("log");
+        return;
+      }
+      if (input === "i") {
+        void openPanel("info");
+        return;
+      }
+      if (input === "w") {
+        void openPanel("item");
+        return;
+      }
+      if (input === "o" && item.kind === "judgment") {
         commit("open");
+        return;
+      }
+      if (input === "s") {
+        // Skip: a finding is left untriaged (the text stays as it is); a
+        // judgment call is left open (the text presents both options).
+        commit(item.kind === "finding" ? "untriaged" : "open");
         return;
       }
       if (key.return) commit(item.values[selection] ?? item.values[0]!);
@@ -985,20 +1101,21 @@ function App({ repo }: { repo: string }) {
     }
   }, [phase, head, items.length, answers.length]);
 
+  /* The log is never part of a phase's frame. It sits above the frame, in
+     <Static>: settled lines are written once and stay on screen, so a phase
+     change rewrites the screen below the history instead of erasing it. */
+  const logLabel = approval ? null : workingLabel(log, phase, mode);
+
+  let content: ReactNode;
+
   if (phase === "setup") {
-    return <Setup repo={repo} selection={setupSelection} />;
-  }
-
-  if (phase === "settings" && cfg) {
-    return <Settings cfg={cfg} mode={mode} selection={settingsSel} saved={saved} />;
-  }
-
-  if (phase === "pick") {
-    return <Pick role={pickRole} models={allModels} filter={filter} index={pickIndex} />;
-  }
-
-  if (phase === "start") {
-    return (
+    content = <Setup repo={repo} selection={setupSelection} />;
+  } else if (phase === "settings" && cfg) {
+    content = <Settings cfg={cfg} mode={mode} selection={settingsSel} saved={saved} />;
+  } else if (phase === "pick") {
+    content = <Pick role={pickRole} models={allModels} filter={filter} index={pickIndex} />;
+  } else if (phase === "start") {
+    content = (
       <Start
         repo={repo}
         cfg={cfg}
@@ -1010,17 +1127,14 @@ function App({ repo }: { repo: string }) {
         onSettings={() => void openSettings()}
       />
     );
-  }
-
-  if (phase === "running" && approval) {
-    return <Approve request={approval} onAnswer={answerApproval} />;
-  }
-  if (phase === "running") return <Busy label="working" log={log} />;
-  if (phase === "working") return <Busy label="applying your decisions" log={log} />;
-
-  if (phase === "gate" && head) {
+  } else if (phase === "running" && approval) {
+    content = <Approve request={approval} onAnswer={answerApproval} />;
+  } else if (phase === "running" || phase === "working") {
+    /* The screen is the log plus the spinner line it draws. */
+    content = null;
+  } else if (phase === "gate" && head) {
     if (panel) {
-      return (
+      content = (
         <Scroller
           title={panel.title}
           lines={panel.lines}
@@ -1028,29 +1142,22 @@ function App({ repo }: { repo: string }) {
           onClose={() => setPanel(null)}
         />
       );
+    } else {
+      content = (
+        <GateView
+          claims={head.claims}
+          review={head.review}
+          items={items}
+          index={index}
+          selection={selection}
+          warnings={warnings}
+          checks={head.checks}
+          models={cfg?.models ?? { drafter: { ref: "drafter" }, reviewer: { ref: "reviewer" } }}
+          mode={mode}
+        />
+      );
     }
-    const warnings = gateWarnings({
-      missing: head.missing,
-      evidenceIssues: head.evidenceIssues,
-      urlRepairs: head.urlRepairs,
-      // A general question has no repository to take criteria from.
-      hasCriteria: mode === "answer" ? true : hasCriteria,
-    });
-    return (
-      <GateView
-        claims={head.claims}
-        review={head.review}
-        items={items}
-        index={index}
-        selection={selection}
-        warnings={warnings}
-        checks={head.checks}
-        runDir={runDir}
-      />
-    );
-  }
-
-  if (phase === "result" && tail && head) {
+  } else if (phase === "result" && tail && head) {
     const text = renderResult({
       plan: tail.plan,
       changelog: tail.changelog,
@@ -1060,19 +1167,26 @@ function App({ repo }: { repo: string }) {
       claims: head.claims,
       review: head.review,
       checks: head.checks,
+      ...(cfg ? { models: cfg.models } : {}),
+      includeDiff: showDiff,
     });
-    return (
+    content = (
       <Scroller
         title="done"
         lines={text.split("\n")}
-        footer={`artifacts in ${runDir} · q to quit`}
+        footer={`x ${showDiff ? "hide" : "show"} exact changes · ↑↓ scroll · q quit · ${runDir}`}
         onClose={() => exit()}
+        onKey={(input) => {
+          if (input === "x") {
+            setShowDiff((v) => !v);
+            return true;
+          }
+          return false;
+        }}
       />
     );
-  }
-
-  if (phase === "error") {
-    return (
+  } else if (phase === "error") {
+    content = (
       <Box flexDirection="column">
         <Box marginBottom={1}>
           <Text color="red" bold>
@@ -1080,15 +1194,30 @@ function App({ repo }: { repo: string }) {
           </Text>
         </Box>
         <Text>{error}</Text>
+        {error.startsWith("validation failed") && (
+          <Box marginTop={1}>
+            <Text dimColor>
+              That is the model's reply, not a bug in adv: it did not fit the
+              expected shape, twice. Try again, or choose a different reviewer
+              with Ctrl+P.
+            </Text>
+          </Box>
+        )}
         <Box marginTop={1}>
-          <QuitHint />
           <Text dimColor>Ctrl+C to quit</Text>
         </Box>
       </Box>
     );
+  } else {
+    content = null;
   }
 
-  return null;
+  return (
+    <Box flexDirection="column">
+      <Log log={log} label={logLabel} />
+      {content}
+    </Box>
+  );
 }
 
 export async function startTui(opts: { repo: string }): Promise<void> {

@@ -48,7 +48,7 @@ export function buildItems(claims: Claims, review: Review): GateItem[] {
         const against = tradeoffs?.per_option.find((p) => p.option === option)?.against ?? [];
         return `${option}${against.length ? `  — ${against.join("; ")}` : ""}`;
       }),
-      options: [...j.options, "leave it open"],
+      options: [...j.options, "leave it open — don't decide now; both options will be shown"],
       values: [...j.options, "open"],
     });
   }
@@ -59,8 +59,15 @@ export function buildItems(claims: Claims, review: Review): GateItem[] {
       kind: "finding",
       title: f.text,
       detail: f.evidence ? [`[${f.evidence}]`] : f.note ? [f.note] : [],
-      options: ["accept", "dismiss"],
-      values: ["accepted", "dismissed"],
+      // The labels say what the choice does to the deliverable. Bare
+      // "accept"/"dismiss" read as a vote with no stated consequence, and the
+      // human then has to guess whether accepting rewrites the text.
+      options: [
+        "yes — rewrite it (one more model call)",
+        "no — leave it exactly as it is",
+        "later — decide nothing now",
+      ],
+      values: ["accepted", "dismissed", "untriaged"],
       evidence: f.evidence,
     });
   }
