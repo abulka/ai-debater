@@ -119,8 +119,10 @@ Round trip on the toy repo, `opencode-go/claude-haiku-5-5` (drafter) →
   contradiction: `README.md` says counters reset every 60 seconds;
   `src/rateLimit.ts` never resets them. A plan that trusts the README is
   refutable from `src/rateLimit.ts:3`.
-- The agents are copied in from `templates/agents/` by the spike, standing in for
-  what `adv init` will do. They must live in the target repo: agent discovery
-  does not reach up out of the target project.
+- The agents are **injected**, not installed: the spike passes
+  `OPENCODE_CONFIG_CONTENT` (built from `src/agents.ts`) into every spawn, and
+  clears any leftover `.opencode/` in the fixture first, so a passing check
+  proves injection works. `adv init` no longer writes agents anywhere. This only
+  works under `--standalone`; the shared service never sees the variable.
 - The `permissions` check asserts on the filesystem and the process table, not on
   what the model says it did. A model claiming "I was blocked" proves nothing.

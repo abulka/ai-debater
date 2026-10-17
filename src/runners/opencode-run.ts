@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { agentsConfigJson } from "../agents.ts";
 import {
   Changelog as ChangelogSchema,
   Claims as ClaimsSchema,
@@ -14,6 +15,7 @@ import {
   rebutPrompt,
   retryPrompt,
   reviewPrompt,
+  toolRetryPrompt,
 } from "../prompts.ts";
 import type { DraftInput, ModelRef, RebutInput, ReviewInput, Runner } from "../runner.ts";
 
@@ -78,6 +80,14 @@ export interface CallResult {
   ms: number;
 }
 
+/** One model call: which model, which agent, what to say. */
+export interface CallRequest {
+  model: string;
+  agent: string;
+  message: string;
+  sessionID?: string;
+}
+
 /** Fired after every model call, for progress and cost reporting. */
 export type CallHook = (info: {
   kind: "draft" | "review" | "rebut";
@@ -127,9 +137,9 @@ export class OpencodeRunRunner implements Runner {
     const model = this.models.drafter.ref;
     const agent = this.agents.drafter;
 
-    const planCall = await this.call({ model, agent, message: draftPrompt(input) });
-    this.report("draft", "plan", model, planCall);
-    const plan = splitPlanAndJson(planCall.text).plan.trim();
+    const planCall = await this.request({ model, agent, message: draftPrompt(input) });
+    this.report("draft", "plan", model, planCall.call, planCall.retried);
+    const plan = splitPlanAndJson(planCall.call.text).plan.trim();
     if (!plan) throw new Error("the drafter returned an empty plan");
 
     const { value: claims } = await this.validated({
@@ -162,9 +172,9 @@ export class OpencodeRunRunner implements Runner {
     const model = this.models.drafter.ref;
     const agent = this.agents.drafter;
 
-    const planCall = await this.call({ model, agent, message: rebutPrompt(input) });
-    this.report("rebut", "plan", model, planCall);
-    const plan = splitPlanAndJson(planCall.text).plan.trim();
+    const planCall = await this.request({ model, agent, message: rebutPrompt(input) });
+    this.report("rebut", "plan", model, planCall.call, planCall.retried);
+    const plan = splitPlanAndJson(planCall.call.text).plan.trim();
     if (!plan) throw new Error("the rebuttal returned an empty plan");
 
     const items = [
@@ -189,12 +199,7 @@ export class OpencodeRunRunner implements Runner {
   /* ---------------------------------------------------------------- */
 
   /** Low-level call, exposed for the spike. Prefer draft/review/rebut. */
-  async call(opts: {
-    model: string;
-    agent: string;
-    message: string;
-    sessionID?: string;
-  }): Promise<CallResult> {
+  async call(opts: CallRequest): Promise<CallResult> {
     const args = ["run", "--format", "json", "--model", opts.model, "--agent", opts.agent];
     if (this.standalone) args.push("--standalone");
     if (opts.sessionID) args.push("--session", opts.sessionID);
@@ -204,10 +209,15 @@ export class OpencodeRunRunner implements Runner {
     const t0 = Date.now();
     const proc = Bun.spawn(["opencode", ...args], {
       cwd: this.repo,
-      // opencode resolves the project from $PWD, not from the process cwd, and
-      // Bun.spawn({cwd}) does not update PWD. Without this the agents resolve
-      // against the wrong project (or not at all).
-      env: { ...process.env, PWD: this.repo },
+      // Two things the child needs from us:
+      //   PWD                     opencode resolves the project from $PWD, not
+      //                           from the process cwd, and Bun.spawn({cwd})
+      //                           does not update PWD. Without it the agents
+      //                           resolve against the wrong project.
+      //   OPENCODE_CONFIG_CONTENT the agent definitions, injected rather than
+      //                           installed as files. Only read when opencode
+      //                           starts its own server — hence --standalone.
+      env: { ...process.env, PWD: this.repo, OPENCODE_CONFIG_CONTENT: agentsConfigJson() },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -226,7 +236,20 @@ export class OpencodeRunRunner implements Runner {
     clearTimeout(timer);
 
     if (killed) throw new Error(`opencode run timed out after ${this.timeoutMs}ms`);
-    if (code !== 0) throw new Error(`opencode run exited ${code}\n${(stderr || stdout).slice(-2000)}`);
+    if (code !== 0) {
+      const raw = (stderr || stdout).slice(-2000);
+      // The agents come from OPENCODE_CONFIG_CONTENT, so this now means the
+      // injected config did not reach the child at all.
+      if (/Agent not found/i.test(raw)) {
+        throw new Error(
+          `opencode did not receive the "${opts.agent}" definition. adv injects it in ` +
+            `OPENCODE_CONFIG_CONTENT, which opencode only reads when it starts its own ` +
+            `server — so a run must use --standalone. Check that nothing stripped that ` +
+            `variable from the environment.\n${raw}`,
+        );
+      }
+      throw new Error(`opencode run exited ${code}\n${raw}`);
+    }
 
     const events = parseNdjson(stdout);
 
@@ -243,11 +266,43 @@ export class OpencodeRunRunner implements Runner {
     return { text, sessionID, events, usage: summarizeUsage(events), ms: Date.now() - t0 };
   }
 
-  private report(kind: "draft" | "review" | "rebut", step: string, model: string, call: CallResult) {
+  /**
+   * A provider rejects a turn when the model calls a tool that was never
+   * offered — gpt-oss invents a `search` tool that does not exist, and the
+   * request comes back `tool_use_failed`. That is the model's mistake, not
+   * ours, and it is stochastic, so one stateless retry with a nudge clears it.
+   * Same shape and same reason as the schema retry below: a run should not die
+   * because a model had one bad turn.
+   *
+   * Retries are limited to the model's own rejected output and to explicitly
+   * transient provider failures. Anything else propagates untouched.
+   */
+  private async request(opts: CallRequest): Promise<{ call: CallResult; retried: boolean }> {
+    try {
+      return { call: await this.call(opts), retried: false };
+    } catch (err) {
+      if (!retryable(err)) throw err;
+      // Exactly one retry. Deliberately not recursive: a provider that keeps
+      // rejecting must fail the run, not spin.
+      const retry = await this.call({
+        ...opts,
+        message: `${opts.message}\n\n---\n\n${toolRetryPrompt()}`,
+      });
+      return { call: retry, retried: true };
+    }
+  }
+
+  private report(
+    kind: "draft" | "review" | "rebut",
+    step: string,
+    model: string,
+    call: CallResult,
+    retry = false,
+  ) {
     this.onCall?.({
       kind,
       step,
-      retry: false,
+      retry,
       model,
       ms: call.ms,
       usage: call.usage,
@@ -273,45 +328,47 @@ export class OpencodeRunRunner implements Runner {
       }
     };
 
-    const first = await this.call({ model: params.model, agent: params.agent, message: params.prompt });
-    this.onCall?.({
-      kind: params.kind,
-      step: params.step,
-      retry: false,
-      model: params.model,
-      ms: first.ms,
-      usage: first.usage,
-      events: first.events,
-    });
-    const one = attempt(first.text);
+    const first = await this.request({ model: params.model, agent: params.agent, message: params.prompt });
+    this.report(params.kind, params.step, params.model, first.call, first.retried);
+    const one = attempt(first.call.text);
     if (one.ok) return { value: one.value };
 
     // Stateless retry: re-send the original prompt. Each --standalone run has
     // its own session store, so --session would resume nothing.
-    const retry = await this.call({
+    const retry = await this.request({
       model: params.model,
       agent: params.agent,
       message: `${params.prompt}\n\n---\n\n${retryPrompt(one.error)}`,
     });
-    this.onCall?.({
-      kind: params.kind,
-      step: params.step,
-      retry: true,
-      model: params.model,
-      ms: retry.ms,
-      usage: retry.usage,
-      events: retry.events,
-    });
-    const two = attempt(retry.text);
+    this.report(params.kind, params.step, params.model, retry.call, true);
+    const two = attempt(retry.call.text);
     if (two.ok) return { value: two.value };
 
     throw new Error(
-      `validation failed twice.\n${two.error}\n--- raw reply ---\n${retry.text.slice(-4000)}`,
+      `validation failed twice.\n${two.error}\n--- raw reply ---\n${retry.call.text.slice(-4000)}`,
     );
   }
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * The provider rejected the model's own turn — it called a tool that was never
+ * offered. gpt-oss does this with a `search` tool that does not exist, in every
+ * agent, including the writer, which has no tools at all.
+ */
+const MODEL_TURN_REJECTED =
+  /tool_use_failed|attempted to call tool|which was not in request\.tools|failed_generation/i;
+
+/** Explicitly transient provider trouble. Anchored on words: the raw NDJSON in
+ *  the message is full of digit runs, so bare status codes are not safe. */
+const TRANSIENT = /rate.?limit|too many requests|overloaded|service unavailable|ECONNRESET|fetch failed/i;
+
+/** Only the model's own rejected turn, or declared transient trouble. */
+const retryable = (err: unknown): boolean => {
+  const message = err instanceof Error ? err.message : String(err);
+  return MODEL_TURN_REJECTED.test(message) || TRANSIENT.test(message);
+};
 
 const extractJson = (text: string): unknown => {
   const { json } = splitPlanAndJson(text);

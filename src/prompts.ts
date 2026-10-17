@@ -75,10 +75,11 @@ function answerPrompt(i: DraftInput): string {
   return `Answer the question below, thoroughly and concretely.
 
 RULES
-- Every factual assertion must be checkable. Cite a URL for it where you can, and
-  use your tools to check a source rather than relying on memory for anything
-  specific (versions, numbers, dates, API details).
-- Never invent a source. If you are unsure, say so plainly rather than asserting.
+- Every factual assertion must be checkable. Cite a URL for it where you can.
+- Answer from what you know. Do NOT browse, fetch or search to do it yourself:
+  a separate reviewer checks your facts against sources, and it has the tools for
+  that. Mark anything you are unsure of plainly rather than asserting it.
+- Never invent a source, and never call a tool by a name you were not given.
 - Do not choose between options where reasonable people could differ. Name the
   decision and the options, and leave it open for the human.
 - The criteria below are fixed — they describe what a good answer looks like for
@@ -213,4 +214,14 @@ export function retryPrompt(error: string): string {
 ${error}
 
 Reply again with ONLY the corrected fenced \`\`\`json block, and nothing else.`;
+}
+
+/**
+ * Recovery when the provider rejected the model's whole turn, before any reply:
+ * it called a tool that was not in the tool list it was given.
+ */
+export function toolRetryPrompt(): string {
+  return `A previous attempt was rejected by the provider before you produced any text: it called a tool that does not exist, or that was not among the tools you were offered.
+
+Do not invent tools. Use only the tools you have actually been given. If none of them fits, answer in plain text instead of calling one.`;
 }

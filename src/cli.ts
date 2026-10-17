@@ -13,6 +13,7 @@
  */
 
 import { writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "./config.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
@@ -20,11 +21,13 @@ import { collectGate } from "./gate.ts";
 import { initRepo } from "./init.ts";
 import {
   appendDecisions,
+  displayPath,
   latestRun,
   loadState,
   readCriteria,
   readDecisions,
   runPaths,
+  runsDir,
   type Paths,
   saveState,
 } from "./orchestrator.ts";
@@ -65,8 +68,13 @@ function repoOf(flags: Map<string, string | true>): string {
   return path.resolve(typeof dir === "string" ? dir : process.cwd());
 }
 
-const resolveRun = (repo: string, dirArg: string) =>
-  runPaths(repo, path.isAbsolute(dirArg) ? dirArg : path.resolve(repo, dirArg));
+/** A bare run name resolves against this repository's run store. */
+const resolveRun = (repo: string, dirArg: string) => {
+  if (path.isAbsolute(dirArg)) return runPaths(repo, dirArg);
+  const named = path.join(runsDir(repo), dirArg);
+  if (existsSync(named)) return runPaths(repo, named);
+  return runPaths(repo, path.resolve(repo, dirArg));
+};
 
 /** Per-step timing and cost, so a run is legible while it happens. */
 const progress: CallHook = ({ kind, step, retry, ms, usage }) => {
@@ -165,7 +173,7 @@ async function finalize(
       review,
     })}`,
   );
-  console.log(`\nartifacts: ${path.relative(repo, paths.dir)}`);
+  console.log(`\nartifacts: ${displayPath(paths.dir)}`);
 }
 
 async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
@@ -207,7 +215,7 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
     `  mode ${mode} · ${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
   );
   const head = await runHead(repo, task, criteria.text, decisions, models, mode, progress);
-  console.log(`  run: ${path.relative(repo, head.paths.dir)}`);
+  console.log(`  run: ${displayPath(head.paths.dir)}`);
   if (head.missing.length) console.log(`  warning: no verdict for ${head.missing.join(", ")}`);
   if (head.evidenceIssues.length) {
     console.log("  warning: evidence cites files that do not exist:");
@@ -244,8 +252,8 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
     await saveGate(head.paths, { decisions: [], findings: [] });
     console.log(
       `\n  paused at the gate.\n` +
-        `    adv decide ${path.relative(repo, head.paths.dir)}\n` +
-        `    adv run --resume ${path.relative(repo, head.paths.dir)}`,
+        `    adv decide ${path.basename(head.paths.dir)}\n` +
+        `    adv run --resume ${path.basename(head.paths.dir)}`,
     );
     return;
   }
@@ -285,7 +293,7 @@ async function cmdDecide(flags: Map<string, string | true>, positional: string[]
         choice: d.choice,
       })),
   );
-  console.log(`\n  recorded. next: adv run --resume ${path.relative(repo, paths.dir)}`);
+  console.log(`\n  recorded. next: adv run --resume ${path.basename(paths.dir)}`);
 }
 
 async function cmdStatus(flags: Map<string, string | true>, positional: string[]) {
@@ -297,7 +305,7 @@ async function cmdStatus(flags: Map<string, string | true>, positional: string[]
   }
   const paths = resolveRun(repo, dirArg);
   const state = await loadState(paths);
-  console.log(`run:    ${path.relative(repo, paths.dir)}`);
+  console.log(`run:    ${displayPath(paths.dir)}`);
   console.log(`state:  ${state.state}`);
   console.log(`task:   ${state.task}`);
   console.log(`models: ${state.models.drafter.ref} -> ${state.models.reviewer.ref}`);
@@ -316,7 +324,7 @@ function usage() {
   console.log(`adv — adversarial two-model plan review
 
   adv                        open the TUI
-  adv init [--dir <repo>]
+  adv init [--dir <repo>]    criteria, decisions and config (optional)
   adv run "<task>" [--general] [--drafter <model> --drafter-family <f>]
                    [--reviewer <model> --reviewer-family <f>]
                    [--no-gate] [--dir <repo>]

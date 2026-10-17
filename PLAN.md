@@ -209,20 +209,32 @@ in testing a drafter wrote a good plan and omitted the claims block twice.
 
 ## 6. Agents and permissions
 
-`.opencode/agents/adv-drafter.md` and `.opencode/agents/adv-reviewer.md`, each
-with a `model:` frontmatter and the step's model passed per run.
+The three definitions live in `src/agents.ts` and are **injected** into each
+`opencode run` through `OPENCODE_CONFIG_CONTENT`, not installed as files. There
+is no `model:` per agent — the corpus passes `--model` per call.
 
-Default posture for both: **deny-by-default, then allow only what is needed.**
+Injection replaced file-based agents because files have to be installed before
+the first run, into the target repo or the global config directory; otherwise
+`opencode` fails with `Agent not found`. That meant `adv` did not work until the
+human ran a setup command, and in answer mode it meant writing into whatever
+directory they happened to be standing in. Injection removes the step, the
+failure and the writes. It merges with the user's own configuration rather than
+replacing it, so their providers, MCP servers and credentials still apply.
 
-```yaml
-# adv-reviewer.md (default posture)
-model: <reviewer-model>
-permissions:
-  - { action: "*",     resource: "*", effect: deny }   # must come first
-  - { action: read,    resource: "*", effect: allow }
-  - { action: glob,    resource: "*", effect: allow }
-  - { action: grep,    resource: "*", effect: allow }
-  - { action: webfetch, resource: "*", effect: allow }  # reviewer only
+The catch, and the reason the runner always passes `--standalone`:
+`OPENCODE_CONFIG_CONTENT` is only read when `opencode` starts its own server. A
+run against the shared background service never sees it.
+
+Default posture for both read-only agents: **deny-by-default, then allow only
+what is needed.**
+
+```jsonc
+// src/agents.ts — the reviewer's posture
+{ action: "*",        resource: "*", effect: "deny" },   // must come first
+{ action: "read",     resource: "*", effect: "allow" },
+{ action: "glob",     resource: "*", effect: "allow" },
+{ action: "grep",     resource: "*", effect: "allow" },
+{ action: "webfetch", resource: "*", effect: "allow" },
 ```
 
 The leading `*` deny is load-bearing. OpenCode's base policy is `allow *`, so
@@ -237,11 +249,19 @@ Playwright MCP tools (`browser_run_code_unsafe` among them) and opened a real
 browser to download the file instead. See §13.
 
 The reviewer gets `file:line` evidence from read/grep directly, so no shell is
-needed. `webfetch`/`websearch` are allowed on the reviewer only, so a docs URL
-it cites can actually be checked; the drafter needs no network access.
+needed. `webfetch`/`websearch` are allowed on both read-only agents so a cited
+URL can actually be checked; the writer has no tools at all.
 
-Fallback posture (only if M0 requires agents to write their own artifacts): add
-a single `edit` allow for the agent's own artifact path, **after** the `*` deny.
+Narrower than it looks: the drafter has the web tools, but the answer prompt
+tells it **not** to browse — for a broad question with no repository it answers
+from knowledge and marks what it is unsure of, and the reviewer does the
+checking. That is the design ("models verify; the human decides") and it removes
+the invitation to [invent a tool](§14) that the earlier wording created.
+
+The agents are `hidden: true`, so they stay out of the agent list of the user's
+ordinary sessions. Whether the interactive picker honours that is unverified —
+`opencode debug agents` and `GET /api/agent` both list hidden agents, so neither
+is a visibility test.
 
 Note (V2): agent-level `request.body` (e.g. temperature) is accepted but not yet
 sent by the session runner. Set temperature on the provider/model/variant if
@@ -361,29 +381,35 @@ adv/                            # new project in this directory
     diff.ts                     # unified diff + changelog cross-check
     render.ts                   # plan + changelog + diff + open decisions
     models.ts                   # model list + family heuristic for the picker
+    agents.ts                   # the three agent definitions, injected per call
     init.ts                     # `adv init` scaffolding
   .adv/                         # created by `adv init` in the target repo
     criteria.md
     decisions.md
     config.json
-    runs/<timestamp>/
-      task.md
-      plan.v1.md
-      claims.json
-      review.json
-      gate.json
-      changelog.json
-      plan.v2.md
-      diff.patch
-      state.json
-      audit.json                # M2: evidence execution results
-  templates/agents/             # copied into the target repo by `adv init`
-    adv-drafter.md              # reads; plans and answers
-    adv-reviewer.md             # reads; verifies
-    adv-writer.md               # no tools; claims and changelog JSON only
+  ~/.local/share/adv/runs/      # run artifacts, keyed by repository
+    <repo-name>-<hash>/
+      <timestamp>/
+        task.md
+        plan.v1.md
+        claims.json
+        review.json
+        gate.json
+        changelog.json
+        plan.v2.md
+        diff.patch
+        state.json
+        audit.json              # M2: evidence execution results
   fixtures/toy-repo/            # the test problem
   spike/                        # M0
 ```
+
+Run artifacts are deliberately **not** under the target repo. In answer mode
+there is no repository, so a repo-local `.adv/runs/` would mean dropping a
+directory into whatever the human happened to be standing in. One store for both
+modes is also one rule to remember. `XDG_DATA_HOME` is honoured; the repository
+key is its directory name plus a short hash of the absolute path, so two
+checkouts of the same name never collide.
 
 ---
 
@@ -537,6 +563,47 @@ separates "diversity" from "the whole loop".
 - Does resolving judgment calls after a `--no-gate` run justify `adv revise`?
 - Where does the OpenCode Go workspace privacy opt-in for contributor models
   actually live? It is not the desktop model picker and is not documented.
+
+### Decided 17 Oct (were open the same day)
+
+- **How do the agent definitions reach OpenCode?** Resolved: injected per call in
+  `OPENCODE_CONFIG_CONTENT` from `src/agents.ts`. Verified that it **merges** with
+  the user's global config — a provider defined only in
+  `~/.config/opencode/opencode.jsonc` still resolved — and that it works under
+  `--standalone`, which the runner already used. The file-based install, the
+  markdown templates and `adv init --global` are gone. Still to re-verify: the
+  permission rules, with one model call through the M0 permissions check.
+- **Where do runs live?** Resolved: one user-level store under
+  `~/.local/share/adv/runs/<repo-name>-<hash>/<timestamp>/`, for plan and answer
+  mode alike. Nothing is written into a directory `adv` was merely started in.
+  `adv decide`/`run --resume`/`status` accept a bare run name.
+
+### Still open
+
+- **`gpt-oss` invents a `search` tool — mitigated, not solved.** The model emits
+  a tool call for a name that was never offered (OpenCode's catalog is `read`,
+  `glob`, `grep`, `edit`, `write`, `patch`, `shell`, `webfetch`, `websearch`,
+  `question`, `skill`, `subagent`, `execute`; nothing is called `search`). The
+  provider validates the name against `request.tools` and rejects the whole turn
+  with `tool_use_failed`. It is model behaviour, not a permission or prompt bug:
+  it happens in the writer agent too, which has **no tools at all**. Two
+  mitigations are in: the answer prompt no longer tells the drafter to browse
+  (the reviewer checks facts), and a rejected turn gets exactly one stateless
+  retry with a "do not invent tools" note. Still unverified: the retry has not
+  been observed firing against a real occurrence — the classification is tested
+  against the recorded error, and the retry path against a stubbed call, but no
+  live run has triggered it yet.
+- **`hasAdvDir` is narrower than its name.** It tests `.adv/criteria.md`, so a
+  directory holding only `.adv/config.json` (what Ctrl+P writes) reports "No
+  `.adv/` in …" though `.adv/` exists. Re-prompting for criteria is right; the
+  wording is not.
+- **`hidden: true` is set on the agents, but is it honoured by the picker?**
+  Not verified: `opencode debug agents` and `GET /api/agent` both list hidden
+  agents (`title`, `summary`, `compaction` are hidden builtins and all appear),
+  so neither is a visibility test. The interactive picker is the only test.
+- **`adv --help` does not print usage.** With no subcommand it falls through to
+  the TUI and fails with "the TUI needs a terminal". `--help` is parsed as a flag
+  but never acted on.
 
 ---
 

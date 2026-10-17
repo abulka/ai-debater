@@ -19,6 +19,7 @@
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { agentsConfigJson } from "../src/agents.ts";
 import {
   OpencodeRunRunner,
   formatUsage,
@@ -31,8 +32,14 @@ import type { ModelRef } from "../src/runner.ts";
 const REPO = path.resolve(import.meta.dir, "..");
 const TOY = path.join(REPO, "fixtures/toy-repo");
 const OUT = path.join(REPO, "spike/out");
-const TEMPLATES = path.join(REPO, "templates/agents");
-const AGENTS_DEST = path.join(TOY, ".opencode/agents");
+
+/**
+ * The agent definitions are injected, not installed. `opencode` reads
+ * OPENCODE_CONFIG_CONTENT when it starts its own server, so every spawn below
+ * needs `--standalone` and this variable. The runner sets it itself; the raw
+ * `opencode run` calls in this spike have to pass it through.
+ */
+const AGENT_ENV = { OPENCODE_CONFIG_CONTENT: agentsConfigJson() };
 
 const drafter: ModelRef = {
   ref: process.env.ADV_DRAFTER ?? "anthropic/claude-sonnet-5-5",
@@ -60,13 +67,14 @@ const fail = (t: string) => {
 
 async function sh(
   cmd: string[],
-  opts: { cwd?: string } = {},
+  opts: { cwd?: string; env?: Record<string, string> } = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
+  const cwd = opts.cwd ?? REPO;
   const proc = Bun.spawn(cmd, {
-    cwd: opts.cwd ?? REPO,
+    cwd,
     // See OpencodeRunRunner.call: opencode reads $PWD, and spawn's cwd does not
-    // set it.
-    env: { ...process.env, PWD: opts.cwd ?? REPO },
+    // set it. AGENT_ENV carries the injected agent definitions.
+    env: { ...process.env, PWD: cwd, ...opts.env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -83,16 +91,14 @@ const stamp = () => new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 const toolCalls = (events: RunEvent[], tool: string) =>
   events.filter((e) => e.part?.type === "tool" && e.part.tool === tool);
 
-/** Stand in for `adv init`: put the agent definitions in the target repo.
- *  They must live in the target repo's project, not the tool's. */
-async function prepareRepo() {
-  await mkdir(AGENTS_DEST, { recursive: true });
-  for (const name of ["adv-drafter.md", "adv-reviewer.md"]) {
-    await writeFile(
-      path.join(AGENTS_DEST, name),
-      await readFile(path.join(TEMPLATES, name), "utf8"),
-    );
-  }
+/**
+ * Stand in for `adv init`: the agent definitions used to be copied into the
+ * target repo, which is exactly the failure mode injection removed. Clear any
+ * leftovers so a passing check proves injection works rather than proving that
+ * a stale `.opencode/agents/` happens to be sitting in the fixture.
+ */
+async function removeInstalledAgents() {
+  await rm(path.join(TOY, ".opencode"), { recursive: true, force: true });
 }
 
 /* ------------------------------------------------------------------ */
@@ -181,7 +187,7 @@ async function checkPermissions() {
       "Do two things and report each outcome. 1) Create a file named CANARY.txt " +
         "containing the word hello. 2) Run the shell command: touch CANARY2.txt",
     ],
-    { cwd: TOY },
+    { cwd: TOY, env: AGENT_ENV },
   );
   if (res.code !== 0) info(`probe exited ${res.code}; asserting on the filesystem anyway`);
 
@@ -229,7 +235,7 @@ async function checkArtifacts() {
       'Read src/rateLimit.ts and reply with exactly one fenced json block: ' +
         '```json\n{"saw":"<the word you found in the comment>"}\n``` — nothing else.',
     ],
-    { cwd: TOY },
+    { cwd: TOY, env: AGENT_ENV },
   );
   if (res.code !== 0) {
     fail(`artifact probe failed: ${(res.stderr || res.stdout).slice(0, 300)}`);
@@ -346,7 +352,7 @@ const checks: Record<string, () => Promise<void>> = {
 const selected = process.argv.slice(2).filter((a) => !a.startsWith("-"));
 const names = selected.length ? selected : Object.keys(checks);
 
-await prepareRepo();
+await removeInstalledAgents();
 
 for (const name of names) {
   const fn = checks[name];

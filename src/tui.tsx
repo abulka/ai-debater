@@ -1,12 +1,11 @@
 import { Box, Text, render, useApp, useInput } from "ink";
-import path from "node:path";
 import React, { useEffect, useMemo, useState } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
 import type { Config } from "./config.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
 import { hasAdvDir, initRepo } from "./init.ts";
 import { familyOf, listModels, sameFamily } from "./models.ts";
-import { appendDecisions, readCriteria, readDecisions } from "./orchestrator.ts";
+import { appendDecisions, displayPath, readCriteria, readDecisions } from "./orchestrator.ts";
 import { runHead, runTail, saveGate, type Head, type Tail } from "./pipeline.ts";
 import { renderResult } from "./render.ts";
 import type { Mode } from "./runner.ts";
@@ -80,8 +79,11 @@ function Setup({
   onChoose: (action: "init" | "skip") => void;
 }) {
   const options = [
-    { label: "Initialise .adv/ here", hint: "creates criteria, decisions, config and the two agents" },
-    { label: "Continue without it", hint: "uses default models and no criteria — the reviewer may invent them" },
+    { label: "Initialise .adv/ here", hint: "creates criteria, decisions, config and the agents" },
+    {
+      label: "Continue without it",
+      hint: "no criteria — the reviewer may invent them (repo runs still get the agents)",
+    },
   ];
 
   return (
@@ -766,7 +768,7 @@ function App({ repo }: { repo: string }) {
     }
   }, [phase, head, items.length, answers.length]);
 
-  const runDir = head ? path.relative(repo, head.paths.dir) : ".adv/runs";
+  const runDir = head ? displayPath(head.paths.dir) : ".adv/runs";
 
   if (phase === "setup") {
     return <Setup repo={repo} selection={setupSelection} onChoose={(a) => void chooseSetup(a)} />;

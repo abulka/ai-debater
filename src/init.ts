@@ -2,8 +2,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DEFAULT_CONFIG } from "./config.ts";
 
-const TEMPLATES = path.join(import.meta.dir, "..", "templates", "agents");
-
 const CRITERIA_TEMPLATE = `# Criteria
 
 Fixed. Models may not add to or change this list.
@@ -25,15 +23,17 @@ export interface InitResult {
 }
 
 /**
- * Create (or refresh) the `.adv/` scaffolding and the two agent definitions.
+ * Create (or refresh) the `.adv/` scaffolding.
  *
  * `criteria.md`, `decisions.md` and `config.json` are only written if missing —
- * never overwrite the human's own files. The agent definitions are always
- * refreshed, so an upgrade ships with `adv init`.
+ * never overwrite the human's own files.
+ *
+ * The agent definitions used to be installed here too. They are now injected
+ * into each model call from `src/agents.ts`, so `adv` works in a directory that
+ * was never initialised and writes nothing outside `.adv/`.
  */
 export async function initRepo(repo: string): Promise<InitResult> {
   await mkdir(path.join(repo, ".adv"), { recursive: true });
-  await mkdir(path.join(repo, ".opencode", "agents"), { recursive: true });
 
   const created: string[] = [];
   const kept: string[] = [];
@@ -59,17 +59,10 @@ export async function initRepo(repo: string): Promise<InitResult> {
     ".adv/config.json",
   );
 
-  for (const name of ["adv-drafter.md", "adv-reviewer.md", "adv-writer.md"]) {
-    await writeFile(
-      path.join(repo, ".opencode", "agents", name),
-      await readFile(path.join(TEMPLATES, name), "utf8"),
-    );
-    created.push(`.opencode/agents/${name}`);
-  }
-
   return { created, kept };
 }
 
+/** True once the human has initialised criteria here. */
 export async function hasAdvDir(repo: string): Promise<boolean> {
   try {
     await readFile(path.join(repo, ".adv", "criteria.md"), "utf8");

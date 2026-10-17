@@ -82,7 +82,7 @@ adv                            # TUI for the current directory
 adv --dir /path/to/repo        # TUI for another repo
 
 # CLI (scriptable)
-adv init --dir <repo>
+adv init --dir <repo>          # criteria, decisions and config (optional)
 adv run "<task>" --dir <repo> [--no-gate] [--general]
 adv decide [<run>]
 adv run --resume [<run>]
@@ -93,7 +93,12 @@ bun run spike/m0.ts endpoints permissions artifacts   # cheap, no model calls fo
 ```
 
 `--general` (or Tab in the TUI) switches to answer mode: a general question, no
-repository assumed, facts checked against URLs.
+repository assumed, facts checked against URLs. Nothing is installed and nothing
+is written into the directory you started in — answer mode works immediately,
+and `adv init` is only needed if you want criteria and settled decisions.
+
+Run artifacts go to `~/.local/share/adv/runs/<repo-name>-<hash>/<timestamp>/`,
+for both modes. `adv decide`/`run --resume`/`status` take a bare run name.
 
 ### TUI keys
 
@@ -150,8 +155,8 @@ src/
   diff.ts           unified diff + changelog cross-check (a heuristic)
   render.ts         plan + changelog + diff + open decisions
   models.ts         model list + family heuristic for the picker
+  agents.ts         the three agent definitions (injected per call)
   init.ts           `adv init` scaffolding
-templates/agents/   adv-drafter.md, adv-reviewer.md, adv-writer.md
 fixtures/toy-repo/  the test problem (a deliberate lie in its README)
 spike/              M0
 ```
@@ -165,6 +170,14 @@ spike/              M0
   continue a session across runs. Validate-with-retry re-sends the whole prompt.
 - **OpenCode's base policy is `allow *`.** Denying `edit`/`shell` alone is not
   read-only; MCP servers stay reachable. Deny `*` first.
+- **The three adv agents are injected, not installed** (`--agent adv-drafter` /
+  `-reviewer` / `-writer`, definitions in `src/agents.ts`). They arrive in
+  `OPENCODE_CONFIG_CONTENT`, which OpenCode **only reads when it starts its own
+  server** — so every `opencode run` must pass `--standalone`, and anything that
+  strips that variable produces `Agent not found`. The old file-based install,
+  the markdown templates and `adv init --global` are gone; nothing is written to
+  the target repo or to `~/.config/opencode`. They are `hidden: true`, but
+  `opencode debug agents` lists hidden agents too — it is not a visibility test.
 - **Each call asks for one thing** — prose, or one JSON block. Merging them is
   where models get flaky.
 - The diff check is a **heuristic** (hunk count vs changelog entries). It flags
