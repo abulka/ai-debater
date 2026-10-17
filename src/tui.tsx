@@ -33,6 +33,7 @@ import type { Mode } from "./runner.ts";
 type Phase =
   | "setup"
   | "start"
+  | "clarify"
   | "settings"
   | "pick"
   | "running"
@@ -675,6 +676,7 @@ function App({ repo }: { repo: string }) {
   const [panel, setPanel] = useState<Panel | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [showDiff, setShowDiff] = useState(false);
+  const [clarifySel, setClarifySel] = useState(0);
   const approvalResolver = useRef<((ok: boolean) => void) | null>(null);
 
   const addLog = (line: string) => setLog((l) => [...l, line]);
@@ -718,6 +720,25 @@ function App({ repo }: { repo: string }) {
       if (key.return) void chooseSetup(setupSelection === 0 ? "init" : "skip");
     },
     { isActive: phase === "setup" },
+  );
+
+  useInput(
+    (_input, key) => {
+      if (key.escape) {
+        setPhase("start");
+        return;
+      }
+      if (key.upArrow) {
+        setClarifySel(0);
+        return;
+      }
+      if (key.downArrow) {
+        setClarifySel(1);
+        return;
+      }
+      if (key.return) beginRun(clarifySel === 0 ? "answer" : "plan");
+    },
+    { isActive: phase === "clarify" },
   );
 
   async function chooseSetup(action: "init" | "skip") {
@@ -852,7 +873,7 @@ function App({ repo }: { repo: string }) {
 
   /* A same-family pair is a warning, unless this repo says the result is
      evidence — then it is a stop, before any money is spent. */
-  function beginRun() {
+  function beginRun(next: Mode = mode) {
     if (!cfg) return;
     const clash = familyClash(cfg.models);
     if (clash && cfg.familyCheck === "require") {
@@ -866,8 +887,12 @@ function App({ repo }: { repo: string }) {
     // The two things the human just chose. They belong in the log: without them
     // the history starts at "drafting" and does not say what was asked or who is
     // doing it.
-    addLog(`${mode === "answer" ? "answer mode" : "plan mode"} · ${cfg.models.drafter.ref} -> ${cfg.models.reviewer.ref}`);
-    addLog(`${mode === "answer" ? "question" : "task"}: ${task.trim()}`);
+    addLog(`${next === "answer" ? "answer mode" : "plan mode"} · ${cfg.models.drafter.ref} -> ${cfg.models.reviewer.ref}`);
+    addLog(`${next === "answer" ? "question" : "task"}: ${task.trim()}`);
+    if (next !== mode) {
+      setMode(next);
+      void persist(cfg, next);
+    }
     setShowDiff(false);
     setPhase("running");
   }
@@ -1159,7 +1184,16 @@ function App({ repo }: { repo: string }) {
         mode={mode}
         task={task}
         setTask={setTask}
-        onRun={beginRun}
+        onRun={() => {
+          // A question typed in plan mode reads the repository and answers with
+          // a "Plan:". Ask once, rather than relying on a warning line.
+          if (mode === "plan" && looksLikeQuestion(task)) {
+            setClarifySel(0);
+            setPhase("clarify");
+            return;
+          }
+          beginRun();
+        }}
         onToggleMode={() => {
           // Persist it: the mode is a preference, like the models, and Tab
           // followed by a restart used to put you back in plan mode.

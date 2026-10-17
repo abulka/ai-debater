@@ -110,7 +110,7 @@ for both modes. `adv decide`/`run --resume`/`status` take a bare run name.
 | --- | --- |
 | Ctrl+P | Settings — choose drafter/reviewer, switch mode |
 | Tab | Toggle plan / answer mode |
-| Enter | Run the typed task |
+| Enter | Run the typed task. In plan mode, a task that reads like a question first asks **answer it** or **plan it** |
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
 | s | Skip the current question (finding: untriaged; judgment: open) |
 | o | Gate: leave a judgment call open |
