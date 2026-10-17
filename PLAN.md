@@ -375,6 +375,12 @@ wins field by field, and `~/.config/adv/config.json` (honours
 config — including every answer-mode run — uses the last choice rather than the
 built-in default, and `adv init` seeds a new repository from it.
 
+`mode` is the exception: it is **personal, not per repository**, so the user's
+last choice wins even over a repository file. It defaults to `answer` (a general
+question); `plan` is one Tab away and produces an implementation plan for the
+repository. Both are the same workflow — draft, cross-family review, human gate,
+scoped rewrite — applied to a plan or to an opinion.
+
 ---
 
 ## 9. Layout

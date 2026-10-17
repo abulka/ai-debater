@@ -31,7 +31,10 @@ export const DEFAULT_CONFIG: Config = {
     reviewer: { ref: "opencode-go/gpt-6-luna", family: "openai" },
   },
   gate: true,
-  mode: "plan",
+  // The default subject is a general question. A repository task is one Tab away;
+  // the tool is one workflow (draft, have another family check it, decide) applied
+  // to either a plan for a codebase or an opinion about a question.
+  mode: "answer",
   familyCheck: "warn",
 };
 
@@ -69,7 +72,10 @@ export async function loadConfig(repo: string): Promise<Config> {
   const familyCheck = local.familyCheck ?? user.familyCheck;
   return {
     gate: local.gate ?? user.gate ?? DEFAULT_CONFIG.gate,
-    mode: local.mode ?? user.mode ?? DEFAULT_CONFIG.mode,
+    // The mode is where *you* are working, not what the repository is. The user's
+    // last choice wins so Tab sticks everywhere, including in a repo with its own
+    // config file.
+    mode: user.mode ?? local.mode ?? DEFAULT_CONFIG.mode,
     familyCheck: familyCheck === "require" ? "require" : "warn",
     models: {
       drafter: local.models?.drafter ?? user.models?.drafter ?? DEFAULT_CONFIG.models.drafter,

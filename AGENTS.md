@@ -171,6 +171,12 @@ adv run "…" --drafter groq/openai/gpt-oss-120b --drafter-family gpt \
 run — uses the last choice rather than `DEFAULT_CONFIG`, and `adv init` seeds a
 new repository from it. A repository's own file still wins, field by field.
 
+**The mode is personal.** It starts in answer mode (a general question) and Tab
+switches to a repository task; the choice is saved like the models and applies in
+every directory. A repository cannot pin it — the mode is where you are working,
+not what the repository is. One workflow either way: draft, have another family
+check it, settle the calls.
+
 Probe a model before relying on it:
 
 ```sh

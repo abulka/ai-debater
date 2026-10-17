@@ -73,6 +73,18 @@ describe("model choice", () => {
     expect(loaded.models.reviewer.ref).toBe("user/reviewer");
   });
 
+  test("the mode is personal: the user's last choice beats a repository's file", async () => {
+    const repo = path.join(tmp, "repo");
+    await mkdir(repo, { recursive: true });
+    await saveConfig(repo, { ...configWith("a/d", "b/r"), mode: "plan" });
+
+    const other = path.join(tmp, "other");
+    await mkdir(other, { recursive: true });
+    await saveConfig(other, { ...configWith("a/d", "b/r"), mode: "answer" });
+
+    expect((await loadConfig(repo)).mode).toBe("answer");
+  });
+
   test("nothing stored yet means no user config", async () => {
     expect(await loadUserConfig()).toBeNull();
   });

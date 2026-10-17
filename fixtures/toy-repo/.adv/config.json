@@ -1,6 +1,5 @@
 {
   "gate": true,
-  "mode": "plan",
   "familyCheck": "warn",
   "models": {
     "drafter": {
