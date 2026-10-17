@@ -650,6 +650,63 @@ separates "diversity" from "the whole loop".
 
 ---
 
+## 15. `adv revise` — design (proposed 18 Oct, not built)
+
+**The gap.** After a run finishes there is no way to apply an item you left for
+later, or to change a gate answer, without drafting and reviewing again.
+`adv decide` serves only a run parked at the gate, and explicitly refuses a
+`done` run.
+
+**Command.** `adv revise [<run>]`, defaulting to the latest run for this
+repository.
+
+### What it does
+
+1. Load the run's artifacts and re-derive the gate items from `claims.json` and
+   `review.json`, so the questions are the same ones the reviewer raised.
+2. Show them **pre-filled** with what `gate.json` already says — accepted,
+   dismissed, open, untriaged — and let the human change any answer before
+   resubmitting the whole gate.
+3. Save the new gate, append to `decisions.md` (rule below), and run the existing
+   tail: the same scoped rebuttal, changelog, diff and result.
+4. Never re-run the head. `resumedModels` uses the models recorded in
+   `state.json`, so the original drafter writes the revision, not today's
+   config default.
+
+### State and artifacts
+
+- Accepted from `gated` or `done` only. `validated` means the gate was never
+  answered — that is `adv decide`. `failed` is not revisable.
+- No new state is needed: the tail already ends at `done`.
+- Before writing, rotate the existing `plan.v2.md`, `changelog.json` and
+  `diff.patch` to `plan.v2.<timestamp>.md` and so on, so revisions accumulate
+  instead of overwriting each other.
+
+### Changing your mind, without poisoning `decisions.md`
+
+Append-only is right for history and wrong for revision: flipping a decision
+would leave both answers in the file, and future runs would read both as
+settled. The rule:
+
+- every new line carries the run id;
+- a revision appends
+  `- <iso> <run> <id>: <text> -> **<choice>** (supersedes <iso>)`;
+- the prompts are told: **for each item, the newest entry wins**; superseded
+  entries are history, not instructions.
+
+### Not in scope
+
+Re-running the review or its checks (`adv audit` is the separate, parked idea);
+revising a `failed` run; hand-editing `plan.v2`.
+
+### Tests (no model calls)
+
+`revise` refuses `failed` and `validated` runs; prefill maps `gate.json` back
+onto the items including "later"/"open"; the supersede line is written and the
+newest-wins reader picks it; previous artifacts are rotated, not overwritten.
+
+---
+
 ## Appendix: OpenCode V2 API notes
 
 *Sourced from the live V2 docs on 17 Oct 2026; M0 confirms against the running

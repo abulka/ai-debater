@@ -115,10 +115,11 @@ Round trip on the toy repo, `opencode-go/claude-haiku-5-5` (drafter) →
 
 ## Notes
 
-- `fixtures/toy-repo` is its own git repo and contains a deliberate
+- `fixtures/toy-repo` contains a deliberate
   contradiction: `README.md` says counters reset every 60 seconds;
   `src/rateLimit.ts` never resets them. A plan that trusts the README is
-  refutable from `src/rateLimit.ts:3`.
+  refutable from `src/rateLimit.ts:3`. It was its own git repo until 18 Oct; it
+  is now ordinary tracked files, so it survives a clone.
 - The agents are **injected**, not installed: the spike passes
   `OPENCODE_CONFIG_CONTENT` (built from `src/agents.ts`) into every spawn, and
   clears any leftover `.opencode/` in the fixture first, so a passing check
