@@ -168,6 +168,21 @@ function Setup({
   );
 }
 
+/**
+ * A cheap nudge, not a classifier. If someone types a question in plan mode,
+ * the run will read the repository and answer with a plan; that happened once and
+ * the result was a "Plan:" about fixtures/toy-repo. A question mark, or a question
+ * opening word, is enough to suggest Tab.
+ */
+function looksLikeQuestion(task: string): boolean {
+  const text = task.trim();
+  if (!text) return false;
+  if (/\?\s*$/.test(text)) return true;
+  return /^(what|which|who|whom|whose|when|where|why|how|is|are|was|were|does|do|did|can|could|should|would)\b/i.test(
+    text,
+  );
+}
+
 function Start({
   repo,
   cfg,
@@ -251,13 +266,24 @@ function Start({
       )}
       <Box borderStyle="round" borderColor="cyan" paddingX={1} marginTop={1}>
         {task ? (
-          <Text>{task}</Text>
+          <Text>
+            {task}
+            <Text inverse> </Text>
+          </Text>
         ) : (
           <Text dimColor>
             {mode === "answer" ? "Type your question, then press Enter…" : "Describe the task, then press Enter…"}
+            <Text inverse> </Text>
           </Text>
         )}
       </Box>
+      {mode === "plan" && looksLikeQuestion(task) && (
+        <Box marginTop={1}>
+          <Text color="yellow">
+            ! that reads like a general question — Tab switches to answer mode, which assumes no repository
+          </Text>
+        </Box>
+      )}
       <Box marginTop={1}>
         <Text dimColor>Enter run · Tab mode · Ctrl+P settings · Ctrl+C quit</Text>
       </Box>
@@ -1134,7 +1160,13 @@ function App({ repo }: { repo: string }) {
         task={task}
         setTask={setTask}
         onRun={beginRun}
-        onToggleMode={() => setMode((m) => (m === "plan" ? "answer" : "plan"))}
+        onToggleMode={() => {
+          // Persist it: the mode is a preference, like the models, and Tab
+          // followed by a restart used to put you back in plan mode.
+          const next: Mode = mode === "plan" ? "answer" : "plan";
+          setMode(next);
+          if (cfg) void persist(cfg, next);
+        }}
         onSettings={() => void openSettings()}
       />
     );
