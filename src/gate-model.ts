@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { AuditRecord, Claims, Gate, Review } from "./contracts.ts";
 import { auditLines } from "./audit.ts";
+import type { DecisionEntry } from "./orchestrator.ts";
 
 export interface GateItem {
   id: string;
@@ -268,6 +269,57 @@ export function describeGateChange(previous: Gate | null, current: Gate): GateCh
   }
 
   return { decisions, findings };
+}
+
+/**
+ * What `adv revise` (and the TUI's revisit) appends to `decisions.md`: one
+ * entry per judgment call whose settled answer moved, each marked so the
+ * append-only file reads in order.
+ *
+ * A call re-opened at the gate gets a `reopened` marker, which `readDecisions`
+ * treats as un-settling the id: the old entry stays on disk, but the next draft
+ * is no longer told it is closed. A call that was open and stays open appends
+ * nothing — "open" was never written to begin with.
+ */
+export function decisionEntries(claims: Claims, change: GateChange): DecisionEntry[] {
+  const entries: DecisionEntry[] = [];
+  for (const c of change.decisions) {
+    const text = claims.judgment.find((j) => j.id === c.id)?.text ?? "";
+    // `from` is the recorded answer, "(none)" when there was no gate file.
+    // A settled previous answer is the one that needs a supersede marker.
+    const wasSettled = c.from !== "(none)" && c.from !== "open";
+    if (c.to === "open") {
+      if (wasSettled) {
+        entries.push({
+          id: c.id,
+          text,
+          choice: "reopened",
+          note: `(the earlier entry for ${c.id} no longer stands)`,
+        });
+      }
+      continue;
+    }
+    entries.push({
+      id: c.id,
+      text,
+      choice: c.to,
+      ...(wasSettled ? { note: `(supersedes the earlier entry for ${c.id})` } : {}),
+    });
+  }
+  return entries;
+}
+
+/**
+ * Where the gate's cursor lands for an item that already has a recorded
+ * answer: on that answer. That is what makes a re-asked gate readable —
+ * the current choice is what the cursor sits on, and Enter keeps it.
+ * An answer that is not among the item's values (a stale gate) lands on the
+ * first option rather than nowhere.
+ */
+export function selectionForCurrent(item: GateItem, current?: string): number {
+  if (!current) return 0;
+  const i = item.values.indexOf(current);
+  return i === -1 ? 0 : i;
 }
 
 export interface VerdictCounts {

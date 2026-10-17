@@ -6,6 +6,7 @@ import {
   answersToGate,
   buildItems,
   clampOffset,
+  decisionEntries,
   describeGateChange,
   describeJudgmentCall,
   findingQuestion,
@@ -14,6 +15,7 @@ import {
   maxOffset,
   parseEvidence,
   readEvidenceContext,
+  selectionForCurrent,
   statusLine,
   verdictCounts,
 } from "./gate-model.ts";
@@ -151,6 +153,94 @@ describe("describeGateChange", () => {
       decisions: [{ id: "J1", from: "redis", to: "(unanswered)" }],
       findings: [{ id: "E1", from: "accepted", to: "(unanswered)" }],
     });
+  });
+});
+
+describe("decisionEntries", () => {
+  const j1 = claims.judgment[0]!;
+
+  test("a moved settled answer is appended marked as a supersede", () => {
+    const entries = decisionEntries(claims, {
+      decisions: [{ id: "J1", from: "redis", to: "in-process" }],
+      findings: [],
+    });
+    expect(entries).toEqual([
+      {
+        id: "J1",
+        text: j1.text,
+        choice: "in-process",
+        note: "(supersedes the earlier entry for J1)",
+      },
+    ]);
+  });
+
+  test("re-opening a settled answer appends a reopened marker, no choice", () => {
+    const entries = decisionEntries(claims, {
+      decisions: [{ id: "J1", from: "redis", to: "open" }],
+      findings: [],
+    });
+    expect(entries).toEqual([
+      {
+        id: "J1",
+        text: j1.text,
+        choice: "reopened",
+        note: "(the earlier entry for J1 no longer stands)",
+      },
+    ]);
+  });
+
+  test("a call that was open and now settles appends a plain entry, no supersede", () => {
+    const entries = decisionEntries(claims, {
+      decisions: [{ id: "J1", from: "open", to: "redis" }],
+      findings: [],
+    });
+    expect(entries).toEqual([{ id: "J1", text: j1.text, choice: "redis" }]);
+  });
+
+  test("a call that was never settled and stays open appends nothing", () => {
+    const entries = decisionEntries(claims, {
+      decisions: [{ id: "J1", from: "open", to: "open" }],
+      findings: [],
+    });
+    expect(entries).toEqual([]);
+  });
+
+  test("a first-time answer (no recorded previous) appends plain, no supersede", () => {
+    const entries = decisionEntries(claims, {
+      decisions: [{ id: "J1", from: "(none)", to: "redis" }],
+      findings: [],
+    });
+    expect(entries).toEqual([{ id: "J1", text: j1.text, choice: "redis" }]);
+  });
+
+  test("findings never become decision entries", () => {
+    const entries = decisionEntries(claims, {
+      decisions: [],
+      findings: [{ id: "E1", from: "accepted", to: "dismissed" }],
+    });
+    expect(entries).toEqual([]);
+  });
+});
+
+describe("selectionForCurrent", () => {
+  const items = buildItems(claims, review);
+  const judgment = items.find((i) => i.kind === "judgment")!;
+  const finding = items.find((i) => i.kind === "finding")!;
+
+  test("lands on the recorded answer among the item's values", () => {
+    expect(selectionForCurrent(judgment!, "redis")).toBe(1);
+    expect(selectionForCurrent(judgment!, "in-process")).toBe(0);
+    expect(selectionForCurrent(judgment!, "open")).toBe(2);
+  });
+
+  test("a finding lands on its recorded disposition", () => {
+    expect(selectionForCurrent(finding!, "dismissed")).toBe(1);
+    expect(selectionForCurrent(finding!, "untriaged")).toBe(2);
+  });
+
+  test("no recorded answer, or one that is not a value, lands on the first option", () => {
+    expect(selectionForCurrent(judgment!)).toBe(0);
+    expect(selectionForCurrent(judgment!, "a stale value")).toBe(0);
   });
 });
 

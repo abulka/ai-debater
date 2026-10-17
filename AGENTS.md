@@ -67,6 +67,7 @@ replacement for tests. The models never resolve judgment calls.
 | M3 real trial | **done 17 Oct** — spec in `docs/M2-PLAN.md` |
 | M2 evidence execution | **done 17–18 Oct** — both slices: contract, matcher, executor, approval split, merged view (`src/audit.ts`). Parked: `adv audit <run>`, MCP disable |
 | M4 revise | **done 18 Oct** — `adv revise [<run>] [--rewrite]`; spec in `docs/REVISE.md` |
+| TUI revise door | **done 18 Oct** — the same revise, reachable from the TUI: `r` on the result screen, past-runs picker on the start screen (Ctrl+R) |
 
 Typecheck must stay clean: `bun run typecheck`. Tests must stay green:
 `bun test` (the gate mapping, resume-model choice and failed-state write are
@@ -129,7 +130,9 @@ supersede rule.
 | i | Gate: the review summary — warnings, checks, refuted claims |
 | l | Gate: the full run log |
 | x | Result: show or hide the exact text diff |
-| Esc | Close a panel and return to the same question |
+| r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
+| Esc | Close a panel and return to the same question; at the gate, leave the run (it stays on disk — reopen it with Ctrl+R) |
+| Ctrl+R | Start: past runs — open a finished or parked run |
 | ↑↓ · q | Scroll the result; `q` quits |
 
 The gate shows the review's state on every screen — counts, warnings, what was
@@ -284,7 +287,9 @@ spike/              M0
 in and tested: the contract, exact-argv matcher, executor, the quick-vs-slow
 approval split, `audit.json`, the merged review view, and the URL/evidence
 checks. M4 is `adv revise`: the gate asked again, prefilled, with only the
-rewrite re-run — spec in `docs/REVISE.md`. The 12 settled decisions in
+rewrite re-run — spec in `docs/REVISE.md` — and its TUI door: `r` on the result
+screen and the past-runs picker (Ctrl+R) drive the same shared revise logic, so
+the two front ends cannot drift. The 12 settled decisions in
 `docs/M2-PLAN.md` §3 stand; do not reopen them without saying why.
 
 Not yet done (parked, not lost):

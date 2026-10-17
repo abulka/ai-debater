@@ -159,6 +159,44 @@ export async function latestRun(repo: string): Promise<string | null> {
   }
 }
 
+export interface RunSummary {
+  /** The run directory's name: its timestamp stamp. */
+  name: string;
+  state: RunState["state"];
+  task: string;
+  mode: RunState["mode"];
+}
+
+/**
+ * Every recorded run for this repository, newest first — the list the TUI's
+ * past-runs screen renders. Directories without a readable `state.json`
+ * (a half-written one) are skipped rather than shown as broken rows.
+ */
+export async function listRuns(repo: string): Promise<RunSummary[]> {
+  let entries;
+  try {
+    entries = await readdir(runsDir(repo), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const names = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort()
+    .reverse();
+
+  const out: RunSummary[] = [];
+  for (const name of names) {
+    try {
+      const state = await loadState(runPaths(repo, path.join(runsDir(repo), name)));
+      out.push({ name, state: state.state, task: state.task, mode: state.mode });
+    } catch {
+      /* no readable state — not a run worth listing */
+    }
+  }
+  return out;
+}
+
 /**
  * What the models get when there is no criteria file. Answer mode always uses
  * this: a general question has no repository, and the criteria in whatever

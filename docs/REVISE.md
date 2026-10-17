@@ -90,9 +90,14 @@ no repository to settle decisions in.
 
 ## 5. What revise does not do (v1)
 
-- **No TUI entry.** CLI only. The TUI gate renders items and does not know the
-  gate has been asked before; an entry there needs the same prefill and belongs
-  with a TUI batch, not this one.
+- **The TUI door is the same revise, with one less flag.** `r` on the result
+  screen and the past-runs picker (Ctrl+R) drive the shared logic above: the
+  gate re-asked with its recorded answers prefilled, identical answers spend
+  nothing, a change re-runs only the tail. The TUI does not expose `--rewrite`
+  — there, "nothing moved" always stops at the result rather than forcing a
+  rewrite; the CLI flag remains for that. (v1 was CLI only; the door landed 18
+  Oct. The `r` hint is always on the result screen, because a change of mind
+  about a *settled* call is exactly what the door is for.)
 - **One level of history.** `gate.prev.json` keeps the previous generation of
   answers; a third revision overwrites the second's backup. Deeper history is a
   run-store problem, not a gate problem.

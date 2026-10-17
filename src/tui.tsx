@@ -1,4 +1,5 @@
 import { Box, Static, Text, render, useApp, useInput } from "ink";
+import path from "node:path";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
 import type { Config } from "./config.ts";
@@ -9,10 +10,13 @@ import {
   answersToGate,
   buildItems,
   clampOffset,
+  decisionEntries,
+  describeGateChange,
   gateWarnings,
   maxOffset,
   parseEvidence,
   readEvidenceContext,
+  selectionForCurrent,
   statusLine,
   verdictCounts,
   type GateAnswer,
@@ -22,11 +26,29 @@ import { familyClash, familyOf, listModels } from "./models.ts";
 import {
   appendDecisions,
   displayPath,
+  listRuns,
+  loadState,
   NO_CRITERIA,
   readCriteria,
   readDecisions,
+  rotateGate,
+  runPaths,
+  runsDir,
+  saveState,
+  type RunSummary,
 } from "./orchestrator.ts";
-import { runHead, runTail, saveGate, type Head, type Reporting, type Tail } from "./pipeline.ts";
+import {
+  headFromArtifacts,
+  loadArtifacts,
+  loadTail,
+  runHead,
+  runTail,
+  saveGate,
+  type Head,
+  type Models,
+  type Reporting,
+  type Tail,
+} from "./pipeline.ts";
 import { renderResult } from "./render.ts";
 import type { Mode } from "./runner.ts";
 
@@ -36,6 +58,7 @@ type Phase =
   | "clarify"
   | "settings"
   | "pick"
+  | "runs"
   | "running"
   | "gate"
   | "working"
@@ -193,6 +216,7 @@ function Start({
   onRun,
   onToggleMode,
   onSettings,
+  onRuns,
 }: {
   repo: string;
   cfg: Config | null;
@@ -202,6 +226,7 @@ function Start({
   onRun: () => void;
   onToggleMode: () => void;
   onSettings: () => void;
+  onRuns: () => void;
 }) {
   useInput((input, key) => {
     if (key.tab) {
@@ -211,6 +236,11 @@ function Start({
     // Ctrl+P, not a letter: anything typeable must stay available for the task.
     if (key.ctrl && input === "p") {
       onSettings();
+      return;
+    }
+    // Ctrl+R, same reason: "r" is a letter the task needs.
+    if (key.ctrl && input === "r") {
+      onRuns();
       return;
     }
     if (key.return) {
@@ -286,7 +316,7 @@ function Start({
         </Box>
       )}
       <Box marginTop={1}>
-        <Text dimColor>Enter run · Tab mode · Ctrl+P settings · Ctrl+C quit</Text>
+        <Text dimColor>Enter run · Tab mode · Ctrl+R past runs · Ctrl+P settings · Ctrl+C quit</Text>
       </Box>
       <Box>
         <Text dimColor>models, criteria and decisions live in {repo}/.adv/</Text>
@@ -393,6 +423,53 @@ function Pick({
       </Box>
       <Box marginTop={1}>
         <Text dimColor>{shown.length} match(es) · ↑↓ choose · Enter select · Esc back</Text>
+      </Box>
+    </Box>
+  );
+}
+
+/** A past run, as a row: when, what it was, where it stands. */
+function Runs({
+  runs,
+  index,
+}: {
+  runs: RunSummary[];
+  index: number;
+}) {
+  const width = Math.max(40, (process.stdout.columns ?? 100) - 4);
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="past runs" />
+      </Box>
+      <Text dimColor>
+        open one to continue it — a finished run can be revisited, a parked one finished
+      </Text>
+      <Box marginTop={1} flexDirection="column">
+        {runs.slice(0, 12).map((r, i) => {
+          const selected = i === index;
+          const label = r.mode === "answer" ? "question" : "task";
+          const text = r.task.length > width - 34 ? `${r.task.slice(0, width - 37)}…` : r.task;
+          return (
+            <Box key={r.name}>
+              <Text color={selected ? "cyan" : undefined}>{selected ? "❯ " : "  "}</Text>
+              <Text color={selected ? "cyan" : undefined} bold={selected}>
+                {r.name}
+              </Text>
+              <Text color={selected ? "cyan" : undefined}>
+                {"   "}
+                {r.state.padEnd(8)}
+              </Text>
+              <Text color={selected ? "cyan" : undefined} dimColor={!selected}>
+                {label} · {text}
+              </Text>
+            </Box>
+          );
+        })}
+        {runs.length === 0 && <Text dimColor>no runs recorded for this repository yet</Text>}
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>↑↓ choose · Enter open · Esc back</Text>
       </Box>
     </Box>
   );
@@ -511,6 +588,8 @@ function GateView({
   checks,
   models,
   mode,
+  revisit,
+  current,
 }: {
   claims: Claims;
   review: Review;
@@ -521,6 +600,10 @@ function GateView({
   checks: AuditRecord[];
   models: { drafter: { ref: string }; reviewer: { ref: string } };
   mode: Mode;
+  /** True when this gate was asked before and its answers are prefilled. */
+  revisit?: boolean;
+  /** The recorded answer for the current item, when there is one. */
+  current?: string;
 }) {
   const item = items[index];
   if (!item) return null;
@@ -544,11 +627,16 @@ function GateView({
 
   return (
     <Box flexDirection="column">
-      <Header right={`gate · ${index + 1} of ${items.length} · ${item.kind}`} />
+      <Header
+        right={`gate${revisit ? " · revisit" : ""} · ${index + 1} of ${items.length} · ${item.kind}`}
+      />
       <Text dimColor>
         {items.length} questions: {decisions} for you to decide, {findings} finding
         {findings === 1 ? "" : "s"} to triage
       </Text>
+      {revisit && (
+        <Text dimColor>your recorded answers are prefilled — change only what you mean to</Text>
+      )}
       <Text dimColor>{statusLine(counts)}</Text>
       {extras.length > 0 && <Text dimColor>! {extras.join(" · ")} — i for details</Text>}
 
@@ -591,15 +679,21 @@ function GateView({
             <Text color={i === selection ? "cyan" : undefined} bold={i === selection}>
               {option}
             </Text>
+            {option === current && (
+              <Text dimColor>
+                {"   · "}
+                <Text color="green">current — Enter keeps it</Text>
+              </Text>
+            )}
           </Box>
         ))}
       </Box>
 
       <Box marginTop={1}>
         <Text dimColor>
-          {`↑↓ · Enter · w whole text · d ${thing} · v verdicts`}
+          {`↑↓ · Enter${revisit ? " keeps current" : ""} · w whole text · d ${thing} · v verdicts`}
           {item.evidence ? " · e source" : ""}
-          {" · i summary · l log"}
+          {" · i summary · l log · Esc leave"}
         </Text>
       </Box>
     </Box>
@@ -681,6 +775,28 @@ function App({ repo }: { repo: string }) {
   const [showDiff, setShowDiff] = useState(false);
   const [clarifySel, setClarifySel] = useState(0);
   const approvalResolver = useRef<((ok: boolean) => void) | null>(null);
+
+  /* The run being worked on, when it is one that already exists on disk.
+     `previousGate` is the gate's answers as recorded before this gate was
+     entered: null on a fresh run, the stored gate on a revisited or reopened
+     one. It drives the prefill, the "did anything move" check, and the
+     decisions.md supersede rule — the same three the CLI's `revise` uses. */
+  const [previousGate, setPreviousGate] = useState<Gate | null>(null);
+  /** The run already had a life on disk before this gate was entered. A failed
+     tail on such a run parks back at its gate, retryable; a brand-new run
+     keeps the head's rule — failed is failed. */
+  const [reopened, setReopened] = useState(false);
+  const [wasDone, setWasDone] = useState(false);
+  const [runModels, setRunModels] = useState<Models | null>(null);
+  const [runMode, setRunMode] = useState<Mode | null>(null);
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [runsIndex, setRunsIndex] = useState(0);
+  const [runsLoading, setRunsLoading] = useState(false);
+
+  /* The mode a run runs in: the run's own, or the subject preference for a
+     fresh one. The preference (`mode`) is where *you* are working — it must
+     not be hijacked by opening a run that happened to be in the other mode. */
+  const effectiveMode: Mode = runMode ?? mode;
 
   const addLog = (line: string) => setLog((l) => [...l, line]);
 
@@ -868,10 +984,10 @@ function App({ repo }: { repo: string }) {
             missing: head.missing,
             evidenceIssues: head.evidenceIssues,
             urlRepairs: head.urlRepairs,
-            hasCriteria: mode === "answer" ? true : hasCriteria,
+            hasCriteria: effectiveMode === "answer" ? true : hasCriteria,
           })
         : [],
-    [head, mode, hasCriteria],
+    [head, effectiveMode, hasCriteria],
   );
 
   /* A same-family pair is a warning, unless this repo says the result is
@@ -896,6 +1012,19 @@ function App({ repo }: { repo: string }) {
       setMode(next);
       void persist(cfg, next);
     }
+    // A fresh run is a blank slate: nothing recorded to prefill, nothing to
+    // supersede, and the config's models are the run's models.
+    setRunMode(next);
+    setRunModels(cfg.models);
+    setPreviousGate(null);
+    setReopened(false);
+    setWasDone(false);
+    setGate(null);
+    setTail(null);
+    setAnswers([]);
+    setIndex(0);
+    setSelection(0);
+    setPanel(null);
     setShowDiff(false);
     setPhase("running");
   }
@@ -907,15 +1036,15 @@ function App({ repo }: { repo: string }) {
     void (async () => {
       try {
         const criteria =
-          mode === "answer" ? { text: NO_CRITERIA, found: false } : await readCriteria(repo);
+          effectiveMode === "answer" ? { text: NO_CRITERIA, found: false } : await readCriteria(repo);
         // Answer mode has no repository and needs no criteria; only a plan run
         // is missing something when the file is absent.
-        if (!criteria.found && mode === "plan") {
+        if (!criteria.found && effectiveMode === "plan") {
           addLog("! .adv/criteria.md missing — using a fallback");
         }
         setHasCriteria(criteria.found);
         const decisions =
-          mode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
+          effectiveMode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
         const reporting: Reporting = {
           onCall: (info) => addLog(callLine(info)),
           onNote: (text) => addLog(text),
@@ -927,7 +1056,7 @@ function App({ repo }: { repo: string }) {
           criteria.text,
           decisions,
           cfg.models,
-          mode,
+          effectiveMode,
           reporting,
         );
         if (cancelled) return;
@@ -943,26 +1072,57 @@ function App({ repo }: { repo: string }) {
     return () => {
       cancelled = true;
     };
-  }, [phase, head, repo, task, cfg, mode]);
+  }, [phase, head, repo, task, cfg, effectiveMode]);
 
   async function finishGate(all: GateAnswer[]) {
     if (!head || !cfg) return;
-    setPhase("working");
     const built = answersToGate(all);
+
+    // Did anything move since the gate was last recorded? A fresh run has no
+    // previous gate, so everything is new and the tail always runs.
+    const hadAnswers =
+      previousGate !== null &&
+      (previousGate.decisions.length > 0 || previousGate.findings.length > 0);
+    const change = previousGate ? describeGateChange(previousGate, built) : null;
+    const changed = change ? change.decisions.length + change.findings.length : 0;
+
+    // `changed` is computed against the previous gate, or against nothing on a
+    // fresh run — where the run is not done yet, so this never fires for one.
+    if (changed === 0 && wasDone) {
+      // The tail already ran with exactly these answers: the run stands as it
+      // is, and the head is not worth re-running to say so. No model calls.
+      addLog("no answers changed — the run stands as it is; no model calls made");
+      setGate(built);
+      setPhase("result");
+      return;
+    }
+    if (hadAnswers && changed === 0) {
+      // A run parked at the gate never ran its tail: "nothing changed" means
+      // the recorded answers stand, and the one thing left is to apply them.
+      addLog("no answers changed — the recorded gate stands; running the tail");
+    }
+
+    setPhase("working");
+    const models = runModels ?? cfg.models;
     try {
+      // The previous generation of answers survives the asking: the comparison
+      // above needed them, and a human who wants the old view can read the file.
+      await rotateGate(head.paths);
       await saveGate(head.paths, built);
       // A gate answer to a general question is not a repository decision.
-      if (mode === "plan") {
-        await appendDecisions(
-          repo,
-          built.decisions
-            .filter((d) => d.choice !== "open")
-            .map((d) => ({
-              id: d.id,
-              text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
-              choice: d.choice,
-            })),
-        );
+      if (effectiveMode === "plan") {
+        // A gate asked fresh appends every settled answer; a gate asked again
+        // appends only what moved, each marked so the file's history reads.
+        const entries = hadAnswers && change
+          ? decisionEntries(head.claims, change)
+          : built.decisions
+              .filter((d) => d.choice !== "open")
+              .map((d) => ({
+                id: d.id,
+                text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
+                choice: d.choice,
+              }));
+        await appendDecisions(repo, entries);
       }
       setGate(built);
       const reporting: Reporting = {
@@ -976,23 +1136,134 @@ function App({ repo }: { repo: string }) {
         head.claims,
         head.review,
         built,
-        cfg.models,
-        mode,
+        models,
+        effectiveMode,
         reporting,
       );
       setTail(result);
+      setWasDone(true);
       setPhase("result");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // A failed tail on a run that already existed must not dead-end it: the
+      // head is intact and the answers just given are recorded, so the run
+      // parks back at its own gate, where reopening it retries the tail —
+      // `adv run --resume` accepts it too. (A brand-new run keeps the head's
+      // rule: failed is failed.)
+      if (reopened) {
+        try {
+          const s = await loadState(head.paths);
+          if (s.state === "failed") await saveState(head.paths, { ...s, state: "gated" });
+        } catch {
+          /* the error screen is what matters */
+        }
+      }
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(
+        msg +
+          (reopened
+            ? "\n\nthe run is parked back at its gate — Ctrl+R to reopen it and retry, or `adv run --resume` in the terminal"
+            : "\n\nthe run is recorded as failed — the past-runs list (Ctrl+R) shows it"),
+      );
       setPhase("error");
     }
+  }
+
+  /* The past-runs list: every recorded run for this repository, newest first. */
+  async function openRuns() {
+    setPhase("runs");
+    setRunsIndex(0);
+    setRunsLoading(true);
+    setRuns(await listRuns(repo));
+    setRunsLoading(false);
+  }
+
+  /**
+   * Open a recorded run and continue it. The run's own task, mode and models
+   * become the session's: a general question re-opened must not start reading
+   * the repository it was not asked about, and the tail must be written by the
+   * drafter that wrote the plan, not whatever the config says today.
+   */
+  async function openRun(name: string) {
+    const dir = path.join(runsDir(repo), name);
+    const p = runPaths(repo, dir);
+    try {
+      const state = await loadState(p);
+      if (state.state === "failed") {
+        const first = state.error ? state.error.split("\n")[0]! : "";
+        setError(
+          `that run failed${first ? ` — ${first}` : ""}.\n\n` +
+            `a failed run has no finished result to continue. Esc for the other runs, or type a new task.`,
+        );
+        setPhase("error");
+        return;
+      }
+      const art = await loadArtifacts(p);
+      const thing = state.mode === "answer" ? "question" : "task";
+      addLog(
+        `opening ${name} — ${thing} "${state.task.slice(0, 80)}" · was ${state.state} · ` +
+          `${state.models.drafter.ref} -> ${state.models.reviewer.ref}`,
+      );
+      setHead(headFromArtifacts(repo, p, art));
+      setPreviousGate(art.gate);
+      setReopened(true);
+      setGate(art.gate);
+      setWasDone(state.state === "done");
+      setRunModels(state.models);
+      setRunMode(state.mode);
+      setTask(state.task);
+      setAnswers([]);
+      setIndex(0);
+      setSelection(0);
+      setPanel(null);
+      setShowDiff(false);
+      if (state.state === "done") {
+        setTail(await loadTail(p));
+        setPhase("result");
+      } else {
+        setPhase("gate");
+      }
+    } catch (e) {
+      setError(`${e instanceof Error ? e.message : String(e)}\n\nthe run could not be opened`);
+      setPhase("error");
+    }
+  }
+
+  /**
+   * From the result screen: ask the gate again, with the recorded answers
+   * prefilled. The cursor sits on each recorded answer; Enter keeps it. If
+   * nothing moved, no model call is spent — the run stands as it is.
+   */
+  function startRevisit() {
+    if (!head || !gate) return;
+    setPreviousGate(gate);
+    // The result screen only exists for a finished run, so this is always a
+    // run with a life on disk: a failed tail here parks back at the gate.
+    setReopened(true);
+    setWasDone(true);
+    setAnswers([]);
+    setIndex(0);
+    // The first question's cursor starts on its recorded answer, like every
+    // later one will.
+    const first = items[0];
+    if (first) {
+      const recorded =
+        first.kind === "judgment"
+          ? gate.decisions.find((d) => d.id === first.id)?.choice
+          : gate.findings.find((f) => f.id === first.id)?.disposition;
+      setSelection(selectionForCurrent(first, recorded));
+    } else {
+      setSelection(0);
+    }
+    setPanel(null);
+    addLog("revisiting the gate — your recorded answers are prefilled");
+    setPhase("gate");
   }
 
   /* Panels: the text the calls are about, every verdict, the cited source, the log. */
   async function openPanel(kind: "text" | "verdicts" | "evidence" | "log" | "info" | "item") {
     if (!head) return;
     const item = items[index];
-    const thing = mode === "answer" ? "answer" : "plan";
+    const thing = effectiveMode === "answer" ? "answer" : "plan";
 
     if (kind === "log") {
       setPanel({ title: "run log", lines: log.length ? log : ["(nothing logged yet)"] });
@@ -1104,13 +1375,40 @@ function App({ repo }: { repo: string }) {
       const item = items[index];
       if (!item) return;
 
+      // Where the cursor lands on a recorded answer: on it. That is the whole
+      // point of the prefill — Enter keeps, arrows change.
+      const landOn = (i: number) => {
+        const nextItem = items[i];
+        if (!nextItem) {
+          setSelection(0);
+          return;
+        }
+        const recorded = previousGate
+          ? nextItem.kind === "judgment"
+            ? previousGate.decisions.find((d) => d.id === nextItem.id)?.choice
+            : previousGate.findings.find((f) => f.id === nextItem.id)?.disposition
+          : undefined;
+        setSelection(selectionForCurrent(nextItem, recorded));
+      };
+
       const commit = (value: string) => {
         const next = [...answers, { id: item.id, kind: item.kind, value }];
         setAnswers(next);
-        setSelection(0);
-        if (index + 1 < items.length) setIndex(index + 1);
-        else void finishGate(next);
+        if (index + 1 < items.length) {
+          setIndex(index + 1);
+          landOn(index + 1);
+        } else {
+          void finishGate(next);
+        }
       };
+
+      if (key.escape) {
+        // Leaving the gate never loses the run: the head is on disk, and the
+        // run is reachable again from the past-runs list.
+        addLog("leaving the gate — the run stays on disk; Ctrl+R reopens it");
+        void openRuns();
+        return;
+      }
 
       if (key.upArrow) {
         setSelection((s) => Math.max(0, s - 1));
@@ -1159,6 +1457,29 @@ function App({ repo }: { repo: string }) {
     { isActive: phase === "gate" && panel === null },
   );
 
+  /* Past-runs list input. */
+  useInput(
+    (input, key) => {
+      if (key.upArrow) {
+        setRunsIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setRunsIndex((i) => Math.min(runs.length - 1, i + 1));
+        return;
+      }
+      if (key.return) {
+        const chosen = runs[runsIndex];
+        if (chosen) void openRun(chosen.name);
+        return;
+      }
+      if (key.escape) {
+        setPhase("start");
+      }
+    },
+    { isActive: phase === "runs" },
+  );
+
   /* Nothing to ask: go straight through. */
   useEffect(() => {
     if (phase === "gate" && head && items.length === 0 && answers.length === 0) {
@@ -1169,7 +1490,7 @@ function App({ repo }: { repo: string }) {
   /* The log is never part of a phase's frame. It sits above the frame, in
      <Static>: settled lines are written once and stay on screen, so a phase
      change rewrites the screen below the history instead of erasing it. */
-  const logLabel = approval ? null : workingLabel(log, phase, mode);
+  const logLabel = approval ? null : workingLabel(log, phase, effectiveMode);
 
   let content: ReactNode;
 
@@ -1205,6 +1526,7 @@ function App({ repo }: { repo: string }) {
           if (cfg) void persist(cfg, next);
         }}
         onSettings={() => void openSettings()}
+        onRuns={() => void openRuns()}
       />
     );
   } else if (phase === "running" && approval) {
@@ -1212,6 +1534,12 @@ function App({ repo }: { repo: string }) {
   } else if (phase === "running" || phase === "working") {
     /* The screen is the log plus the spinner line it draws. */
     content = null;
+  } else if (phase === "runs") {
+    content = runsLoading ? (
+      <Text dimColor>loading past runs…</Text>
+    ) : (
+      <Runs runs={runs} index={runsIndex} />
+    );
   } else if (phase === "gate" && head) {
     if (panel) {
       content = (
@@ -1223,6 +1551,17 @@ function App({ repo }: { repo: string }) {
         />
       );
     } else {
+      // The recorded answer for the question on screen, when one exists: the
+      // cursor lands on it and the option is marked, so "keep" is visible.
+      const it = items[index];
+      const hadAnswers =
+        previousGate !== null &&
+        (previousGate.decisions.length > 0 || previousGate.findings.length > 0);
+      const current = it && previousGate
+        ? it.kind === "judgment"
+          ? previousGate.decisions.find((d) => d.id === it.id)?.choice
+          : previousGate.findings.find((f) => f.id === it.id)?.disposition
+        : undefined;
       content = (
         <GateView
           claims={head.claims}
@@ -1232,8 +1571,10 @@ function App({ repo }: { repo: string }) {
           selection={selection}
           warnings={warnings}
           checks={head.checks}
-          models={cfg?.models ?? { drafter: { ref: "drafter" }, reviewer: { ref: "reviewer" } }}
-          mode={mode}
+          models={runModels ?? cfg?.models ?? { drafter: { ref: "drafter" }, reviewer: { ref: "reviewer" } }}
+          mode={effectiveMode}
+          revisit={hadAnswers}
+          current={current}
         />
       );
     }
@@ -1247,18 +1588,22 @@ function App({ repo }: { repo: string }) {
       claims: head.claims,
       review: head.review,
       checks: head.checks,
-      ...(cfg ? { models: cfg.models } : {}),
+      ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
       includeDiff: showDiff,
     });
     content = (
       <Scroller
         title="done"
         lines={text.split("\n")}
-        footer={`x ${showDiff ? "hide" : "show"} exact changes · ↑↓ scroll · q quit · ${runDir}`}
+        footer={`x ${showDiff ? "hide" : "show"} exact changes · r revisit the gate · ↑↓ scroll · q quit · ${runDir}`}
         onClose={() => exit()}
         onKey={(input) => {
           if (input === "x") {
             setShowDiff((v) => !v);
+            return true;
+          }
+          if (input === "r") {
+            startRevisit();
             return true;
           }
           return false;

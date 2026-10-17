@@ -4,12 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import {
   appendDecisions,
+  listRuns,
   loadState,
   markFailed,
   readDecisions,
+  repoKey,
   resumedModels,
   rotateGate,
   runPaths,
+  runsDir,
   saveState,
 } from "./orchestrator.ts";
 
@@ -211,6 +214,91 @@ describe("rotateGate", () => {
       await expect(stat(paths.gatePrev)).rejects.toThrow();
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("listRuns", () => {
+  const state = (over: Record<string, unknown> = {}) => ({
+    state: "done",
+    createdAt: "2026-10-17T12:00:00.000Z",
+    task: "what is the meaning of life?",
+    mode: "answer",
+    models: pair("groq/openai/gpt-oss-120b", "groq/openai/gpt-oss-20b"),
+    ...over,
+  });
+
+  const writeRun = async (dir: string, name: string, s: object) => {
+    const run = path.join(dir, name);
+    await mkdir(run, { recursive: true });
+    await writeFile(path.join(run, "state.json"), JSON.stringify(s));
+  };
+
+  test("lists every recorded run, newest first, with its state and task", async () => {
+    const xdg = await mkdtemp(path.join(os.tmpdir(), "adv-listruns-"));
+    const saved = process.env["XDG_DATA_HOME"];
+    const repo = path.join(xdg, "repo");
+    await mkdir(repo, { recursive: true });
+    process.env["XDG_DATA_HOME"] = xdg;
+    try {
+      const base = runsDir(repo);
+      await writeRun(base, "2026-10-17T10-00-00", state({ state: "gated", task: "earlier" }));
+      await writeRun(base, "2026-10-17T12-03-36", state());
+      await writeRun(base, "2026-10-17T11-00-00", state({ state: "failed", task: "middle" }));
+
+      const list = await listRuns(repo);
+      expect(list.map((r) => r.name)).toEqual([
+        "2026-10-17T12-03-36",
+        "2026-10-17T11-00-00",
+        "2026-10-17T10-00-00",
+      ]);
+      expect(list[0]).toEqual({
+        name: "2026-10-17T12-03-36",
+        state: "done",
+        task: "what is the meaning of life?",
+        mode: "answer",
+      });
+      expect(list[1]?.state).toBe("failed");
+      expect(list[2]?.state).toBe("gated");
+    } finally {
+      if (saved === undefined) delete process.env["XDG_DATA_HOME"];
+      else process.env["XDG_DATA_HOME"] = saved;
+      await rm(xdg, { recursive: true, force: true });
+    }
+  });
+
+  test("skips a directory whose state does not read", async () => {
+    const xdg = await mkdtemp(path.join(os.tmpdir(), "adv-listruns-"));
+    const saved = process.env["XDG_DATA_HOME"];
+    const repo = path.join(xdg, "repo");
+    await mkdir(repo, { recursive: true });
+    process.env["XDG_DATA_HOME"] = xdg;
+    try {
+      const base = runsDir(repo);
+      await writeRun(base, "2026-10-17T10-00-00", { not: "a state" });
+      await writeRun(base, "2026-10-17T11-00-00", state());
+
+      const list = await listRuns(repo);
+      expect(list.map((r) => r.name)).toEqual(["2026-10-17T11-00-00"]);
+    } finally {
+      if (saved === undefined) delete process.env["XDG_DATA_HOME"];
+      else process.env["XDG_DATA_HOME"] = saved;
+      await rm(xdg, { recursive: true, force: true });
+    }
+  });
+
+  test("an empty store lists nothing", async () => {
+    const xdg = await mkdtemp(path.join(os.tmpdir(), "adv-listruns-"));
+    const saved = process.env["XDG_DATA_HOME"];
+    const repo = path.join(xdg, "repo");
+    await mkdir(repo, { recursive: true });
+    process.env["XDG_DATA_HOME"] = xdg;
+    try {
+      await expect(listRuns(repo)).resolves.toEqual([]);
+    } finally {
+      if (saved === undefined) delete process.env["XDG_DATA_HOME"];
+      else process.env["XDG_DATA_HOME"] = saved;
+      await rm(xdg, { recursive: true, force: true });
     }
   });
 });

@@ -21,7 +21,7 @@ import type { FamilyCheck } from "./config.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
 import type { Audit, AuditRecord } from "./contracts.ts";
 import { collectGate } from "./gate.ts";
-import { describeGateChange, gateSummaryLines, gateWarnings, type GateChange } from "./gate-model.ts";
+import { decisionEntries, describeGateChange, gateSummaryLines, gateWarnings } from "./gate-model.ts";
 import { initRepo } from "./init.ts";
 import {
   appendDecisions,
@@ -396,46 +396,6 @@ async function cmdDecide(flags: Map<string, string | true>, positional: string[]
     );
   }
   console.log(`\n  recorded. next: adv run --resume ${path.basename(paths.dir)}`);
-}
-
-/**
- * What `revise` appends to `decisions.md`: one entry per judgment call whose
- * settled answer moved, each marked so the append-only file reads in order.
- *
- * A call re-opened at the gate gets a `reopened` marker, which `readDecisions`
- * treats as un-settling the id: the old entry stays on disk, but the next
- * draft is no longer told it is closed. A call that was open and stays open
- * appends nothing — "open" was never written to begin with.
- */
-function decisionEntries(
-  claims: Claims,
-  change: GateChange,
-): { id: string; text: string; choice: string; note?: string }[] {
-  const entries: { id: string; text: string; choice: string; note?: string }[] = [];
-  for (const c of change.decisions) {
-    const text = claims.judgment.find((j) => j.id === c.id)?.text ?? "";
-    // "From" is the recorded answer, "(none)" when there was no gate file.
-    // A settled previous answer is the one that needs a supersede marker.
-    const wasSettled = c.from !== "(none)" && c.from !== "open";
-    if (c.to === "open") {
-      if (wasSettled) {
-        entries.push({
-          id: c.id,
-          text,
-          choice: "reopened",
-          note: `(the earlier entry for ${c.id} no longer stands)`,
-        });
-      }
-      continue;
-    }
-    entries.push({
-      id: c.id,
-      text,
-      choice: c.to,
-      ...(wasSettled ? { note: `(supersedes the earlier entry for ${c.id})` } : {}),
-    });
-  }
-  return entries;
 }
 
 /**

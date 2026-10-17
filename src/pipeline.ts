@@ -8,6 +8,7 @@ import {
   createRun,
   loadState,
   markFailed,
+  readJson,
   saveState,
   writeJson,
   type Paths,
@@ -347,6 +348,40 @@ export async function runTail(
 export async function saveGate(paths: Paths, gate: Gate): Promise<void> {
   await writeJson(paths.gate, gate);
   await saveState(paths, { ...(await loadState(paths)), state: "gated" });
+}
+
+/**
+ * The in-memory view of a run, rebuilt from its on-disk artifacts. The TUI
+ * opens past runs through this: the same `Head` a fresh run produces, so the
+ * gate and the result render identically whether the run just happened or
+ * happened yesterday.
+ */
+export function headFromArtifacts(
+  repo: string,
+  paths: Paths,
+  a: Awaited<ReturnType<typeof loadArtifacts>>,
+): Head {
+  const missing = a.claims.verifiable
+    .map((c) => c.id)
+    .filter((id) => !a.review.verdicts.some((v) => v.id === id));
+  return {
+    paths,
+    plan: a.plan,
+    claims: a.claims,
+    review: a.review,
+    missing,
+    evidenceIssues: collectEvidenceIssues(repo, a.review, a.checks),
+    urlRepairs: a.state.urlRepairs ?? [],
+    checks: a.checks,
+  };
+}
+
+/** The tail's artifacts, for a run that already finished: the revised text, its changelog, the diff. */
+export async function loadTail(paths: Paths): Promise<Tail> {
+  const plan = await readFile(paths.planV2, "utf8");
+  const changelog = await readJson<Changelog>(paths.changelog);
+  const patch = await readFile(paths.diff, "utf8");
+  return { plan, changelog, patch, assessment: assessDiff(patch, changelog) };
 }
 
 export async function loadArtifacts(paths: Paths): Promise<{
