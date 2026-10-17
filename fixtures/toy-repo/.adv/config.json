@@ -1,0 +1,15 @@
+{
+  "gate": true,
+  "mode": "plan",
+  "familyCheck": "warn",
+  "models": {
+    "drafter": {
+      "ref": "groq/openai/gpt-oss-120b",
+      "family": "gpt"
+    },
+    "reviewer": {
+      "ref": "groq/openai/gpt-oss-20b",
+      "family": "gpt"
+    }
+  }
+}
