@@ -183,6 +183,22 @@ export function cleanForTerminal(
   return out;
 }
 
+/**
+ * Split a "Sources" / "References" / "Footnotes" heading and everything under it
+ * from the answer body. Only a line that is *just* that word counts; a sentence
+ * that happens to start with "Sources are…" stays in the body.
+ */
+export function splitSources(text: string): { body: string; sources: string | null } {
+  const lines = text.split("\n");
+  const index = lines.findIndex((line) =>
+    /^\s*(sources?|references?|footnotes?)\s*:?\s*$/i.test(line),
+  );
+  if (index === -1) return { body: text, sources: null };
+  const body = lines.slice(0, index).join("\n").trim();
+  const sources = lines.slice(index + 1).join("\n").trim();
+  return { body, sources: sources || null };
+}
+
 export function renderResult(a: {
   plan: string;
   changelog: Changelog;
@@ -206,9 +222,16 @@ export function renderResult(a: {
     (f) => a.gate.findings.find((g) => g.id === f.id)?.disposition === "untriaged",
   );
 
-  // The answer first. Everything else is commentary on it.
+  // The answer first, then its sources in their own section. Everything else is
+  // commentary on the answer.
+  const answer = splitSources(cleanForTerminal(a.plan));
   out.push(`── the answer ${rule(50)}`);
-  out.push(cleanForTerminal(a.plan));
+  out.push(answer.body);
+  if (answer.sources) {
+    out.push("");
+    out.push(`── sources ${rule(49)}`);
+    out.push(answer.sources);
+  }
 
   out.push("");
   out.push(`── what happened ${rule(47)}`);

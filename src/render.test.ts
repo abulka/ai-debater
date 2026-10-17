@@ -1,5 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { cleanForTerminal } from "./render.ts";
+import { cleanForTerminal, splitSources } from "./render.ts";
+
+describe("splitSources", () => {
+  test("separates a Sources heading and its list from the answer", () => {
+    const text = "The answer is X.\n\nSources\n1. https://example.com/a\n2. https://example.com/b";
+    const split = splitSources(text);
+    expect(split.body).toBe("The answer is X.");
+    expect(split.sources).toContain("1. https://example.com/a");
+  });
+
+  test("a sentence beginning 'Sources are…' is not a heading", () => {
+    const text = "Sources are the articles linked above.";
+    expect(splitSources(text)).toEqual({ body: text, sources: null });
+  });
+
+  test("no heading means no split", () => {
+    expect(splitSources("Just an answer.")).toEqual({ body: "Just an answer.", sources: null });
+  });
+});
 
 describe("cleanForTerminal", () => {
   test("moves citation brackets into a numbered source list", () => {
