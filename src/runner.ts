@@ -8,13 +8,18 @@ export interface ModelRef {
   family: string;
 }
 
+/** `plan` works on a repository; `answer` is a general question. */
+export type Mode = "plan" | "answer";
+
 export interface DraftInput {
+  mode: Mode;
   task: string;
   criteria: string;
   decisions: string;
 }
 
 export interface ReviewInput {
+  mode: Mode;
   task: string;
   criteria: string;
   plan: string;
@@ -22,6 +27,7 @@ export interface ReviewInput {
 }
 
 export interface RebutInput {
+  mode: Mode;
   task: string;
   plan: string;
   claims: Claims;

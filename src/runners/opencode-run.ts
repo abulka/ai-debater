@@ -10,8 +10,8 @@ import {
 import {
   changelogPrompt,
   claimsPrompt,
-  draftPlanPrompt,
-  rebutPlanPrompt,
+  draftPrompt,
+  rebutPrompt,
   retryPrompt,
   reviewPrompt,
 } from "../prompts.ts";
@@ -23,7 +23,7 @@ export interface OpencodeRunOptions {
   drafter: ModelRef;
   reviewer: ModelRef;
   /** Agent ids under .opencode/agents/. */
-  agents?: { drafter: string; reviewer: string };
+  agents?: { drafter: string; reviewer: string; writer: string };
   timeoutMs?: number;
   /**
    * Pass --auto so a headless run never blocks on an `ask`. Explicit `deny`
@@ -91,24 +91,30 @@ export type CallHook = (info: {
 
 export class OpencodeRunRunner implements Runner {
   readonly models: { drafter: ModelRef; reviewer: ModelRef };
+  /** Set when the two models share a family. Informational. */
+  readonly familyWarning: string | null;
 
   private readonly repo: string;
-  private readonly agents: { drafter: string; reviewer: string };
+  private readonly agents: { drafter: string; reviewer: string; writer: string };
   private readonly timeoutMs: number;
   private readonly auto: boolean;
   private readonly standalone: boolean;
   private readonly onCall: CallHook | undefined;
 
   constructor(o: OpencodeRunOptions) {
-    if (o.drafter.family === o.reviewer.family) {
-      throw new Error(
-        `drafter and reviewer share family "${o.drafter.family}"; the review would add no ` +
-          `diversity. Set distinct families in .adv/config.json.`,
-      );
-    }
+    // A warning, not a failure: same-family models reduce diversity but are not
+    // wrong, and refusing to run would be worse than saying so.
+    this.familyWarning =
+      o.drafter.family === o.reviewer.family
+        ? `drafter and reviewer share family "${o.drafter.family}" — the review adds less than it could`
+        : null;
     this.repo = o.repo;
-    this.agents = o.agents ?? { drafter: "adv-drafter", reviewer: "adv-reviewer" };
-    this.timeoutMs = o.timeoutMs ?? 600_000;
+    this.agents = o.agents ?? {
+      drafter: "adv-drafter",
+      reviewer: "adv-reviewer",
+      writer: "adv-writer",
+    };
+    this.timeoutMs = o.timeoutMs ?? 180_000;
     this.auto = o.auto ?? true;
     this.standalone = o.standalone ?? true;
     this.onCall = o.onCall;
@@ -121,17 +127,17 @@ export class OpencodeRunRunner implements Runner {
     const model = this.models.drafter.ref;
     const agent = this.agents.drafter;
 
-    const planCall = await this.call({ model, agent, message: draftPlanPrompt(input) });
+    const planCall = await this.call({ model, agent, message: draftPrompt(input) });
     this.report("draft", "plan", model, planCall);
     const plan = splitPlanAndJson(planCall.text).plan.trim();
     if (!plan) throw new Error("the drafter returned an empty plan");
 
     const { value: claims } = await this.validated({
       model,
-      agent,
+      agent: this.agents.writer,
       kind: "draft",
       step: "claims",
-      prompt: claimsPrompt(plan),
+      prompt: claimsPrompt({ mode: input.mode, body: plan }),
       schema: ClaimsSchema,
       extract: extractJson,
     });
@@ -156,7 +162,7 @@ export class OpencodeRunRunner implements Runner {
     const model = this.models.drafter.ref;
     const agent = this.agents.drafter;
 
-    const planCall = await this.call({ model, agent, message: rebutPlanPrompt(input) });
+    const planCall = await this.call({ model, agent, message: rebutPrompt(input) });
     this.report("rebut", "plan", model, planCall);
     const plan = splitPlanAndJson(planCall.text).plan.trim();
     if (!plan) throw new Error("the rebuttal returned an empty plan");
@@ -170,7 +176,7 @@ export class OpencodeRunRunner implements Runner {
 
     const { value: changelog } = await this.validated({
       model,
-      agent,
+      agent: this.agents.writer,
       kind: "rebut",
       step: "changelog",
       prompt: changelogPrompt({ before: input.plan, after: plan, items }),

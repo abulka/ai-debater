@@ -291,7 +291,7 @@ async function checkRoundtrip() {
 
   info(`drafter ${drafter.ref} [${drafter.family}] -> reviewer ${reviewer.ref} [${reviewer.family}]`);
 
-  const draft = await runner.draft({ task: TASK, criteria, decisions });
+  const draft = await runner.draft({ mode: "plan", task: TASK, criteria, decisions });
   ok(
     `draft: ${draft.plan.split("\n").length} plan lines, ` +
       `${draft.claims.verifiable.length} verifiable, ${draft.claims.judgment.length} judgment`,
@@ -300,6 +300,7 @@ async function checkRoundtrip() {
   else fail("drafter read no files — the run's location is probably not the toy repo");
 
   const review = await runner.review({
+    mode: "plan",
     task: TASK,
     criteria,
     plan: draft.plan,

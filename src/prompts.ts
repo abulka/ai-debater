@@ -1,24 +1,52 @@
-import type { Claims } from "./contracts.ts";
-import type { DraftInput, RebutInput, ReviewInput } from "./runner.ts";
+import type { DraftInput, Mode, RebutInput, ReviewInput } from "./runner.ts";
 
 /* ------------------------------------------------------------------ *
  * Prompts.
  *
- * Each call asks for ONE thing: either prose, or a single JSON block.
- * Mixing them in one reply is where models get flaky — a drafter will
- * happily write a good plan and forget the JSON block entirely.
+ * Two modes:
+ *   "plan"   — an implementation plan for a repository (reads files).
+ *   "answer" — a general question. No repo assumed; facts are checked
+ *              against URLs, and the reviewer may search the web.
+ *
+ * Each call asks for ONE thing: prose, or a single JSON block. Mixing them
+ * is where models get flaky — a drafter will write a good plan and forget
+ * the JSON block entirely.
  * ------------------------------------------------------------------ */
 
 const fmt = (v: unknown) => JSON.stringify(v, null, 2);
 
-export const EVIDENCE_HINT =
-  "evidence must be `path:line` (e.g. src/http.ts:88) or a URL — command output is not " +
-  "acceptable evidence. If a claim can only be settled by running a command, return " +
-  '"unverifiable".';
+const EVIDENCE =
+  "Evidence is a URL, or a file path optionally with a line (e.g. src/http.ts:88). " +
+  "It is never a command or its output: nothing is executed, so command output cannot be checked.";
 
-/* --- draft, part 1: the plan -------------------------------------- */
+const CLAIM_SHAPE = `{"verifiable":[{"id":"V1","text":"..."}],"judgment":[{"id":"J1","text":"...","options":["...","..."]}]}`;
 
-export function draftPlanPrompt(i: DraftInput): string {
+const claimsInstruction = (subject: string) => `Below is ${subject}. List what it claims.
+
+Produce exactly two categories:
+- "verifiable": factual assertions that can be checked against a URL, or against
+  a file in the working directory.
+- "judgment": choices where reasonable alternatives exist. List the options, at
+  least two. Do NOT choose between them.
+
+Reply with ONLY a fenced \`\`\`json block, nothing before or after it:
+
+${CLAIM_SHAPE}`;
+
+/* --- draft -------------------------------------------------------- */
+
+export function draftPrompt(i: DraftInput): string {
+  return i.mode === "answer" ? answerPrompt(i) : planPrompt(i);
+}
+
+export function claimsPrompt(i: { mode: Mode; body: string }): string {
+  return `${claimsInstruction(i.mode === "answer" ? "an answer" : "an implementation plan")}
+
+${i.mode === "answer" ? "ANSWER" : "PLAN"}
+${i.body}`;
+}
+
+function planPrompt(i: DraftInput): string {
   return `You are drafting an implementation plan for a task in the repository you are in.
 
 RULES
@@ -43,48 +71,71 @@ Write the plan as Markdown. A separate step will list the claims it makes — do
 include a JSON block.`;
 }
 
-/* --- draft, part 2: the claims ------------------------------------ */
+function answerPrompt(i: DraftInput): string {
+  return `Answer the question below, thoroughly and concretely.
 
-export function claimsPrompt(plan: string): string {
-  return `Below is an implementation plan. List what it claims.
+RULES
+- Every factual assertion must be checkable. Cite a URL for it where you can, and
+  use your tools to check a source rather than relying on memory for anything
+  specific (versions, numbers, dates, API details).
+- Never invent a source. If you are unsure, say so plainly rather than asserting.
+- Do not choose between options where reasonable people could differ. Name the
+  decision and the options, and leave it open for the human.
+- The criteria below are fixed — they describe what a good answer looks like for
+  this person. Do not invent criteria.
 
-Produce exactly two categories:
-- "verifiable": statements about code, APIs, library behaviour, or math that can
-  be checked by reading a file or a URL.
-- "judgment": decisions where reasonable options exist. List the options. Do NOT
-  choose between them.
+CRITERIA
+${i.criteria}
 
-Reply with ONLY a fenced \`\`\`json block, nothing before or after it:
+SETTLED DECISIONS
+${i.decisions || "(none yet)"}
 
-{"verifiable":[{"id":"V1","text":"..."}],"judgment":[{"id":"J1","text":"...","options":["...","..."]}]}
+QUESTION
+${i.task}
 
-PLAN
-${plan}`;
+Write the answer as Markdown. A separate step will list the claims it makes — do
+not include a JSON block.`;
 }
 
 /* --- review ------------------------------------------------------- */
 
 export function reviewPrompt(i: ReviewInput): string {
-  return `You are an adversarial reviewer of an implementation plan for the repository you are in.
+  const subject = i.mode === "answer" ? "an answer" : "an implementation plan";
+  const verifyRule =
+    i.mode === "answer"
+      ? `- For every factual claim, give exactly one verdict:
+  - "confirmed": you checked the cited URL, or otherwise verified the fact. Give "evidence" (a URL).
+  - "refuted":   you checked and it is wrong. Give "evidence" (a URL) and a "note".
+  - "unverifiable": you could not check it. Give a short "note" saying why, and no evidence.
+- Use websearch and webfetch to check claims. Do not confirm a claim you have not checked.
+- Watch for claims that are true but misleading, stale numbers, and unsupported
+  certainty. These are the common failures in a confident answer.`
+      : `- For every verifiable claim, give exactly one verdict:
+  - "confirmed": you inspected the evidence and it supports the claim. Give "evidence".
+  - "refuted":   you inspected the evidence and it contradicts the claim. Give "evidence".
+  - "unverifiable": it cannot be settled by reading a file or a URL. Give a short "note" saying why, and no evidence.
+- ${EVIDENCE}`;
+
+  const taskBlock = i.mode === "answer" ? "QUESTION" : "TASK";
+
+  return `You are an adversarial reviewer of ${subject}${i.mode === "plan" ? " for the repository you are in" : ""}.
 
 RULES
-- Verify. Do not rewrite. NEVER propose an alternative plan.
-- For every verifiable claim, give exactly one verdict:
-  - "confirmed": you inspected the evidence and it supports the claim.
-  - "refuted":   you inspected the evidence and it contradicts the claim.
-  - "unverifiable": it cannot be settled by reading a file or a URL. Do not guess.
-- ${EVIDENCE_HINT}
+- Verify. Do not rewrite. NEVER propose an alternative answer${i.mode === "plan" ? " or plan" : ""}.
+${verifyRule}
 - For every judgment call, list trade-offs for each option against the criteria.
   Do not recommend one, and do not resolve it.
-- You may add findings the drafter did not list. Give them ids E1, E2, ...
+- You may add problems the author did not list. Give them ids E1, E2, ...
+- A judgment call must have at least TWO real options. If the text already picked
+  one, that is not a judgment call — say so instead.
 
 CRITERIA
 ${i.criteria}
 
-TASK
+${taskBlock}
 ${i.task}
 
-PLAN UNDER REVIEW
+${i.mode === "answer" ? "ANSWER UNDER REVIEW" : "PLAN UNDER REVIEW"}
 ${i.plan}
 
 CLAIMS TO VERIFY
@@ -92,16 +143,18 @@ ${fmt(i.claims)}
 
 Reply with ONLY a single fenced \`\`\`json block, nothing else:
 
-{"verdicts":[{"id":"V1","verdict":"confirmed","evidence":"src/x.ts:42"}],
+{"verdicts":[{"id":"V1","verdict":"confirmed","evidence":"https://…"},
+             {"id":"V2","verdict":"unverifiable","note":"needs a benchmark I cannot run"}],
  "tradeoffs":[{"id":"J1","per_option":[{"option":"...","against":["..."]}]}],
- "extra_findings":[{"id":"E1","text":"...","kind":"verifiable","evidence":"src/x.ts:42"}]}`;
+ "extra_findings":[{"id":"E1","kind":"verifiable","text":"...","evidence":"https://…"}]}`;
 }
 
-/* --- rebuttal, part 1: the revised plan --------------------------- */
+/* --- rebuttal ----------------------------------------------------- */
 
-export function rebutPlanPrompt(i: RebutInput): string {
-  return `You drafted the plan below. It has been reviewed and a human has decided.
-Rewrite the plan so that it applies exactly the authorised items and changes
+export function rebutPrompt(i: RebutInput): string {
+  const subject = i.mode === "answer" ? "answer" : "plan";
+  return `You wrote the ${subject} below. It has been reviewed and a human has decided.
+Rewrite the ${subject} so that it applies exactly the authorised items and changes
 NOTHING else.
 
 AUTHORISED ITEMS
@@ -117,23 +170,21 @@ ${fmt(i.decisions)}
 
 RULES
 - Do not touch anything not listed.
-- Do not reopen settled decisions. ${EVIDENCE_HINT}
+- Do not reopen settled decisions. ${EVIDENCE}
 
-CURRENT PLAN
+CURRENT ${subject.toUpperCase()}
 ${i.plan}
 
-Return the full revised plan as Markdown. A separate step will record the
+Return the full revised ${subject} as Markdown. A separate step will record the
 changelog — do not include a JSON block.`;
 }
-
-/* --- rebuttal, part 2: the changelog ------------------------------ */
 
 export function changelogPrompt(a: {
   before: string;
   after: string;
   items: { id: string; note: string }[];
 }): string {
-  return `A plan was revised. Give the changelog: one entry per authorised item.
+  return `A document was revised. Give the changelog: one entry per authorised item.
 
 Dispositions: "fixed" or "rebutted" for a refuted claim, "applied" for an accepted
 finding or a human decision, "no-op" if it required no change.
@@ -144,13 +195,13 @@ ${fmt(a.items)}
 Reply with ONLY a fenced \`\`\`json block, nothing else:
 
 {"changes":[{"item":"V2","disposition":"fixed","summary":"..."},
-            {"item":"V4","disposition":"rebutted","summary":"...","evidence":"src/x.ts:88"},
+            {"item":"V4","disposition":"rebutted","summary":"...","evidence":"https://…"},
             {"item":"J1","disposition":"applied","summary":"..."}]}
 
-PLAN BEFORE
+BEFORE
 ${a.before}
 
-PLAN AFTER
+AFTER
 ${a.after}`;
 }
 
@@ -163,5 +214,3 @@ ${error}
 
 Reply again with ONLY the corrected fenced \`\`\`json block, and nothing else.`;
 }
-
-export type { Claims };

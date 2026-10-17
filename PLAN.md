@@ -11,6 +11,22 @@ the implementation plan. Where the two disagree, the locked decisions below win.
 
 ---
 
+## 0. Status
+
+| Milestone | State |
+| --- | --- |
+| M0 feasibility spike | **done** — see `spike/README.md` |
+| M1 core loop | **done** — `adv init`, `run`, `decide`, `run --resume` |
+| TUI | **done early** (was M4) — bare `adv`; settings and model picker on Ctrl+P |
+| M2 evidence execution | **next** |
+| M3 real trial | not started |
+| M4 revise | not started |
+
+Working rules for anyone picking this up — especially "do not run a full
+workflow without asking first" — are in `AGENTS.md`.
+
+---
+
 ## 1. What it is
 
 A single command that behaves like today's one-prompt flow, but behind it:
@@ -177,17 +193,17 @@ a prior run would resume nothing.
 
 ### Who writes the artifacts
 
-**Default: the orchestrator.** Agents return `claims` / `review` / `changelog`
-as JSON in their final message; the orchestrator parses, validates, and writes
-every file. This keeps both agents fully read-only and removes any chance of the
-reviewer overwriting `plan.v1` or `claims`.
+**Settled in M1: the orchestrator writes every artifact.** Agents return
+`claims` / `review` / `changelog` as JSON in their final message; the
+orchestrator parses, validates, and writes every file. Both agents are therefore
+fully read-only, and there is no path by which the reviewer could overwrite
+`plan.v1` or `claims`. The M0 open question about agents writing their own files
+is closed — the final-message path is what ran, repeatedly.
 
-**Fallback (if M0 shows some models write files more reliably than they emit
-clean JSON):** agents may write, but only to *distinct* pre-declared paths in
-the run dir (`claims.json`, `review.json`, `changelog.json`) — never to
-`plan.v1.md` — with `edit` denied everywhere else and no `shell`.
-
-M0 tests both paths against both intended models.
+Each agent call asks for **one** thing: prose, or a single JSON block. The draft
+is two calls (plan, then claims); the rebuttal is two calls (revised plan, then
+changelog). Asking for prose and JSON in one reply is where models get flaky —
+in testing a drafter wrote a good plan and omitted the claims block twice.
 
 ---
 
@@ -329,14 +345,23 @@ provider ID and would make a provider-based check useless.
 ```
 adv/                            # new project in this directory
   package.json                  # bun
+  AGENTS.md                     # working rules for whoever (or whatever) is here
+  NEXT-SESSION.md               # handover prompt
   src/
-    cli.ts                      # arg parsing + commands
-    orchestrator.ts             # state machine, run-dir I/O
-    runner.ts                   # Runner interface + selection
-    runners/opencode-run.ts     # built in M0
+    cli.ts                      # arg parsing + commands, incl. the TUI entry
+    tui.tsx                     # Ink/React TUI: setup, start, settings, pick,
+                                #   gate, result
+    pipeline.ts                 # the shared sequence; both front ends drive it
+    runner.ts                   # Runner interface + types
+    runners/opencode-run.ts     # spawns `opencode run`, validate-with-retry
     contracts.ts                # zod schemas
-    gate.ts                     # interactive prompts -> decisions.md + gate.json
-    render.ts                   # plan + changelog + diff + appendix
+    prompts.ts                  # plan/answer prompts, one deliverable per call
+    orchestrator.ts             # run dirs, state machine, decisions.md
+    gate.ts                     # the CLI gate (interactive or piped)
+    diff.ts                     # unified diff + changelog cross-check
+    render.ts                   # plan + changelog + diff + open decisions
+    models.ts                   # model list + family heuristic for the picker
+    init.ts                     # `adv init` scaffolding
   .adv/                         # created by `adv init` in the target repo
     criteria.md
     decisions.md
@@ -353,8 +378,11 @@ adv/                            # new project in this directory
       state.json
       audit.json                # M2: evidence execution results
   templates/agents/             # copied into the target repo by `adv init`
-    adv-drafter.md
-    adv-reviewer.md
+    adv-drafter.md              # reads; plans and answers
+    adv-reviewer.md             # reads; verifies
+    adv-writer.md               # no tools; claims and changelog JSON only
+  fixtures/toy-repo/            # the test problem
+  spike/                        # M0
 ```
 
 ---
@@ -372,6 +400,27 @@ adv/                            # new project in this directory
 `--no-gate`: run through rebuttal without stopping. Judgment calls are not
 resolved by any model; they appear as open items in the output and the plan
 presents options rather than choosing.
+
+### The TUI
+
+Bare `adv` opens a TUI (Ink + React) built on the same `pipeline.ts` the CLI
+uses, so there is one pipeline and two front ends. Nothing in the TUI decides
+anything: it is simply the easiest way to answer the same gate.
+
+1. **Start** — one text box, for the task. Models and criteria come from `.adv/`
+   and are *shown, not asked for*, so there is nothing to remember and no run
+   path to type.
+2. **Working** — each pipeline step with its time and cost, streamed from the
+   `onStep` hook.
+3. **Gate** — arrow keys over the options, `l` to leave a call open, findings as
+   accept/dismiss. Refuted claims are listed first, since they go to the
+   rebuttal regardless. Warnings for missing verdicts and for evidence citing a
+   file that does not exist are shown at the top.
+4. **Result** — the same rendering as the CLI, scrollable, with the run
+   directory in the footer.
+
+The CLI commands stay for scripting and for the M3 eval. On a non-TTY, bare
+`adv` refuses with a pointer to `adv run` rather than hanging.
 
 ---
 
@@ -395,10 +444,20 @@ presents options rather than choosing.
 *Exit:* one drafter and one reviewer on different families complete a round trip
 on a toy prompt, with schema-valid artifacts and enforced permissions.
 
-**M1 — core loop.** **Status: built; runs end to end on the toy repo.**
-`adv init`, `adv run`, `adv decide`, `adv run --resume`; schema validation with
-retry; the changelog + diff check; artifacts and `state.json`; plan + appendix
-rendering.
+**M1 — core loop.** **Status: done.** `adv init`, `adv run`, `adv decide`,
+`adv run --resume`; schema validation with retry; the changelog + diff check;
+artifacts and `state.json`; plan + appendix rendering.
+
+Two things landed here that weren't in the original M1:
+
+- **The TUI**, pulled forward from M4 because the CLI was too hard to use in
+  practice. Bare `adv` opens it; Ctrl+P opens settings, where the drafter and
+  reviewer are chosen from a searchable list of every model opencode knows
+  about. Both front ends drive the same `pipeline.ts`.
+- **A third agent, `adv-writer`**, with every tool denied. The claims and
+  changelog steps are pure text→JSON transforms and need no tools; a model that
+  reaches for one there is hallucinating (gpt-oss called a "search" tool that
+  does not exist and the provider rejected the request).
 
 One design change from the earlier draft: **each agent call asks for one thing.**
 The draft is two calls — the plan as prose, then the claims as a JSON-only reply.
@@ -416,8 +475,10 @@ is the plan text.
 record outcome and cost.
 
 **M4 — revise.** Adjust prompts, allowlists, and the claim format from the
-trial; decide whether a second review pass, `adv revise`, the slash-command
-wrapper, or the UI is worth adding. Build the UI on the `render`/library seam.
+trial; decide whether a second review pass, `adv revise`, or a slash-command
+wrapper is worth adding. The **TUI landed early**, before M2, because the CLI was
+too hard to use in practice — that reordering was deliberate, and it is built on
+the `render`/library seam.
 
 ---
 
@@ -460,9 +521,10 @@ separates "diversity" from "the whole loop".
 | Reviewer bounded by drafter's claims | `extra_findings` channel, human-triaged at the gate |
 | Human decisions never reach the plan | Rebuttal scope includes decisions; changelog proves application |
 | Drafter over-edits during rebuttal | Rebut only authorized items; M1 diff check flags the rest |
-| Gateway collapses model identity | Explicit `family` field, not provider-based |
+| Gateway collapses model identity | Explicit `family` field, not provider-based — now a **warning**, not a block, since the user picks models in the TUI |
 | Overhead exceeds benefit on small tasks | Don't run it on small tasks; the §12 eval decides |
 | Executing model-chosen commands (M2) | Approval prompts; narrow allowlist |
+| **A model is listed but dead, or slow enough to stall a run** | Probe once before wiring it in; use the groq pair for a fast loop; per-model-call timeout of 180s |
 
 ---
 
@@ -473,6 +535,8 @@ separates "diversity" from "the whole loop".
 - Is one rebuttal round enough, or is a correctness-critical adaptive second
   pass needed?
 - Does resolving judgment calls after a `--no-gate` run justify `adv revise`?
+- Where does the OpenCode Go workspace privacy opt-in for contributor models
+  actually live? It is not the desktop model picker and is not documented.
 
 ---
 

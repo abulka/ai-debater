@@ -9,14 +9,19 @@ import { z } from "zod";
  * ------------------------------------------------------------------ */
 
 const URL_RE = /^https?:\/\/\S+$/;
-const FILE_LINE_RE = /^[^\s:]+:\d+(?:-\d+)?$/;
+// A path, optionally with a line or line range. It must look like a path — it
+// has to contain a separator or a dot — which is what stops invented command
+// output ("npm test fails") from passing as evidence. The orchestrator also
+// checks that the file exists; see pipeline.ts.
+const PATH_RE = /^\S*[/.][^\n]*?(?::\d+(?:-\d+)?)?$/;
 
 export const EVIDENCE_RULE =
-  "evidence must be `path:line` (e.g. src/http.ts:88) or a URL; command output is not accepted in v1";
+  "evidence must be a file path (e.g. src/http.ts:88) or a URL — not command output, " +
+  "which cannot be checked in v1";
 
 export const Evidence = z
   .string()
-  .refine((v) => URL_RE.test(v) || FILE_LINE_RE.test(v), { message: EVIDENCE_RULE });
+  .refine((v) => URL_RE.test(v) || PATH_RE.test(v), { message: EVIDENCE_RULE });
 
 /** Claim ids: V1.. verifiable, J1.. judgment, E1.. extra findings. */
 const Id = z.string().regex(/^[VJE]\d+$/, "id must look like V1, J2, or E3");
@@ -27,19 +32,40 @@ export const Claims = z.object({
     z.object({
       id: Id,
       text: z.string().min(1),
-      options: z.array(z.string().min(1)).min(1),
+      options: z
+        .array(z.string().min(1))
+        .min(
+          2,
+          "a judgment call needs at least two real options — if the plan already " +
+            "chose one and lists only that, it is not a judgment call",
+        ),
     }),
   ),
 });
 
+/**
+ * A verdict carries its own proof: `confirmed` and `refuted` must cite
+ * evidence, `unverifiable` must say why. Requiring evidence of all three is
+ * what pushed models to invent a `file:line` for claims they could not check.
+ */
+const Verdict = z.discriminatedUnion("verdict", [
+  z.object({
+    id: Id,
+    verdict: z.literal("confirmed"),
+    evidence: Evidence,
+    note: z.string().optional(),
+  }),
+  z.object({
+    id: Id,
+    verdict: z.literal("refuted"),
+    evidence: Evidence,
+    note: z.string().optional(),
+  }),
+  z.object({ id: Id, verdict: z.literal("unverifiable"), note: z.string().min(1) }),
+]);
+
 export const Review = z.object({
-  verdicts: z.array(
-    z.object({
-      id: Id,
-      verdict: z.enum(["confirmed", "refuted", "unverifiable"]),
-      evidence: Evidence,
-    }),
-  ),
+  verdicts: z.array(Verdict),
   tradeoffs: z.array(
     z.object({
       id: Id,
@@ -53,7 +79,8 @@ export const Review = z.object({
       id: Id,
       text: z.string().min(1),
       kind: z.enum(["verifiable", "judgment"]),
-      evidence: Evidence,
+      evidence: Evidence.optional(),
+      note: z.string().optional(),
     }),
   ),
 });
@@ -71,7 +98,12 @@ export const Changelog = z.object({
 
 export const Gate = z.object({
   decisions: z.array(z.object({ id: Id, choice: z.string().min(1) })),
-  findings: z.array(z.object({ id: Id, disposition: z.enum(["accepted", "dismissed"]) })),
+  findings: z.array(
+    z.object({
+      id: Id,
+      disposition: z.enum(["accepted", "dismissed", "untriaged"]),
+    }),
+  ),
 });
 
 export const ModelRef = z.object({
@@ -94,6 +126,7 @@ export const RunState = z.object({
   ]),
   createdAt: z.string(),
   task: z.string(),
+  mode: z.enum(["plan", "answer"]),
   models: z.object({ drafter: ModelRef, reviewer: ModelRef }),
 });
 

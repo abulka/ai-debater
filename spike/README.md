@@ -103,8 +103,9 @@ Round trip on the toy repo, `opencode-go/claude-haiku-5-5` (drafter) →
 
 ## Still open
 
-- [ ] Which artifact path is reliable: orchestrator-parsed final-message JSON, or
-      the agent writing files?
+- [x] Which artifact path is reliable: orchestrator-parsed final-message JSON, or
+      the agent writing files? — **final-message JSON.** Agents write nothing;
+      the orchestrator owns every artifact.
 - [ ] Precedence when both `--model` and the agent's frontmatter `model:` are set.
 - [ ] Is the git-only shell allowlist too narrow? The drafter reported "shell was
       denied", suggesting it tried something outside the allowlist.

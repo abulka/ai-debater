@@ -1,4 +1,4 @@
-import type { Changelog, Claims, Gate } from "./contracts.ts";
+import type { Changelog, Claims, Gate, Review } from "./contracts.ts";
 import type { DiffAssessment } from "./diff.ts";
 
 const rule = (n: number) => "─".repeat(n);
@@ -10,6 +10,7 @@ export function renderResult(a: {
   assessment: DiffAssessment;
   gate: Gate;
   claims: Claims;
+  review: Review;
 }): string {
   const out: string[] = [];
 
@@ -26,13 +27,27 @@ export function renderResult(a: {
     }
   }
   out.push("");
-  out.push(
-    `  diff: ${a.assessment.hunks} hunk(s), ${a.assessment.claimedChanges} claimed change(s)`,
-  );
+  out.push(`  diff: ${a.assessment.hunks} hunk(s), ${a.assessment.claimedChanges} claimed change(s)`);
   if (a.assessment.outOfScope) {
     out.push("  !! the plan changed but the changelog claims nothing — possible out-of-scope edit");
   } else if (a.assessment.unexplained > 0) {
     out.push(`  !  ${a.assessment.unexplained} hunk(s) not accounted for in the changelog`);
+  }
+  if (a.patch) {
+    out.push("");
+    out.push(a.patch.split("\n").map((line) => `  ${line}`).join("\n"));
+  }
+
+  const untriaged = a.review.extra_findings.filter(
+    (f) => a.gate.findings.find((g) => g.id === f.id)?.disposition === "untriaged",
+  );
+  if (untriaged.length) {
+    out.push("");
+    out.push(`── findings, not triaged ${rule(33)}`);
+    for (const f of untriaged) {
+      out.push(`  ${f.id}  ${f.text}`);
+      if (f.evidence) out.push(`      [${f.evidence}]`);
+    }
   }
 
   out.push("");

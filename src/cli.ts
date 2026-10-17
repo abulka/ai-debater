@@ -2,63 +2,40 @@
 /**
  * adv — adversarial two-model plan review.
  *
+ *   adv                        open the TUI
  *   adv init [--dir <repo>]
  *   adv run "<task>" [--drafter <model>] [--reviewer <model>]
  *                    [--drafter-family <f>] [--reviewer-family <f>]
  *                    [--no-gate] [--dir <repo>]
  *   adv run --resume [<run>]
- *   adv decide <run>
+ *   adv decide [<run>]
  *   adv status [<run>]
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config.ts";
-import { assessDiff, unifiedDiff } from "./diff.ts";
+import type { Claims, Gate, Review } from "./contracts.ts";
 import { collectGate } from "./gate.ts";
+import { initRepo } from "./init.ts";
 import {
   appendDecisions,
-  createRun,
   latestRun,
   loadState,
   readCriteria,
   readDecisions,
-  readJson,
   runPaths,
   type Paths,
   saveState,
-  writeJson,
 } from "./orchestrator.ts";
+import { loadArtifacts, runHead, runTail, saveGate, type Models } from "./pipeline.ts";
 import { renderResult } from "./render.ts";
-import { OpencodeRunRunner } from "./runners/opencode-run.ts";
-import type { Claims, Gate, Review } from "./contracts.ts";
-import type { ModelRef } from "./runner.ts";
+import type { CallHook } from "./runners/opencode-run.ts";
+import type { Mode, ModelRef } from "./runner.ts";
 
-const TEMPLATES = path.join(import.meta.dir, "..", "templates", "agents");
+const BOOLEAN_FLAGS = new Set(["no-gate", "general", "help"]);
 
-const CRITERIA_TEMPLATE = `# Criteria
-
-Fixed. Models may not add to or change this list.
-
-- Minimal dependencies: prefer the standard library.
-- Solo-maintainable: nothing that needs its own on-call.
-- Fast to ship: working today beats elegant next month.
-`;
-
-const DECISIONS_TEMPLATE = `# Settled decisions
-
-Append-only. Only the human adds entries here. Models treat every entry as a
-closed question.
-`;
-
-/* ------------------------------------------------------------------ */
-
-const BOOLEAN_FLAGS = new Set(["no-gate", "help"]);
-
-function parse(args: string[]): {
-  flags: Map<string, string | true>;
-  positional: string[];
-} {
+function parse(args: string[]): { flags: Map<string, string | true>; positional: string[] } {
   const flags = new Map<string, string | true>();
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -91,46 +68,67 @@ function repoOf(flags: Map<string, string | true>): string {
 const resolveRun = (repo: string, dirArg: string) =>
   runPaths(repo, path.isAbsolute(dirArg) ? dirArg : path.resolve(repo, dirArg));
 
+/** Per-step timing and cost, so a run is legible while it happens. */
+const progress: CallHook = ({ kind, step, retry, ms, usage }) => {
+  console.log(
+    `  · ${kind}/${step}${retry ? " (retry)" : ""}  ${(ms / 1000).toFixed(1)}s  $${usage.cost.toFixed(6)}`,
+  );
+};
+
+/**
+ * A model override must name its family. Defaulting to the provider ID is
+ * exactly wrong when both models sit behind one gateway: the diversity check
+ * would compare "opencode-go" with "opencode-go" and pass regardless.
+ */
+function requireFamily(which: "drafter" | "reviewer", flags: Map<string, string | true>) {
+  if (flags.has(which) && !flags.has(`${which}-family`)) {
+    throw new Error(
+      `--${which} needs --${which}-family. The provider is not the family: a gateway ` +
+        `serves several families under one provider, which is the case the check exists for.`,
+    );
+  }
+}
+
 function modelFrom(
   ref: string | true | undefined,
   family: string | true | undefined,
   fallback: ModelRef,
 ): ModelRef {
   if (typeof ref !== "string") return fallback;
-  return {
-    ref,
-    family: typeof family === "string" ? family : (ref.split("/")[0] ?? ref),
-  };
-}
-
-async function writeIfAbsent(file: string, content: string) {
-  try {
-    await writeFile(file, content, { flag: "wx" });
-  } catch {
-    // already exists; leave it alone
-  }
+  return { ref, family: typeof family === "string" ? family : (ref.split("/")[0] ?? ref) };
 }
 
 function printGateSummary(claims: Claims, review: Review) {
-  const refuted = review.verdicts.filter((v) => v.verdict === "refuted");
-  const unverifiable = review.verdicts.filter((v) => v.verdict === "unverifiable");
+  const claimText = (id: string) => claims.verifiable.find((c) => c.id === id)?.text ?? "";
 
+  const refuted = review.verdicts.filter((v) => v.verdict === "refuted");
   if (refuted.length) {
     console.log(`\n  refuted (${refuted.length}):`);
     for (const v of refuted) {
-      const text = claims.verifiable.find((c) => c.id === v.id)?.text ?? "";
-      console.log(`    ${v.id}  ${text}\n        [${v.evidence}]`);
+      if (v.verdict !== "refuted") continue;
+      console.log(`    ${v.id}  ${claimText(v.id)}`);
+      console.log(`        [${v.evidence}]${v.note ? ` — ${v.note}` : ""}`);
     }
   }
+
+  const unverifiable = review.verdicts.filter((v) => v.verdict === "unverifiable");
   if (unverifiable.length) {
-    console.log(`\n  unverifiable: ${unverifiable.map((v) => v.id).join(", ")}`);
+    console.log(`\n  unverifiable (${unverifiable.length}):`);
+    for (const v of unverifiable) {
+      if (v.verdict !== "unverifiable") continue;
+      console.log(`    ${v.id}  ${claimText(v.id)}\n        ${v.note}`);
+    }
   }
+
   if (review.extra_findings.length) {
     console.log(`\n  findings (${review.extra_findings.length}):`);
     for (const f of review.extra_findings) {
-      console.log(`    ${f.id}  ${f.text}\n        [${f.evidence}]`);
+      console.log(`    ${f.id}  ${f.text}`);
+      if (f.evidence) console.log(`        [${f.evidence}]`);
+      else if (f.note) console.log(`        ${f.note}`);
     }
   }
+
   console.log(`\n  judgment calls needing you: ${claims.judgment.length}`);
 }
 
@@ -138,218 +136,156 @@ function printGateSummary(claims: Claims, review: Review) {
 
 async function cmdInit(flags: Map<string, string | true>) {
   const repo = repoOf(flags);
-  await mkdir(path.join(repo, ".adv"), { recursive: true });
-  await mkdir(path.join(repo, ".opencode", "agents"), { recursive: true });
-
-  await writeIfAbsent(path.join(repo, ".adv", "criteria.md"), CRITERIA_TEMPLATE);
-  await writeIfAbsent(path.join(repo, ".adv", "decisions.md"), DECISIONS_TEMPLATE);
-  await writeIfAbsent(
-    path.join(repo, ".adv", "config.json"),
-    `${JSON.stringify(
-      {
-        models: {
-          drafter: { ref: "anthropic/claude-sonnet-5-5", family: "anthropic" },
-          reviewer: { ref: "openai/gpt-5.2", family: "openai" },
-        },
-        gate: true,
-      },
-      null,
-      2,
-    )}\n`,
-  );
-
-  for (const name of ["adv-drafter.md", "adv-reviewer.md"]) {
-    await writeFile(
-      path.join(repo, ".opencode", "agents", name),
-      await readFile(path.join(TEMPLATES, name), "utf8"),
-    );
-  }
-
+  const { created, kept } = await initRepo(repo);
   console.log(`initialised ${repo}`);
-  console.log(`  .adv/criteria.md    — your judgment criteria (edit this)`);
-  console.log(`  .adv/decisions.md   — settled decisions, append-only`);
-  console.log(`  .adv/config.json    — models`);
-  console.log(`  .opencode/agents/   — the drafter and reviewer`);
+  for (const f of created) console.log(`  created  ${f}`);
+  for (const f of kept) console.log(`  kept     ${f}  (already existed)`);
+  console.log(`  edit .adv/criteria.md with your judgment criteria`);
 }
 
-async function finish(
+async function finalize(
   repo: string,
-  p: Paths,
+  paths: Paths,
   claims: Claims,
   review: Review,
   gate: Gate,
-  models: { drafter: ModelRef; reviewer: ModelRef },
+  models: Models,
+  mode: Mode,
 ) {
-  const state = await loadState(p);
-  const planV1 = await readFile(p.planV1, "utf8");
-  const runner = new OpencodeRunRunner({ repo, ...models });
-
-  const refuted = review.verdicts
-    .filter((v) => v.verdict === "refuted")
-    .map((v) => ({
-      id: v.id,
-      text: claims.verifiable.find((c) => c.id === v.id)?.text ?? "",
-      evidence: v.evidence,
-    }));
-
-  const acceptedIds = gate.findings
-    .filter((f) => f.disposition === "accepted")
-    .map((f) => f.id);
-  const accepted = review.extra_findings
-    .filter((f) => acceptedIds.includes(f.id))
-    .map((f) => ({ id: f.id, text: f.text, evidence: f.evidence }));
-
-  const decisions = gate.decisions
-    .filter((d) => d.choice !== "open")
-    .map((d) => ({
-      id: d.id,
-      text: claims.judgment.find((j) => j.id === d.id)?.text ?? "",
-      choice: d.choice,
-    }));
-
-  process.stdout.write("  rebutting…… ");
-  const rebut = await runner.rebut({
-    task: state.task,
-    plan: planV1,
-    claims,
-    refuted,
-    accepted,
-    decisions,
-  });
-  await writeFile(p.planV2, `${rebut.plan}\n`);
-  await writeJson(p.changelog, rebut.changelog);
-  console.log("ok");
-
-  const patch = await unifiedDiff(p.planV1, p.planV2);
-  await writeFile(p.diff, patch ? `${patch}\n` : "");
-  const assessment = assessDiff(patch, rebut.changelog);
-
-  console.log(`\n${renderResult({ plan: rebut.plan, changelog: rebut.changelog, patch, assessment, gate, claims })}`);
-
-  await saveState(p, { ...state, state: "done" });
-  console.log(`\nartifacts: ${path.relative(repo, p.dir)}`);
+  const state = await loadState(paths);
+  const tail = await runTail(repo, paths, state, claims, review, gate, models, mode, progress);
+  console.log(
+    `\n${renderResult({
+      plan: tail.plan,
+      changelog: tail.changelog,
+      patch: tail.patch,
+      assessment: tail.assessment,
+      gate,
+      claims,
+      review,
+    })}`,
+  );
+  console.log(`\nartifacts: ${path.relative(repo, paths.dir)}`);
 }
 
 async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
   const repo = repoOf(flags);
   const cfg = await loadConfig(repo);
-  const models = {
+  requireFamily("drafter", flags);
+  requireFamily("reviewer", flags);
+  const models: Models = {
     drafter: modelFrom(flags.get("drafter"), flags.get("drafter-family"), cfg.models.drafter),
     reviewer: modelFrom(flags.get("reviewer"), flags.get("reviewer-family"), cfg.models.reviewer),
   };
+  const mode: Mode = flags.has("general") ? "answer" : cfg.mode;
 
-  const resumeFlag = flags.get("resume");
-  if (resumeFlag !== undefined) {
-    const dirArg =
-      typeof resumeFlag === "string" ? resumeFlag : await latestRun(repo);
+  const resumeFlag = flags.get("resume");  if (resumeFlag !== undefined) {
+    const dirArg = typeof resumeFlag === "string" ? resumeFlag : await latestRun(repo);
     if (!dirArg) throw new Error("no run to resume");
-    const p = resolveRun(repo, dirArg);
-    const state = await loadState(p);
-    if (state.state !== "gated") {
-      throw new Error(`run is in state "${state.state}", not "gated" — nothing to resume`);
+    const paths = resolveRun(repo, dirArg);
+    const art = await loadArtifacts(paths);
+    if (art.state.state !== "gated") {
+      throw new Error(`run is in state "${art.state.state}", not "gated" — nothing to resume`);
     }
-    const claims = await readJson<Claims>(p.claims);
-    const review = await readJson<Review>(p.review);
-    const gate = await readJson<Gate>(p.gate);
-    // Reuse the run's own models, not the current config: the rebuttal must come
-    // from the same drafter that wrote the plan.
-    return finish(repo, p, claims, review, gate, state.models);
+    if (!art.gate) throw new Error("run has no gate answers yet — run `adv decide` first");
+    return finalize(repo, paths, art.claims, art.review, art.gate, models, art.state.mode);
   }
 
   const task = positional.join(" ").trim();
   if (!task) throw new Error('usage: adv run "<task>"');
 
   const criteria = await readCriteria(repo);
+  if (!criteria.found) {
+    console.log(
+      "  warning: .adv/criteria.md not found — using a minimal fallback. " +
+        "Run `adv init`, or the reviewer may invent criteria.",
+    );
+  }
   const decisions = await readDecisions(repo);
-  const runner = new OpencodeRunRunner({ repo, ...models });
-  const p = await createRun(repo, task, {
-    drafter: models.drafter,
-    reviewer: models.reviewer,
-  });
-  console.log(`run: ${path.relative(repo, p.dir)}`);
-  console.log(`  ${models.drafter.ref} [${models.drafter.family}] -> ${models.reviewer.ref} [${models.reviewer.family}]`);
 
-  process.stdout.write("  drafting…… ");
-  const draft = await runner.draft({ task, criteria, decisions });
-  await writeFile(p.planV1, `${draft.plan}\n`);
-  await writeJson(p.claims, draft.claims);
-  console.log(`ok (${draft.claims.verifiable.length} verifiable, ${draft.claims.judgment.length} judgment)`);
-  await saveState(p, { ...(await loadState(p)), state: "drafted" });
+  console.log(
+    `  mode ${mode} · ${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
+  );
+  const head = await runHead(repo, task, criteria.text, decisions, models, mode, progress);
+  console.log(`  run: ${path.relative(repo, head.paths.dir)}`);
+  if (head.missing.length) console.log(`  warning: no verdict for ${head.missing.join(", ")}`);
+  if (head.evidenceIssues.length) {
+    console.log("  warning: evidence cites files that do not exist:");
+    for (const issue of head.evidenceIssues) {
+      console.log(`    ${issue.id}  ${issue.evidence}`);
+    }
+  }
 
-  process.stdout.write("  reviewing…… ");
-  const review = await runner.review({ task, criteria, plan: draft.plan, claims: draft.claims });
-  await writeJson(p.review, review);
-  console.log(`ok (${review.verdicts.length} verdicts, ${review.extra_findings.length} findings)`);
-  await saveState(p, { ...(await loadState(p)), state: "reviewed" });
+  console.log("\n── gate ──");
+  printGateSummary(head.claims, head.review);
 
-  const missing = draft.claims.verifiable
-    .map((c) => c.id)
-    .filter((id) => !review.verdicts.some((v) => v.id === id));
-  if (missing.length) console.log(`  warning: no verdict for ${missing.join(", ")}`);
-  await saveState(p, { ...(await loadState(p)), state: "validated" });
+  const skipGate = flags.has("no-gate");
+  const canAsk = process.stdin.isTTY === true && process.stdout.isTTY === true;
 
-  const interactive =
-    cfg.gate &&
-    !flags.has("no-gate") &&
-    process.stdin.isTTY === true &&
-    process.stdout.isTTY === true;
+  // --no-gate: run straight through. No model resolves anything: every judgment
+  // call is left open, every finding untriaged, and the plan presents options.
+  if (skipGate) {
+    const openGate: Gate = {
+      decisions: head.claims.judgment.map((j) => ({ id: j.id, choice: "open" })),
+      findings: head.review.extra_findings.map((f) => ({
+        id: f.id,
+        disposition: "untriaged" as const,
+      })),
+    };
+    await saveGate(head.paths, openGate);
+    console.log(
+      `\n  --no-gate: ${openGate.decisions.length} judgment call(s) left open, ` +
+        `${openGate.findings.length} finding(s) untriaged. Nothing was decided for you.`,
+    );
+    return finalize(repo, head.paths, head.claims, head.review, openGate, models, mode);
+  }
 
-  if (!interactive) {
-    const empty: Gate = { decisions: [], findings: [] };
-    await writeJson(p.gate, empty);
-    await saveState(p, { ...(await loadState(p)), state: "gated" });
-    console.log("\n── gate ──");
-    printGateSummary(draft.claims, review);
+  if (!(cfg.gate && canAsk)) {
+    await saveGate(head.paths, { decisions: [], findings: [] });
     console.log(
       `\n  paused at the gate.\n` +
-        `    adv decide ${path.relative(repo, p.dir)}\n` +
-        `    adv run --resume ${path.relative(repo, p.dir)}`,
+        `    adv decide ${path.relative(repo, head.paths.dir)}\n` +
+        `    adv run --resume ${path.relative(repo, head.paths.dir)}`,
     );
     return;
   }
 
-  console.log("\n── gate ──");
-  printGateSummary(draft.claims, review);
-  const gate = await collectGate(draft.claims, review);
-  await writeJson(p.gate, gate);
+  const gate = await collectGate(head.claims, head.review);
+  await saveGate(head.paths, gate);
   await appendDecisions(
     repo,
     gate.decisions
       .filter((d) => d.choice !== "open")
       .map((d) => ({
         id: d.id,
-        text: draft.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
+        text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
         choice: d.choice,
       })),
   );
-  await saveState(p, { ...(await loadState(p)), state: "gated" });
-
-  return finish(repo, p, draft.claims, review, gate, models);
+  return finalize(repo, head.paths, head.claims, head.review, gate, models, mode);
 }
 
 async function cmdDecide(flags: Map<string, string | true>, positional: string[]) {
   const repo = repoOf(flags);
   const dirArg = positional[0] ?? (await latestRun(repo));
   if (!dirArg) throw new Error("usage: adv decide <run>");
-  const p = resolveRun(repo, dirArg);
+  const paths = resolveRun(repo, dirArg);
 
-  const claims = await readJson<Claims>(p.claims);
-  const review = await readJson<Review>(p.review);
-
-  printGateSummary(claims, review);
-  const gate = await collectGate(claims, review);
-  await writeJson(p.gate, gate);
+  const art = await loadArtifacts(paths);
+  printGateSummary(art.claims, art.review);
+  const gate = await collectGate(art.claims, art.review);
+  await saveGate(paths, gate);
   await appendDecisions(
     repo,
     gate.decisions
       .filter((d) => d.choice !== "open")
       .map((d) => ({
         id: d.id,
-        text: claims.judgment.find((j) => j.id === d.id)?.text ?? "",
+        text: art.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
         choice: d.choice,
       })),
   );
-  console.log(`\n  recorded. next: adv run --resume ${path.relative(repo, p.dir)}`);
+  console.log(`\n  recorded. next: adv run --resume ${path.relative(repo, paths.dir)}`);
 }
 
 async function cmdStatus(flags: Map<string, string | true>, positional: string[]) {
@@ -359,31 +295,50 @@ async function cmdStatus(flags: Map<string, string | true>, positional: string[]
     console.log("no runs yet");
     return;
   }
-  const p = resolveRun(repo, dirArg);
-  const state = await loadState(p);
-  console.log(`run:    ${path.relative(repo, p.dir)}`);
+  const paths = resolveRun(repo, dirArg);
+  const state = await loadState(paths);
+  console.log(`run:    ${path.relative(repo, paths.dir)}`);
   console.log(`state:  ${state.state}`);
   console.log(`task:   ${state.task}`);
   console.log(`models: ${state.models.drafter.ref} -> ${state.models.reviewer.ref}`);
 }
 
+async function cmdTui(flags: Map<string, string | true>) {
+  const repo = repoOf(flags);
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+    throw new Error('the TUI needs a terminal. Use `adv run "<task>"` for scripted use.');
+  }
+  const { startTui } = await import("./tui.tsx");
+  await startTui({ repo });
+}
+
 function usage() {
   console.log(`adv — adversarial two-model plan review
 
+  adv                        open the TUI
   adv init [--dir <repo>]
-  adv run "<task>" [--drafter <model>] [--reviewer <model>] [--no-gate] [--dir <repo>]
+  adv run "<task>" [--general] [--drafter <model> --drafter-family <f>]
+                   [--reviewer <model> --reviewer-family <f>]
+                   [--no-gate] [--dir <repo>]
   adv run --resume [<run>]
-  adv decide <run>
+  adv decide [<run>]
   adv status [<run>]`);
 }
 
 /* ------------------------------------------------------------------ */
 
-const [command, ...rest] = process.argv.slice(2);
-const { flags, positional } = parse(rest);
+const argv = process.argv.slice(2);
+// A leading flag means no subcommand: `adv --dir X` opens the TUI in X.
+const hasCommand = argv.length > 0 && !argv[0]!.startsWith("--");
+const command = hasCommand ? argv[0] : undefined;
+const { flags, positional } = parse(hasCommand ? argv.slice(1) : argv);
 
 try {
   switch (command) {
+    case undefined:
+    case "tui":
+      await cmdTui(flags);
+      break;
     case "init":
       await cmdInit(flags);
       break;
@@ -398,7 +353,7 @@ try {
       break;
     default:
       usage();
-      process.exit(command === undefined || command === "help" ? 0 : 2);
+      process.exit(command === "help" || command === "--help" ? 0 : 2);
   }
 } catch (err) {
   console.error(`\nerror: ${err instanceof Error ? err.message : String(err)}`);

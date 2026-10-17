@@ -35,6 +35,7 @@ export async function createRun(
   repo: string,
   task: string,
   models: RunState["models"],
+  mode: RunState["mode"],
 ): Promise<Paths> {
   const dir = path.join(runsDir(repo), runStamp());
   await mkdir(dir, { recursive: true });
@@ -44,6 +45,7 @@ export async function createRun(
     state: "created",
     createdAt: new Date().toISOString(),
     task,
+    mode,
     models,
   });
   return p;
@@ -66,11 +68,14 @@ export async function latestRun(repo: string): Promise<string | null> {
   }
 }
 
-export async function readCriteria(repo: string): Promise<string> {
+export async function readCriteria(repo: string): Promise<{ text: string; found: boolean }> {
   try {
-    return await readFile(path.join(advDir(repo), "criteria.md"), "utf8");
+    return { text: await readFile(path.join(advDir(repo), "criteria.md"), "utf8"), found: true };
   } catch {
-    return "- (none supplied; use judgement sparingly and flag anything you had to assume)";
+    return {
+      text: "- (none supplied; use judgement sparingly and flag anything you had to assume)",
+      found: false,
+    };
   }
 }
 

@@ -9,5 +9,12 @@
     "adv": "bun run src/cli.ts",
     "spike": "bun run spike/m0.ts",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ink": "^8.0.0",
+    "react": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0"
   }
 }
