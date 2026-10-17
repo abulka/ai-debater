@@ -1,0 +1,13 @@
+{
+  "name": "adv",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "adv": "./src/cli.ts"
+  },
+  "scripts": {
+    "adv": "bun run src/cli.ts",
+    "spike": "bun run spike/m0.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}
