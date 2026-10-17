@@ -6,8 +6,11 @@ import {
   answersToGate,
   buildItems,
   clampOffset,
+  describeGateChange,
   describeJudgmentCall,
+  findingQuestion,
   gateSummaryLines,
+  judgmentQuestion,
   maxOffset,
   parseEvidence,
   readEvidenceContext,
@@ -106,6 +109,66 @@ describe("answersToGate", () => {  test("records a decision and a finding in the
   test("an unexpected finding value is untriaged, not quietly dismissed", () => {
     const gate = answersToGate([{ id: "E1", kind: "finding", value: "skip" }]);
     expect(gate.findings[0]?.disposition).toBe("untriaged");
+  });
+});
+
+describe("describeGateChange", () => {
+  const old = {
+    decisions: [{ id: "J1", choice: "redis" }],
+    findings: [{ id: "E1", disposition: "accepted" as const }],
+  };
+
+  test("identical gates differ in nothing, in any order", () => {
+    expect(describeGateChange(old, { ...old })).toEqual({ decisions: [], findings: [] });
+    const shuffled = {
+      decisions: [...old.decisions].reverse(),
+      findings: [...old.findings].reverse(),
+    };
+    expect(describeGateChange(old, shuffled)).toEqual({ decisions: [], findings: [] });
+  });
+
+  test("a changed answer is reported by id, old and new value included", () => {
+    const next = {
+      decisions: [{ id: "J1", choice: "in-process" }],
+      findings: [{ id: "E1", disposition: "untriaged" as const }],
+    };
+    expect(describeGateChange(old, next)).toEqual({
+      decisions: [{ id: "J1", from: "redis", to: "in-process" }],
+      findings: [{ id: "E1", from: "accepted", to: "untriaged" }],
+    });
+  });
+
+  test("a gate with no recorded answers is all new", () => {
+    const change = describeGateChange(null, old);
+    expect(change.decisions).toEqual([{ id: "J1", from: "(none)", to: "redis" }]);
+    expect(change.findings).toEqual([{ id: "E1", from: "(none)", to: "accepted" }]);
+  });
+
+  test("a recorded answer that is missing from the new gate counts as a change", () => {
+    // A hand-edited gate.json is all that can drop an item; if it does, the
+    // drop must not read as "nothing moved".
+    expect(describeGateChange(old, { decisions: [], findings: [] })).toEqual({
+      decisions: [{ id: "J1", from: "redis", to: "(unanswered)" }],
+      findings: [{ id: "E1", from: "accepted", to: "(unanswered)" }],
+    });
+  });
+});
+
+describe("gate prompts", () => {
+  const judgment = claims.judgment[0]!;
+  const finding = review.extra_findings[0]!;
+
+  test("a prefilled judgment prompt offers to keep the recorded answer", () => {
+    expect(judgmentQuestion(judgment, "redis")).toContain("(currently: redis)");
+    expect(judgmentQuestion(judgment, "redis")).toContain("Enter to keep");
+    expect(judgmentQuestion(judgment)).not.toContain("Enter to keep");
+  });
+
+  test("a prefilled finding prompt shows the recorded choice in words", () => {
+    expect(findingQuestion(finding, "accepted")).toContain("(currently: yes)");
+    expect(findingQuestion(finding, "dismissed")).toContain("(currently: no)");
+    expect(findingQuestion(finding, "untriaged")).toContain("(currently: later)");
+    expect(findingQuestion(finding)).not.toContain("currently");
   });
 });
 

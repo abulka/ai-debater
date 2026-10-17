@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { RunState } from "./contracts.ts";
@@ -56,6 +56,8 @@ export function runPaths(repo: string, dir: string) {
     claims: path.join(dir, "claims.json"),
     review: path.join(dir, "review.json"),
     gate: path.join(dir, "gate.json"),
+    /** The gate's previous generation of answers, kept by `revise`'s rotation. */
+    gatePrev: path.join(dir, "gate.prev.json"),
     changelog: path.join(dir, "changelog.json"),
     planV2: path.join(dir, "plan.v2.md"),
     diff: path.join(dir, "diff.patch"),
@@ -173,12 +175,76 @@ export async function readCriteria(repo: string): Promise<{ text: string; found:
   }
 }
 
+/**
+ * A settled-decisions entry in the exact shape `appendDecisions` writes:
+ * `- <stamp> <id>: <text> -> **<choice>**`, optionally with a trailing
+ * parenthetical — the supersede / reopened markers.
+ */
+const DECISION_ENTRY = /^- \S+ ([VJE]\d+): (.+) -> \*\*([^*]+)\*\*(?: \(.*\))?\s*$/;
+
+/** A marker, not a settlement: the human re-opened the call at a later gate. */
+const REOPENED = /^(reopened|superseded)$/i;
+
+/**
+ * The feed the draft prompt gets from `decisions.md`: the last entry per id.
+ *
+ * The file is append-only — `revise` supersedes an old entry by appending a new
+ * one, and both lines stay on disk — but the file's own header says "models
+ * treat every entry as a closed question", and a *superseded* entry is not
+ * closed. The newest line per id is the settlement; earlier lines for the same
+ * id leave the feed, and a `reopened` marker un-settles the id entirely so the
+ * next draft may argue it again.
+ *
+ * Non-entry lines — the header, prose a human appended — pass through
+ * untouched: the file is the human's, and only lines in the tool's own format
+ * are the tool's to deduplicate.
+ */
 export async function readDecisions(repo: string): Promise<string> {
+  let text: string;
   try {
-    return await readFile(path.join(advDir(repo), "decisions.md"), "utf8");
+    text = await readFile(path.join(advDir(repo), "decisions.md"), "utf8");
   } catch {
     return "(none yet)";
   }
+
+  const lines = text.split("\n");
+  const newest = new Map<string, number>();
+  const reopened = new Set<string>();
+  lines.forEach((line, i) => {
+    const m = DECISION_ENTRY.exec(line);
+    if (!m) return;
+    const id = m[1]!;
+    if (REOPENED.test(m[3]!)) reopened.add(id);
+    newest.set(id, i);
+  });
+
+  if (newest.size === 0) return text;
+
+  let dropped = false;
+  const out: string[] = [];
+  lines.forEach((line, i) => {
+    const m = DECISION_ENTRY.exec(line);
+    if (!m) {
+      out.push(line);
+      return;
+    }
+    const id = m[1]!;
+    if (reopened.has(id) || newest.get(id) !== i) {
+      // Superseded, or re-opened: it stays on disk, it leaves the feed.
+      dropped = true;
+      return;
+    }
+    out.push(line);
+  });
+  return dropped ? out.join("\n") : text;
+}
+
+export interface DecisionEntry {
+  id: string;
+  text: string;
+  choice: string;
+  /** A trailing parenthetical — `revise` uses it for the supersede marker. */
+  note?: string;
 }
 
 /**
@@ -188,16 +254,30 @@ export async function readDecisions(repo: string): Promise<string> {
  * never ran `adv init` here, which in answer mode is the normal case. Creating
  * the file would be a write into a directory adv has no business writing to.
  */
-export async function appendDecisions(
-  repo: string,
-  decisions: { id: string; text: string; choice: string }[],
-): Promise<void> {
+export async function appendDecisions(repo: string, decisions: DecisionEntry[]): Promise<void> {
   if (decisions.length === 0) return;
   const file = path.join(advDir(repo), "decisions.md");
   const existing = await readFile(file, "utf8").catch(() => null);
   if (existing === null) return;
 
   const stamp = new Date().toISOString();
-  const lines = decisions.map((d) => `- ${stamp} ${d.id}: ${d.text} -> **${d.choice}**`);
+  const lines = decisions.map(
+    (d) => `- ${stamp} ${d.id}: ${d.text} -> **${d.choice}**${d.note ? ` ${d.note}` : ""}`,
+  );
   await writeFile(file, `\n${lines.join("\n")}\n`, { flag: "a" });
+}
+
+/**
+ * Move the gate's answers one generation back: `gate.json` becomes
+ * `gate.prev.json`. `revise` asks the gate again, and the first answers must
+ * survive the asking — the comparison that decides whether anything moved needs
+ * them, and a human who wants the old view can read the file.
+ *
+ * One level of history: a third revision overwrites the second's backup.
+ * Missing gate file (a hand-mangled run) is not an error.
+ */
+export async function rotateGate(p: Paths): Promise<void> {
+  await rename(p.gate, p.gatePrev).catch(() => {
+    /* nothing to rotate */
+  });
 }

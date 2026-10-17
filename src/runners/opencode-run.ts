@@ -79,6 +79,12 @@ export interface Usage {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  /**
+   * Whether the provider reported a cost at all. A gateway that does not
+   * (openrouter) leaves this false, and the run must then say "not reported"
+   * rather than displaying $0 — a paid run must not read as a free one.
+   */
+  costKnown: boolean;
 }
 
 export interface CallResult {
@@ -480,6 +486,7 @@ export function summarizeUsage(events: RunEvent[]): Usage {
     cacheRead: 0,
     cacheWrite: 0,
     cost: 0,
+    costKnown: false,
   };
   for (const e of events) {
     if (e.part?.type !== "step-finish") continue;
@@ -490,15 +497,17 @@ export function summarizeUsage(events: RunEvent[]): Usage {
     u.reasoning += t?.reasoning ?? 0;
     u.cacheRead += t?.cache?.read ?? 0;
     u.cacheWrite += t?.cache?.write ?? 0;
+    if (e.part.cost !== undefined) u.costKnown = true;
     u.cost += e.part.cost ?? 0;
   }
   return u;
 }
 
 export function formatUsage(u: Usage): string {
+  const cost = u.costKnown ? `$${u.cost.toFixed(6)}` : "cost not reported";
   return (
     `${u.steps} step(s), in ${u.input} out ${u.output} reasoning ${u.reasoning} ` +
-    `cache r${u.cacheRead}/w${u.cacheWrite}, $${u.cost.toFixed(6)}`
+    `cache r${u.cacheRead}/w${u.cacheWrite}, ${cost}`
   );
 }
 

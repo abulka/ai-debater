@@ -65,8 +65,8 @@ replacement for tests. The models never resolve judgment calls.
 | TUI | **done early** (was scheduled for M4) — bare `adv` |
 | Visibility batch | **done 17 Oct** — gate panels, readable progress, resume/family/failed fixes |
 | M3 real trial | **done 17 Oct** — spec in `docs/M2-PLAN.md` |
-| M2 evidence execution | **started** — slice 1: contract, matcher, executor (`src/audit.ts`) |
-| M4 revise | not started |
+| M2 evidence execution | **done 17–18 Oct** — both slices: contract, matcher, executor, approval split, merged view (`src/audit.ts`). Parked: `adv audit <run>`, MCP disable |
+| M4 revise | **done 18 Oct** — `adv revise [<run>] [--rewrite]`; spec in `docs/REVISE.md` |
 
 Typecheck must stay clean: `bun run typecheck`. Tests must stay green:
 `bun test` (the gate mapping, resume-model choice and failed-state write are
@@ -87,9 +87,10 @@ adv --dir /path/to/repo        # TUI for another repo
 
 # CLI (scriptable)
 adv init --dir <repo>          # criteria, decisions and config (optional)
-adv run "<task>" --dir <repo> [--no-gate] [--general] [--strict]
+adv run "<task>" --dir <repo> [--no-gate] [--general] [--plan] [--strict]
 adv decide [<run>]
 adv run --resume [<run>]
+adv revise [<run>] [--rewrite] # re-ask the gate (prefilled), re-run only the tail
 adv status [<run>]
 
 # spike
@@ -102,7 +103,14 @@ is written into the directory you started in — answer mode works immediately,
 and `adv init` is only needed if you want criteria and settled decisions.
 
 Run artifacts go to `~/.local/share/adv/runs/<repo-name>-<hash>/<timestamp>/`,
-for both modes. `adv decide`/`run --resume`/`status` take a bare run name.
+for both modes. `adv decide`/`run --resume`/`revise`/`status` take a bare run
+name.
+
+`adv revise` is the door back into a finished run: it re-asks the gate with the
+recorded answers (Enter keeps one), and if anything moved it re-runs only the
+rewrite — two model calls, never the draft and the review. Identical answers
+spend nothing. `docs/REVISE.md` has the state rules and the `decisions.md`
+supersede rule.
 
 ### TUI keys
 
@@ -272,24 +280,19 @@ spike/              M0
 
 ## Next task
 
-**M2 — evidence execution**, per `docs/M2-PLAN.md`. The trial is done and its 12
-settled decisions are §3 of that document; do not reopen them without saying why.
+**M2 (evidence execution) and M4 (`adv revise`) are done.** M2's two slices are
+in and tested: the contract, exact-argv matcher, executor, the quick-vs-slow
+approval split, `audit.json`, the merged review view, and the URL/evidence
+checks. M4 is `adv revise`: the gate asked again, prefilled, with only the
+rewrite re-run — spec in `docs/REVISE.md`. The 12 settled decisions in
+`docs/M2-PLAN.md` §3 stand; do not reopen them without saying why.
 
-Slice 1 is in and tested: the contract (`proposes` on `unverifiable`, `audit:<id>`
-evidence, `AuditRecord`), the exact-argv matcher, and the executor with no shell,
-a timeout, an output cap, a scrubbed environment and a validated record
-(`src/audit.ts`).
-
-Slice 2 is in too: the reviewer may propose a check, quick checks run by
-themselves, slow ones ask (`y`/`n`), the results are written to `audit.json`, and
-a disagreement corrects the plan automatically. `review.json` stays exactly as
-the reviewer wrote it; the gate and the rebuttal see the merged view, rebuilt
-from `audit.json` on load.
-
-Not yet done:
+Not yet done (parked, not lost):
 
 1. `adv audit <run>` for re-running checks later — the plan's §6 item 3. There is
    no data to build a Tier 2 list from, so it is deliberately unbuilt;
-2. the MCP server-level disable (plan §6; still open from the spike).
+2. the MCP server-level disable (plan §6; still open from the spike);
+3. the §12 eval, which needs a body of runs first: 5–10 completed runs across
+   pairs before any measurement is worth reading.
 
 Before anything that calls a model, ask the human.

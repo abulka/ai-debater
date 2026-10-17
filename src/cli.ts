@@ -6,9 +6,10 @@
  *   adv init [--dir <repo>]
  *   adv run "<task>" [--drafter <model>] [--reviewer <model>]
  *                    [--drafter-family <f>] [--reviewer-family <f>]
- *                    [--no-gate] [--dir <repo>]
+ *                    [--no-gate] [--general] [--plan] [--dir <repo>]
  *   adv run --resume [<run>]
  *   adv decide [<run>]
+ *   adv revise [<run>] [--rewrite]
  *   adv status [<run>]
  */
 
@@ -20,7 +21,7 @@ import type { FamilyCheck } from "./config.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
 import type { Audit, AuditRecord } from "./contracts.ts";
 import { collectGate } from "./gate.ts";
-import { gateSummaryLines, gateWarnings } from "./gate-model.ts";
+import { describeGateChange, gateSummaryLines, gateWarnings, type GateChange } from "./gate-model.ts";
 import { initRepo } from "./init.ts";
 import {
   appendDecisions,
@@ -31,6 +32,7 @@ import {
   readCriteria,
   readDecisions,
   readJson,
+  rotateGate,
   runPaths,
   runsDir,
   resumedModels,
@@ -44,7 +46,7 @@ import type { CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 import type { ApprovalRequest } from "./audit.ts";
 
-const BOOLEAN_FLAGS = new Set(["no-gate", "general", "help", "strict"]);
+const BOOLEAN_FLAGS = new Set(["no-gate", "general", "plan", "rewrite", "help", "strict"]);
 
 function parse(args: string[]): { flags: Map<string, string | true>; positional: string[] } {
   const flags = new Map<string, string | true>();
@@ -84,10 +86,17 @@ const resolveRun = (repo: string, dirArg: string) => {
   return runPaths(repo, path.resolve(repo, dirArg));
 };
 
-/** Per-call timing and cost, so a run is legible while it happens. */
+/**
+ * Per-call timing and cost, so a run is legible while it happens.
+ *
+ * `$0` is not a number, it is an absence: a provider that does not report cost
+ * (the openrouter gateway) must read "not reported", or a paid run displays as
+ * free. An explicit zero from a free provider (the groq pair) still reads $0.
+ */
 const progress: CallHook = ({ kind, step, retry, ms, usage }) => {
+  const cost = usage.costKnown ? `$${usage.cost.toFixed(6)}` : "cost not reported";
   console.log(
-    `    ${kind}/${step}${retry ? " (retry)" : ""}  ${(ms / 1000).toFixed(1)}s  $${usage.cost.toFixed(6)}`,
+    `    ${kind}/${step}${retry ? " (retry)" : ""}  ${(ms / 1000).toFixed(1)}s  ${cost}`,
   );
 };
 
@@ -212,7 +221,14 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
     drafter: modelFrom(flags.get("drafter"), flags.get("drafter-family"), cfg.models.drafter),
     reviewer: modelFrom(flags.get("reviewer"), flags.get("reviewer-family"), cfg.models.reviewer),
   };
-  const mode: Mode = flags.has("general") ? "answer" : cfg.mode;
+  // An explicit flag beats the saved subject, either way. Without `--plan` a
+  // plan-mode run would require editing config or the TUI first — one key in
+  // the TUI, zero flags on the command line.
+  const mode: Mode = flags.has("general")
+    ? "answer"
+    : flags.has("plan")
+      ? "plan"
+      : cfg.mode;
   const check: FamilyCheck = flags.has("strict") ? "require" : cfg.familyCheck;
   const checkSource = flags.has("strict") ? "--strict" : ".adv/config.json";
 
@@ -382,6 +398,156 @@ async function cmdDecide(flags: Map<string, string | true>, positional: string[]
   console.log(`\n  recorded. next: adv run --resume ${path.basename(paths.dir)}`);
 }
 
+/**
+ * What `revise` appends to `decisions.md`: one entry per judgment call whose
+ * settled answer moved, each marked so the append-only file reads in order.
+ *
+ * A call re-opened at the gate gets a `reopened` marker, which `readDecisions`
+ * treats as un-settling the id: the old entry stays on disk, but the next
+ * draft is no longer told it is closed. A call that was open and stays open
+ * appends nothing — "open" was never written to begin with.
+ */
+function decisionEntries(
+  claims: Claims,
+  change: GateChange,
+): { id: string; text: string; choice: string; note?: string }[] {
+  const entries: { id: string; text: string; choice: string; note?: string }[] = [];
+  for (const c of change.decisions) {
+    const text = claims.judgment.find((j) => j.id === c.id)?.text ?? "";
+    // "From" is the recorded answer, "(none)" when there was no gate file.
+    // A settled previous answer is the one that needs a supersede marker.
+    const wasSettled = c.from !== "(none)" && c.from !== "open";
+    if (c.to === "open") {
+      if (wasSettled) {
+        entries.push({
+          id: c.id,
+          text,
+          choice: "reopened",
+          note: `(the earlier entry for ${c.id} no longer stands)`,
+        });
+      }
+      continue;
+    }
+    entries.push({
+      id: c.id,
+      text,
+      choice: c.to,
+      ...(wasSettled ? { note: `(supersedes the earlier entry for ${c.id})` } : {}),
+    });
+  }
+  return entries;
+}
+
+/**
+ * The door back into a finished run: re-ask the gate with the recorded answers
+ * prefilled, then re-run only the tail. The head — draft, review, checks — is
+ * immutable and is never re-run; the cost is two model calls or zero.
+ *
+ * Spec: docs/REVISE.md.
+ */
+async function cmdRevise(flags: Map<string, string | true>, positional: string[]) {
+  const repo = repoOf(flags);
+  const cfg = await loadConfig(repo);
+  requireFamily("drafter", flags);
+  requireFamily("reviewer", flags);
+  const models: Models = {
+    drafter: modelFrom(flags.get("drafter"), flags.get("drafter-family"), cfg.models.drafter),
+    reviewer: modelFrom(flags.get("reviewer"), flags.get("reviewer-family"), cfg.models.reviewer),
+  };
+  const check: FamilyCheck = flags.has("strict") ? "require" : cfg.familyCheck;
+  const checkSource = flags.has("strict") ? "--strict" : ".adv/config.json";
+
+  const dirArg = positional[0] ?? (await latestRun(repo));
+  if (!dirArg) throw new Error("no run to revise");
+  const paths = resolveRun(repo, dirArg);
+
+  // The only states revise accepts. A failed run has no completed review to
+  // revise; a run that never reached the gate has no answers to re-ask.
+  const state = await loadState(paths);
+  if (state.state === "failed") {
+    throw new Error(
+      `run failed${state.error ? ` — ${state.error.split("\n")[0]!}` : ""}.\n` +
+        `  revise needs a run that finished its review; this one did not get that far.`,
+    );
+  }
+  if (state.state !== "done" && state.state !== "gated") {
+    throw new Error(
+      `run is in state "${state.state}" — revise needs a run parked at the gate ` +
+        `or finished. \`adv status\` shows where it is.`,
+    );
+  }
+
+  const art = await loadArtifacts(paths);
+  // A CLI run paused at the gate saved an empty gate: nothing to prefill, so
+  // the gate is simply asked fresh.
+  const previous = art.gate ?? { decisions: [], findings: [] };
+
+  console.log(`  run: ${displayPath(paths.dir)}  (state: ${state.state})`);
+  console.log(`\n── the gate, asked again ${"─".repeat(20)}`);
+  printGateSummary(art.claims, art.review, art.checks);
+  const gate = await collectGate(art.claims, art.review, previous);
+
+  const change = describeGateChange(previous, gate);
+  const changed = change.decisions.length + change.findings.length;
+  for (const d of change.decisions) console.log(`  changed  ${d.id}: ${d.from} -> ${d.to}`);
+  for (const f of change.findings) console.log(`  changed  ${f.id}: ${f.from} -> ${f.to}`);
+
+  if (changed === 0 && !flags.has("rewrite")) {
+    if (state.state === "done") {
+      // The tail already ran with exactly these answers: the run stands as it
+      // is, and the head is not worth re-running to say so.
+      console.log(`\n  nothing changed — the run stands as it is. No model calls made.`);
+      console.log(`    pass --rewrite to re-run the tail with the same answers anyway.`);
+      return;
+    }
+    // A run parked at the gate (gated) never ran its tail: "nothing changed"
+    // means the recorded answers stand, and the one thing left to do is to
+    // apply them. That is a resume wearing revise's clothing.
+    console.log(`\n  no answers changed — the recorded gate stands; running the tail.`);
+  }
+
+  // The rebuttal is written by the drafter: the run's recorded models win,
+  // same as resume. An explicit flag is a human instruction, reported as such.
+  const explicit = {
+    drafter: flags.has("drafter") || flags.has("drafter-family"),
+    reviewer: flags.has("reviewer") || flags.has("reviewer-family"),
+  };
+  const { models: chosen, overrides } = resumedModels(state.models, models, explicit);
+  for (const o of overrides) {
+    console.log(
+      `  warning: --${o.role} ${o.chosen} is not the ${o.role} that wrote plan.v1 ` +
+        `(${o.wrote}) — the rewrite will be by a different model`,
+    );
+  }
+  console.log(
+    `  models: ${chosen.drafter.ref} [${chosen.drafter.family}]  ->  ` +
+      `${chosen.reviewer.ref} [${chosen.reviewer.family}]  (from the run)`,
+  );
+  checkFamily(chosen, check, checkSource);
+
+  // Order matters: the answers are asked and the gate rotated before a model is
+  // called, so an abort or a failed tail never leaves the old answers recorded
+  // under a new state — and the previous answers survive in gate.prev.json.
+  await rotateGate(paths);
+  await saveGate(paths, gate);
+  if (state.mode === "plan") {
+    await appendDecisions(repo, decisionEntries(art.claims, change));
+  }
+
+  try {
+    return await finalize(repo, paths, art.claims, art.review, gate, chosen, state.mode, art.checks);
+  } catch (err) {
+    // The head is intact and the answers just given are recorded: the run is
+    // parked at its own gate again, and `adv run --resume` retries the tail.
+    // `failed` (the head's rule) would be a dead end — decide, resume and
+    // revise all refuse it — so a failed tail comes back to `gated` with the
+    // error recorded, where `adv status` still shows what broke.
+    const error = err instanceof Error ? err.message : String(err);
+    await saveState(paths, { ...state, state: "gated", error: error.slice(0, 2000) });
+    throw err;
+  }
+}
+
 async function cmdStatus(flags: Map<string, string | true>, positional: string[]) {
   const repo = repoOf(flags);
   const dirArg = positional[0] ?? (await latestRun(repo));
@@ -426,15 +592,22 @@ function usage() {
 
   adv                        open the TUI
   adv init [--dir <repo>]    criteria, decisions and config (optional)
-  adv run "<task>" [--general] [--drafter <model> --drafter-family <f>]
+  adv run "<task>" [--general] [--plan] [--drafter <model> --drafter-family <f>]
                    [--reviewer <model> --reviewer-family <f>]
                    [--strict] [--no-gate] [--dir <repo>]
   adv run --resume [<run>] [--strict]
   adv decide [<run>]
+  adv revise [<run>] [--rewrite] [--strict]
   adv status [<run>]
 
-  --strict  refuse to run when both models share a family. Use it for any run
-            whose result is evidence (the trial, the eval), not for the fast pair.`);
+  --general / --plan   force the subject for this run, without changing the saved one
+  --strict             refuse to run when both models share a family. Use it for any
+                       run whose result is evidence (the trial, the eval), not the
+                       fast pair
+  --rewrite            revise: re-run the tail even when no answers changed
+
+  revise re-asks the gate with your recorded answers (Enter keeps one) and re-runs
+  only the rewrite: the draft and the review are never repeated.`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -467,6 +640,9 @@ try {
       break;
     case "decide":
       await cmdDecide(flags, positional);
+      break;
+    case "revise":
+      await cmdRevise(flags, positional);
       break;
     case "status":
       await cmdStatus(flags, positional);

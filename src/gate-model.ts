@@ -183,6 +183,93 @@ export function gateSummaryLines(
   return out;
 }
 
+/* ------------------------------------------------------------------ *
+ * Asking the gate twice.
+ *
+ * `adv revise` re-asks a gate the human has already answered: every prompt
+ * carries the recorded answer, Enter keeps it, and the comparison below says
+ * whether anything moved — which decides whether a model call is spent.
+ * ------------------------------------------------------------------ */
+
+/** How a recorded finding disposition reads out loud in a prompt. */
+export function dispositionLabel(
+  d: Gate["findings"][number]["disposition"],
+): string {
+  return d === "accepted" ? "yes" : d === "dismissed" ? "no" : "later";
+}
+
+/**
+ * The CLI's judgment prompt. With a recorded answer, Enter is a real reply —
+ * keeping the answer — and the prompt must say so. Without one, the old
+ * contract holds: a number or "open", nothing else.
+ */
+export function judgmentQuestion(
+  judgment: Claims["judgment"][number],
+  current?: string,
+): string {
+  const marker = current ? `  (currently: ${current})` : "";
+  return `  ${judgment.id}${marker}: ` + (
+    current ? "1-N, 'open', or Enter to keep: " : "1-N, or 'open': "
+  );
+}
+
+/** The CLI's finding prompt: yes/no/later, as the TUI asks it, with the
+ *  recorded choice shown when there is one. */
+export function findingQuestion(
+  finding: Review["extra_findings"][number],
+  current?: Gate["findings"][number]["disposition"],
+): string {
+  const marker = current ? `  (currently: ${dispositionLabel(current)})` : "";
+  return `  ${finding.id}${marker}: yes / no / later — ${finding.text} `;
+}
+
+export interface GateChange {
+  decisions: { id: string; from: string; to: string }[];
+  findings: { id: string; from: string; to: string }[];
+}
+
+/**
+ * Which answers differ between two gates, matched by id rather than position:
+ * the gate is asked in claims order, but order is not a contract, and a
+ * re-asked gate with exactly one different answer is a change that a
+ * whole-object comparison would miss the moment the order moved.
+ *
+ * `previous` may be null (no gate file at all): every recorded answer is then
+ * a change, with `from` reading "(none)". An item that was recorded but is
+ * missing from `current` counts as a change too — a dropped answer must not
+ * read as "nothing moved".
+ */
+export function describeGateChange(previous: Gate | null, current: Gate): GateChange {
+  const prevDecision = new Map(previous?.decisions.map((d) => [d.id, d.choice] as const));
+  const prevFinding = new Map(
+    previous?.findings.map((f) => [f.id, f.disposition] as const),
+  );
+
+  const decisions: GateChange["decisions"] = [];
+  for (const d of current.decisions) {
+    const from = prevDecision.get(d.id) ?? "(none)";
+    if (from !== d.choice) decisions.push({ id: d.id, from, to: d.choice });
+  }
+  for (const d of previous?.decisions ?? []) {
+    if (!current.decisions.some((c) => c.id === d.id)) {
+      decisions.push({ id: d.id, from: d.choice, to: "(unanswered)" });
+    }
+  }
+
+  const findings: GateChange["findings"] = [];
+  for (const f of current.findings) {
+    const from = prevFinding.get(f.id) ?? "(none)";
+    if (from !== f.disposition) findings.push({ id: f.id, from, to: f.disposition });
+  }
+  for (const f of previous?.findings ?? []) {
+    if (!current.findings.some((c) => c.id === f.id)) {
+      findings.push({ id: f.id, from: f.disposition, to: "(unanswered)" });
+    }
+  }
+
+  return { decisions, findings };
+}
+
 export interface VerdictCounts {
   claims: number;
   confirmed: number;

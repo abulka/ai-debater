@@ -632,7 +632,7 @@ function callLine(info: {
   step: string;
   retry: boolean;
   ms: number;
-  usage: { cost: number };
+  usage: { cost: number; costKnown: boolean };
 }): string {
   const what =
     info.kind === "draft"
@@ -644,7 +644,10 @@ function callLine(info: {
         : info.step === "plan"
           ? "revision written"
           : "changelog written";
-  return `${what}${info.retry ? " (retry)" : ""} — ${(info.ms / 1000).toFixed(1)}s, $${info.usage.cost.toFixed(6)}`;
+  // $0 is an absence, not a number: a gateway that reports no cost must not
+  // make a paid run display as free.
+  const cost = info.usage.costKnown ? `$${info.usage.cost.toFixed(6)}` : "cost not reported";
+  return `${what}${info.retry ? " (retry)" : ""} — ${(info.ms / 1000).toFixed(1)}s, ${cost}`;
 }
 
 function App({ repo }: { repo: string }) {
