@@ -109,8 +109,8 @@ for both modes. `adv decide`/`run --resume`/`status` take a bare run name.
 | Key | Action |
 | --- | --- |
 | Ctrl+P | Settings — choose drafter/reviewer, switch mode |
-| Tab | Toggle plan / answer mode |
-| Enter | Run the typed task. In plan mode, a task that reads like a question first asks **answer it** or **plan it** |
+| Tab | Switch subject: **this repository** or a **general question** |
+| Enter | Run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
 | s | Skip the current question (finding: untriaged; judgment: open) |
 | o | Gate: leave a judgment call open |
@@ -171,11 +171,12 @@ adv run "…" --drafter groq/openai/gpt-oss-120b --drafter-family gpt \
 run — uses the last choice rather than `DEFAULT_CONFIG`, and `adv init` seeds a
 new repository from it. A repository's own file still wins, field by field.
 
-**The mode is personal.** It starts in answer mode (a general question) and Tab
-switches to a repository task; the choice is saved like the models and applies in
-every directory. A repository cannot pin it — the mode is where you are working,
-not what the repository is. One workflow either way: draft, have another family
-check it, settle the calls.
+**The subject is personal.** It starts as a **general question** (no repository
+read); Tab switches to **this repository**, which reads the code and lets the task
+decide the deliverable — a plan for a change, or an answer about the code. The
+choice is saved like the models and applies in every directory; a repository
+cannot pin it. One workflow either way: draft, have another family check it,
+settle the calls.
 
 Probe a model before relying on it:
 

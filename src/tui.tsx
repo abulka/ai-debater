@@ -245,13 +245,13 @@ function Start({
         </Text>
       </Box>
       <Box>
-        <Text dimColor>mode    </Text>
-        <Text color="cyan">{mode === "answer" ? "answer" : "plan"}</Text>
+        <Text dimColor>subject </Text>
+        <Text color="cyan">{mode === "answer" ? "general question" : "this repository"}</Text>
         <Text dimColor>
           {"  "}
           {mode === "answer"
-            ? "a general question — no repository assumed"
-            : "an implementation plan for this repository"}
+            ? "no repository is read; facts are checked against URLs"
+            : "reads the code; plans a change or answers a question about it"}
           {"   (Tab to switch)"}
         </Text>
       </Box>
@@ -281,7 +281,7 @@ function Start({
       {mode === "plan" && looksLikeQuestion(task) && (
         <Box marginTop={1}>
           <Text color="yellow">
-            ! that reads like a general question — Tab switches to answer mode, which assumes no repository
+            ! that reads like a general question — Tab switches to one, with no repository read
           </Text>
         </Box>
       )}
@@ -309,7 +309,7 @@ function Settings({
   const rows: { label: string; value: string }[] = [
     { label: "drafter", value: cfg.models.drafter.ref },
     { label: "reviewer", value: cfg.models.reviewer.ref },
-    { label: "mode", value: mode === "answer" ? "answer — general question" : "plan — repository" },
+    { label: "subject", value: mode === "answer" ? "general question" : "this repository" },
     { label: "back", value: "" },
   ];
   const clash = familyClash(cfg.models);
@@ -887,7 +887,7 @@ function App({ repo }: { repo: string }) {
     // The two things the human just chose. They belong in the log: without them
     // the history starts at "drafting" and does not say what was asked or who is
     // doing it.
-    addLog(`${next === "answer" ? "answer mode" : "plan mode"} · ${cfg.models.drafter.ref} -> ${cfg.models.reviewer.ref}`);
+    addLog(`${next === "answer" ? "general question" : "repository"} · ${cfg.models.drafter.ref} -> ${cfg.models.reviewer.ref}`);
     addLog(`${next === "answer" ? "question" : "task"}: ${task.trim()}`);
     if (next !== mode) {
       setMode(next);

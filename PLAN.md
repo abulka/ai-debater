@@ -377,9 +377,10 @@ built-in default, and `adv init` seeds a new repository from it.
 
 `mode` is the exception: it is **personal, not per repository**, so the user's
 last choice wins even over a repository file. It defaults to `answer` (a general
-question); `plan` is one Tab away and produces an implementation plan for the
-repository. Both are the same workflow — draft, cross-family review, human gate,
-scoped rewrite — applied to a plan or to an opinion.
+question, no repository read); `plan` means **this repository** — the draft reads
+the code, and the task decides whether the deliverable is a plan for a change or
+an answer about the code. Both are the same workflow — draft, cross-family review,
+human gate, scoped rewrite — applied to a plan or to an opinion.
 
 ---
 

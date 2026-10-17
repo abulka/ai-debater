@@ -59,17 +59,25 @@ export function draftPrompt(i: DraftInput): string {
 }
 
 export function claimsPrompt(i: { mode: Mode; body: string }): string {
-  return `${claimsInstruction(i.mode === "answer" ? "an answer" : "an implementation plan")}
+  return `${claimsInstruction(i.mode === "answer" ? "an answer" : "a draft plan or answer")}
 
 ${i.mode === "answer" ? "ANSWER" : "PLAN"}
 ${i.body}`;
 }
 
 function planPrompt(i: DraftInput): string {
-  return `You are drafting an implementation plan for a task in the repository you are in.
+  return `You are working in the repository you are in.
+
+What the task asks for decides the deliverable:
+
+- If it asks for a CHANGE — add, fix, refactor, migrate, remove — produce an
+  implementation PLAN: steps, risks, open decisions, what to verify. Do not write
+  code and do not modify any file.
+- If it asks a QUESTION about the code — how something works, where something
+  lives, why it behaves this way — ANSWER it, citing file and line. Do not turn a
+  question into a plan.
 
 RULES
-- Produce a PLAN. Do not write code and do not modify any file.
 - Every statement about the codebase must come from a file you actually read, or a
   git command you actually ran. Do not guess.
 - Do not choose between options where reasonable people could differ. Name the
@@ -133,7 +141,7 @@ not include a JSON block.`;
 /* --- review ------------------------------------------------------- */
 
 export function reviewPrompt(i: ReviewInput): string {
-  const subject = i.mode === "answer" ? "an answer" : "an implementation plan";
+  const subject = i.mode === "answer" ? "an answer" : "a draft plan or answer";
   const verifyRule =
     i.mode === "answer"
       ? `- For every factual claim, give exactly one verdict:

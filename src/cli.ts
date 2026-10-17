@@ -269,7 +269,8 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
     mode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
 
   console.log(
-    `  mode ${mode} · ${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
+    `  subject ${mode === "answer" ? "general question" : "this repository"} · ` +
+      `${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
   );
   checkFamily(models, check, checkSource);
   const canAsk = process.stdin.isTTY === true && process.stdout.isTTY === true;

@@ -1,5 +1,6 @@
 {
   "gate": true,
+  "mode": "answer",
   "familyCheck": "warn",
   "models": {
     "drafter": {
