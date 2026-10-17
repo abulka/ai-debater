@@ -369,6 +369,12 @@ provider ID and would make a provider-based check useless.
   review, and a same-family pair would silently measure an extra pass instead.
   `--strict` does the same for one run without editing the file.
 
+The choice is stored in two places: the repository's `.adv/config.json`, which
+wins field by field, and `~/.config/adv/config.json` (honours
+`XDG_CONFIG_HOME`), which is the user's last choice. Any directory without a
+config — including every answer-mode run — uses the last choice rather than the
+built-in default, and `adv init` seeds a new repository from it.
+
 ---
 
 ## 9. Layout

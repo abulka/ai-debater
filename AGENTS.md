@@ -165,6 +165,12 @@ adv run "…" --drafter groq/openai/gpt-oss-120b --drafter-family gpt \
             --reviewer groq/openai/gpt-oss-20b --reviewer-family gpt
 ```
 
+**A model choice sticks.** Choosing models writes the repository's
+`.adv/config.json` **and** `~/.config/adv/config.json` (honours
+`XDG_CONFIG_HOME`). A directory with no `.adv/` — including every answer-mode
+run — uses the last choice rather than `DEFAULT_CONFIG`, and `adv init` seeds a
+new repository from it. A repository's own file still wins, field by field.
+
 Probe a model before relying on it:
 
 ```sh

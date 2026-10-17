@@ -4,12 +4,12 @@
   "familyCheck": "warn",
   "models": {
     "drafter": {
-      "ref": "groq/openai/gpt-oss-120b",
-      "family": "gpt"
+      "ref": "anthropic/claude-sonnet-5-5",
+      "family": "claude"
     },
     "reviewer": {
-      "ref": "groq/openai/gpt-oss-20b",
-      "family": "gpt"
+      "ref": "openrouter/openai/gpt-6-luna",
+      "family": "openai"
     }
   }
 }

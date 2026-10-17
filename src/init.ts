@@ -1,6 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_CONFIG } from "./config.ts";
+import { DEFAULT_CONFIG, loadUserConfig } from "./config.ts";
 
 const CRITERIA_TEMPLATE = `# Criteria
 
@@ -53,9 +53,12 @@ export async function initRepo(repo: string): Promise<InitResult> {
     DECISIONS_TEMPLATE,
     ".adv/decisions.md",
   );
+  // Seed with the models the human last chose, not the built-in default: a new
+  // repository should not silently reset a choice made in the TUI.
+  const seed = (await loadUserConfig()) ?? DEFAULT_CONFIG;
   await putIfAbsent(
     path.join(repo, ".adv", "config.json"),
-    `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`,
+    `${JSON.stringify(seed, null, 2)}\n`,
     ".adv/config.json",
   );
 
