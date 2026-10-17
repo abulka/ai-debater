@@ -1,5 +1,6 @@
 import type { Changelog, Claims, Gate, Review } from "./contracts.ts";
 import type { DiffAssessment } from "./diff.ts";
+import { verdictCounts } from "./gate-model.ts";
 
 const rule = (n: number) => "─".repeat(n);
 
@@ -13,6 +14,44 @@ export function renderResult(a: {
   review: Review;
 }): string {
   const out: string[] = [];
+  const counts = verdictCounts(a.claims, a.review);
+  const claimText = (id: string) => a.claims.verifiable.find((c) => c.id === id)?.text ?? "";
+  const refuted = a.review.verdicts.filter((v) => v.verdict === "refuted");
+  const accepted = a.review.extra_findings.filter(
+    (f) => a.gate.findings.find((g) => g.id === f.id)?.disposition === "accepted",
+  );
+
+  // Lead with what the review actually did. The plan is the product, but the
+  // reason to run two models is the catch, and it should not be buried under
+  // fifty lines of plan. Findings count: the real 04-08 run's caught URL typo
+  // arrived as an accepted finding, not a refuted claim, so a summary that only
+  // counted refutations reported "nothing caught" about a run that caught one.
+  out.push(`── review ${rule(50)}`);
+  out.push(
+    `  ${counts.claims} verifiable claim(s) · ${counts.confirmed} confirmed · ` +
+      `${counts.refuted} refuted · ${counts.unverifiable} unverifiable` +
+      (counts.noVerdict ? ` · ${counts.noVerdict} without a verdict` : ""),
+  );
+  if (refuted.length === 0 && accepted.length === 0) {
+    out.push("  nothing caught — the reviewer upheld every claim it could check and raised no findings");
+  }
+  for (const v of refuted) {
+    if (v.verdict !== "refuted") continue;
+    out.push(`  refuted   ${v.id}  ${claimText(v.id)}`);
+    out.push(`            [${v.evidence}]${v.note ? ` — ${v.note}` : ""}`);
+  }
+  for (const f of accepted.slice(0, 3)) {
+    out.push(`  accepted  ${f.id}  ${f.text}`);
+    if (f.evidence) out.push(`            [${f.evidence}]`);
+  }
+  if (accepted.length > 3) out.push(`            … and ${accepted.length - 3} more accepted finding(s)`);
+  out.push(
+    `  ${counts.findings} finding(s) · ${accepted.length} accepted` +
+      (counts.unverifiable
+        ? `  ·  ${counts.unverifiable} claim(s) could not be settled from files — the honest answer`
+        : ""),
+  );
+  out.push("");
 
   out.push(`── plan.v2 ${rule(50)}`);
   out.push(a.plan.trim());

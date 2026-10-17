@@ -128,6 +128,16 @@ export const RunState = z.object({
   task: z.string(),
   mode: z.enum(["plan", "answer"]),
   models: z.object({ drafter: ModelRef, reviewer: ModelRef }),
+  /**
+   * URLs repaired deterministically before the review saw the plan. Recorded so
+   * the artifact is not silently different from what the model wrote.
+   */
+  urlRepairs: z.array(z.object({ before: z.string(), after: z.string() })).optional(),
+  /**
+   * Why the run stopped, when it stopped by failing. Without this a dead run
+   * and a parked one look identical unless you notice the missing artifacts.
+   */
+  error: z.string().optional(),
 });
 
 /* Envelopes: what an agent must return from one call. */

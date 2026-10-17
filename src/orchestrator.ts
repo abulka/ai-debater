@@ -91,6 +91,60 @@ export const saveState = async (p: Paths, state: RunState) =>
 export const loadState = async (p: Paths): Promise<RunState> =>
   RunState.parse(await readJson(p.state));
 
+/**
+ * Record that this run stopped because something broke.
+ *
+ * Never let this mask the original error: the reason the step failed is the
+ * useful message, and the state file is only bookkeeping. A run that keeps its
+ * earlier state after a failure is indistinguishable from one parked at the
+ * gate — which is exactly the bug that left a run reading `created` with no
+ * artifacts and no way to tell whether it was waiting or dead.
+ */
+export async function markFailed(p: Paths, err: unknown): Promise<void> {
+  try {
+    const current = await loadState(p);
+    const error = err instanceof Error ? err.message : String(err);
+    await saveState(p, { ...current, state: "failed", error: error.slice(0, 2000) });
+  } catch {
+    /* the original error is the one worth reporting */
+  }
+}
+
+export type ModelPair = {
+  drafter: { ref: string; family: string };
+  reviewer: { ref: string; family: string };
+};
+
+/**
+ * Which models a resumed run uses.
+ *
+ * The rebuttal is written by the drafter, so a resumed run must use the models
+ * recorded in `state.json`, not whatever `.adv/config.json` says today. These
+ * diverge the moment someone passes `--drafter`, changes the config, or picks a
+ * new model in the TUI — and the failure is silent: a different model rewrites
+ * a plan it did not write, and the artifacts look normal.
+ *
+ * An explicit flag still wins, because a human naming a model is an instruction,
+ * not an accident. It is reported so the inconsistency is on the record.
+ */
+export function resumedModels(
+  recorded: ModelPair,
+  configured: ModelPair,
+  explicit: { drafter: boolean; reviewer: boolean },
+): {
+  models: ModelPair;
+  overrides: { role: "drafter" | "reviewer"; chosen: string; wrote: string }[];
+} {
+  const models: ModelPair = {
+    drafter: explicit.drafter ? configured.drafter : recorded.drafter,
+    reviewer: explicit.reviewer ? configured.reviewer : recorded.reviewer,
+  };
+  const overrides = (["drafter", "reviewer"] as const)
+    .filter((role) => explicit[role] && models[role].ref !== recorded[role].ref)
+    .map((role) => ({ role, chosen: models[role].ref, wrote: recorded[role].ref }));
+  return { models, overrides };
+}
+
 /** The most recent run for this repository, if any. */
 export async function latestRun(repo: string): Promise<string | null> {
   try {

@@ -1,5 +1,6 @@
 import * as readline from "node:readline/promises";
 import type { Claims, Gate, Review } from "./contracts.ts";
+import { describeJudgmentCall } from "./gate-model.ts";
 
 /**
  * The human gate. Nothing here is decided by a model: the human answers every
@@ -36,12 +37,9 @@ export async function collectGate(claims: Claims, review: Review): Promise<Gate>
   try {
     console.log("");
     for (const judgment of claims.judgment) {
-      const tradeoffs = review.tradeoffs.find((t) => t.id === judgment.id);
-      console.log(`  ${judgment.id}  ${judgment.text}`);
-      judgment.options.forEach((option, i) => {
-        const against = tradeoffs?.per_option.find((p) => p.option === option)?.against ?? [];
-        console.log(`     ${i + 1}. ${option}${against.length ? `   — ${against.join("; ")}` : ""}`);
-      });
+      const [title, ...options] = describeJudgmentCall(judgment, review);
+      console.log(`  ${title}`);
+      for (const option of options) console.log(`     ${option}`);
 
       for (;;) {
         const answer = (await ask(`  ${judgment.id}: 1-${judgment.options.length}, or "open": `)).trim();

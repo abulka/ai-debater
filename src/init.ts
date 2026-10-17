@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DEFAULT_CONFIG } from "./config.ts";
 
@@ -62,12 +62,24 @@ export async function initRepo(repo: string): Promise<InitResult> {
   return { created, kept };
 }
 
-/** True once the human has initialised criteria here. */
-export async function hasAdvDir(repo: string): Promise<boolean> {
-  try {
-    await readFile(path.join(repo, ".adv", "criteria.md"), "utf8");
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * What `.adv/` actually contains. These are two different questions, and the
+ * TUI used to conflate them: it tested only `criteria.md`, so a directory with
+ * `.adv/config.json` (which Ctrl+P writes) reported "no .adv/ here" while
+ * `.adv/` was sitting there, and a run with config but no criteria was told
+ * nothing about the missing criteria.
+ */
+export interface AdvState {
+  dir: boolean;
+  criteria: boolean;
+}
+
+export async function advState(repo: string): Promise<AdvState> {
+  const dir = await stat(path.join(repo, ".adv"))
+    .then((s) => s.isDirectory())
+    .catch(() => false);
+  const criteria = await readFile(path.join(repo, ".adv", "criteria.md"), "utf8")
+    .then(() => true)
+    .catch(() => false);
+  return { dir, criteria };
 }

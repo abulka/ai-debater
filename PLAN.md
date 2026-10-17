@@ -18,8 +18,9 @@ the implementation plan. Where the two disagree, the locked decisions below win.
 | M0 feasibility spike | **done** — see `spike/README.md` |
 | M1 core loop | **done** — `adv init`, `run`, `decide`, `run --resume` |
 | TUI | **done early** (was M4) — bare `adv`; settings and model picker on Ctrl+P |
-| M2 evidence execution | **next** |
-| M3 real trial | not started |
+| Visibility batch | **done 17 Oct** — gate panels, readable progress, resume/family/failed fixes |
+| M3 real trial | **next** |
+| M2 evidence execution | after the trial — scoped by its `unverifiable` bucket |
 | M4 revise | not started |
 
 Working rules for anyone picking this up — especially "do not run a full
@@ -72,7 +73,7 @@ edits the repo.
 The user does what they do today — states a task — with one optional sticky file.
 
 ```
-$ adv init                     # once per repo: scaffold .adv/
+$ adv init                     # optional, once per repo: criteria + decisions
 $ adv run "Add rate limiting to the public API"
   drafting…… ok (12s)
   reviewing…… 4 verdicts, 1 finding (9s)
@@ -91,8 +92,8 @@ $ adv run "Add rate limiting to the public API"
 ```
 
 ```
-$ adv decide .adv/runs/2026-10-17T10-22
-$ adv run --resume .adv/runs/2026-10-17T10-22
+$ adv decide 2026-10-17T10-22-33
+$ adv run --resume 2026-10-17T10-22-33
   rebutting…… ok (7s)
   ── plan.v2 ──────────────────────────────────────────
   <the plan, now reflecting J1 -> in-process, J2 -> per-key>
@@ -349,6 +350,7 @@ and prints raw output.
   },
   "rounds": 1,
   "gate": true,
+  "familyCheck": "warn",
   "runDir": ".adv/runs",
   "timeouts": { "draft": 600, "review": 600, "rebut": 600 }
 }
@@ -357,6 +359,15 @@ and prints raw output.
 `family` is explicit and required. The check compares `family` values, **not
 providers**, because routing through a gateway puts every model under one
 provider ID and would make a provider-based check useless.
+
+`familyCheck` decides what a same-family pair does:
+
+- `"warn"` (default) — print the warning and run. This is right for the fast
+  groq pair, which shares a family on purpose.
+- `"require"` — refuse to start, and refuse to resume. This is right for any run
+  whose result is evidence: the M3 trial and the §12 eval measure *cross-family*
+  review, and a same-family pair would silently measure an extra pass instead.
+  `--strict` does the same for one run without editing the file.
 
 ---
 
@@ -445,6 +456,21 @@ anything: it is simply the easiest way to answer the same gate.
 4. **Result** — the same rendering as the CLI, scrollable, with the run
    directory in the footer.
 
+*The gate gap, closed 17 Oct.* It used to show the judgment call, its options
+and the reviewer's notes against each, but **not the draft those options were
+about** — the human was deciding about a document they could not see, which is
+exactly the copy-paste problem the tool exists to remove. The first real use hit
+it: a call about whether a list was complete, with no way to read the list.
+Three panels close it: `d` opens the draft, `v` opens every verdict with its
+evidence, `e` opens the cited file at the cited line. All three scroll with the
+same code as the result view and return to the same question on Esc.
+
+The review's state is now on **every** gate screen — counts of confirmed,
+refuted and unverifiable claims, findings, and warnings — instead of only the
+first, where it vanished as soon as the human moved on to decide something. A
+finding whose evidence names a file outside the repository is refused by the
+panel rather than shown: the path came from a model.
+
 The CLI commands stay for scripting and for the M3 eval. On a non-TTY, bare
 `adv` refuses with a pointer to `adv run` rather than hanging.
 
@@ -502,9 +528,10 @@ record outcome and cost.
 
 **M4 — revise.** Adjust prompts, allowlists, and the claim format from the
 trial; decide whether a second review pass, `adv revise`, or a slash-command
-wrapper is worth adding. The **TUI landed early**, before M2, because the CLI was
-too hard to use in practice — that reordering was deliberate, and it is built on
-the `render`/library seam.
+wrapper is worth adding. The gate panels and the early TUI landed before M2
+instead: the CLI was too hard to use in practice, and deciding about a document
+you cannot see is not a gate. That reordering was deliberate, and both are built
+on the `render`/library seam.
 
 ---
 
@@ -514,6 +541,9 @@ Process measures:
 
 - No manual copy-paste between draft and the gate.
 - Every verdict is schema-valid and cites `file:line` or a URL.
+- Evidence is checked **deterministically** for defects a reader cannot see:
+  missing files, and invisible characters inside URLs (`src/urls.ts`). A
+  reviewer confirming a broken citation is not a finding, it is a blind spot.
 - Every hunk in `plan.v2` maps to a changelog item; nothing unattributed.
 - Every judgment call ends in a human entry, never a model choice.
 - In the trial, at least one concrete error caught that the drafter alone
@@ -542,12 +572,13 @@ separates "diversity" from "the whole loop".
 | Runner/API drift across opencode versions | Pin versions; M0 confirms against `/v2/openapi.json`; `Runner` seam |
 | Models fail the output schema | Validate, retry once with the error, then stop |
 | Reviewer fabricates evidence | v1 accepts only `file:line`/URL; command-like evidence rejected; M2 runs runnable evidence |
+| Reviewer confirms a citation that is broken but looks fine | Deterministic check, not a model judgment: invisible characters in URLs are repaired before review and flagged in evidence (`src/urls.ts`); missing files are flagged |
 | **Agent routes around a deny using another tool** | Deny-by-default permissions (`*` deny first), never deny `edit`/`shell` alone; the permissions check asserts the agent used only allowlisted tools and no MCP server |
 | Reviewer quietly invents criteria | `criteria.md` when present; warn + minimal default when absent |
 | Reviewer bounded by drafter's claims | `extra_findings` channel, human-triaged at the gate |
 | Human decisions never reach the plan | Rebuttal scope includes decisions; changelog proves application |
 | Drafter over-edits during rebuttal | Rebut only authorized items; M1 diff check flags the rest |
-| Gateway collapses model identity | Explicit `family` field, not provider-based — now a **warning**, not a block, since the user picks models in the TUI |
+| Gateway collapses model identity | Explicit `family` field, not provider-based — a **warning** by default, a hard stop with `familyCheck: "require"` (the trial and the eval use it) |
 | Overhead exceeds benefit on small tasks | Don't run it on small tasks; the §12 eval decides |
 | Executing model-chosen commands (M2) | Approval prompts; narrow allowlist |
 | **A model is listed but dead, or slow enough to stall a run** | Probe once before wiring it in; use the groq pair for a fast loop; per-model-call timeout of 180s |
@@ -577,6 +608,20 @@ separates "diversity" from "the whole loop".
   `~/.local/share/adv/runs/<repo-name>-<hash>/<timestamp>/`, for plan and answer
   mode alike. Nothing is written into a directory `adv` was merely started in.
   `adv decide`/`run --resume`/`status` accept a bare run name.
+- **Does resuming use the config's models or the run's?** The run's. The
+  rebuttal is written by the drafter, so `run --resume` uses `state.json`'s pair;
+  resuming with the config default let a model rewrite a plan it did not write.
+  An explicit flag still wins and is reported as an override.
+- **Is a same-family pair a warning or an error?** Both, decided by
+  `familyCheck`: `"warn"` for day-to-day and the fast test pair, `"require"` for
+  the trial and the eval, where the result must be evidence. `--strict` for one
+  run.
+- **`--help` and the `.adv/` detection were lying.** `adv --help` printed
+  nothing and fell into the TUI; `hasAdvDir` tested `criteria.md` while claiming
+  to test `.adv/`. Both fixed: usage prints, and `.adv/` presence and criteria
+  presence are now separate questions (`advState`) — a repo with only
+  `.adv/config.json` opens the start screen and is *told* the criteria are
+  missing, instead of being asked to initialise a directory that exists.
 
 ### Still open
 
@@ -593,17 +638,10 @@ separates "diversity" from "the whole loop".
   been observed firing against a real occurrence — the classification is tested
   against the recorded error, and the retry path against a stubbed call, but no
   live run has triggered it yet.
-- **`hasAdvDir` is narrower than its name.** It tests `.adv/criteria.md`, so a
-  directory holding only `.adv/config.json` (what Ctrl+P writes) reports "No
-  `.adv/` in …" though `.adv/` exists. Re-prompting for criteria is right; the
-  wording is not.
 - **`hidden: true` is set on the agents, but is it honoured by the picker?**
   Not verified: `opencode debug agents` and `GET /api/agent` both list hidden
   agents (`title`, `summary`, `compaction` are hidden builtins and all appear),
   so neither is a visibility test. The interactive picker is the only test.
-- **`adv --help` does not print usage.** With no subcommand it falls through to
-  the TUI and fails with "the TUI needs a terminal". `--help` is parsed as a flag
-  but never acted on.
 
 ---
 

@@ -63,11 +63,14 @@ replacement for tests. The models never resolve judgment calls.
 | M0 feasibility spike | **done** — `spike/README.md` |
 | M1 core loop | **done** — `adv init`, `run`, `decide`, `run --resume` |
 | TUI | **done early** (was scheduled for M4) — bare `adv` |
-| M2 evidence execution | **next** |
-| M3 real trial | not started |
+| Visibility batch | **done 17 Oct** — gate panels, readable progress, resume/family/failed fixes |
+| M3 real trial | **next** |
+| M2 evidence execution | after the trial — its scope comes from the trial's `unverifiable` bucket |
 | M4 revise | not started |
 
-Typecheck must stay clean: `bun run typecheck`.
+Typecheck must stay clean: `bun run typecheck`. Tests must stay green:
+`bun test` (the gate mapping, resume-model choice and failed-state write are
+covered there; the TUI layout itself is not).
 
 ---
 
@@ -76,6 +79,7 @@ Typecheck must stay clean: `bun run typecheck`.
 ```sh
 bun install
 bun run typecheck              # must pass
+bun test                       # must pass
 
 bun link                       # once: puts `adv` on PATH
 adv                            # TUI for the current directory
@@ -83,7 +87,7 @@ adv --dir /path/to/repo        # TUI for another repo
 
 # CLI (scriptable)
 adv init --dir <repo>          # criteria, decisions and config (optional)
-adv run "<task>" --dir <repo> [--no-gate] [--general]
+adv run "<task>" --dir <repo> [--no-gate] [--general] [--strict]
 adv decide [<run>]
 adv run --resume [<run>]
 adv status [<run>]
@@ -108,7 +112,16 @@ for both modes. `adv decide`/`run --resume`/`status` take a bare run name.
 | Tab | Toggle plan / answer mode |
 | Enter | Run the typed task |
 | ↑↓ Enter | Answer the gate |
-| ↑↓ · q | Scroll the result |
+| l | Gate: leave a judgment call open (a real disposition, not a skip) |
+| d | Gate: open the draft the current call is about, scrollable |
+| v | Gate: open every verdict with its evidence |
+| e | Gate: open the cited file at the cited line (findings only) |
+| Esc | Close a panel and return to the same question |
+| ↑↓ · q | Scroll the result; `q` quits |
+
+The gate shows the review's state on every screen — counts, warnings, what was
+refuted — and the three panels are how the human gets the context to decide
+rather than deciding blind.
 
 The first-run screen appears when the directory has no `.adv/`. Choose
 "Initialise .adv/ here", or "Continue without it" (models then default to
@@ -121,14 +134,31 @@ The first-run screen appears when the directory has no `.adv/`. Choose
 | Model | Verdict |
 | --- | --- |
 | `groq/openai/gpt-oss-120b` + `-20b` | **use for testing** — whole pipeline in ~16s |
+| `anthropic/claude-sonnet-5-5` | works, instant plain reply — **trial drafter** |
+| `opencode-go/gpt-6-luna` | works, fast — **trial reviewer** (family openai) |
 | `opencode-go/deepseek-v4.1-flash` | works, ~86s per agent step |
 | `opencode-go/glm-5.3-flash` | works, ~130s per agent step |
 | `opencode-go/qwen3.8-flash` | 7.6s for a plain reply, slow with tool use |
+| `openai/gpt-5.2` | **no credit** — `credit_balance_exhausted` on the direct OpenAI account |
 | `opencode-go/mimo-v2.6-flash` | **dead** — `model_coming_soon` |
 | `opencode-go/muse-spark-1.3-contributor` | **blocked** — trains on request data; the workspace privacy opt-in is not in the desktop app |
 | `opencode/*` (incl. `big-pickle`, `muse-spark-1.3`) | **no credit** — separate account, `402` |
 
 The `opencode` provider is *not* the `opencode-go` subscription. Do not use it.
+
+The trial pair is anthropic + openai **families** on two different providers: the
+direct OpenAI account has no credit, so the reviewer goes through the gateway.
+Do not "fix" that by pairing two `opencode-go` models and leaving both families
+as `opencode-go` — the check compares the explicit `family` field.
+
+**`DEFAULT_CONFIG` is now this pair**, because it is the configuration the tool is
+meant to be used in: competent, cross-family, fast. It costs real money per run.
+For a free loop, pass the groq pair explicitly:
+
+```sh
+adv run "…" --drafter groq/openai/gpt-oss-120b --drafter-family gpt \
+            --reviewer groq/openai/gpt-oss-20b --reviewer-family gpt
+```
 
 Probe a model before relying on it:
 
@@ -144,11 +174,14 @@ cd fixtures/toy-repo && opencode run --standalone --format json \
 ```
 src/
   cli.ts            arg parsing + commands (init, run, decide, status, tui)
-  tui.tsx           Ink/React TUI: setup, start, settings, pick, gate, result
+  tui.tsx           Ink/React TUI: setup, start, settings, pick, gate, panels,
+                    result
   pipeline.ts       the shared sequence — both front ends drive this
   runners/
     opencode-run.ts spawns `opencode run`; validate-with-retry; usage
   contracts.ts      zod schemas (claims, review, changelog, gate, state)
+  gate-model.ts     the gate as data: items, answers->gate.json, verdict counts,
+                    scrolling, evidence lookup. Tested.
   prompts.ts        plan/answer prompts; one deliverable per call
   orchestrator.ts   run dirs, state machine, decisions.md
   gate.ts           the CLI gate (interactive or piped)
@@ -180,23 +213,54 @@ spike/              M0
   `opencode debug agents` lists hidden agents too — it is not a visibility test.
 - **Each call asks for one thing** — prose, or one JSON block. Merging them is
   where models get flaky.
+- **A run's model identity lives in `state.json`, not in the config.**
+  `adv run --resume` uses the recorded pair (`resumedModels`), because the
+  rebuttal is written by the drafter: resuming with the config default lets a
+  model rewrite a plan it did not write. An explicit `--drafter`/`--reviewer`
+  still wins, and is reported as an override.
+- **`family` is a statement; `familyOf()` is a guess.** The diversity check
+  compares the explicit `family` fields. `familyOf` only labels models in the
+  picker. Do not use it to decide whether a pair is diverse.
+- **A failure writes `state: "failed"` plus the error.** A run left at
+  `created` means the process died before it could record anything — that is
+  different from a run parked at the gate, and used to be indistinguishable.
+- **A citation can be broken in a way nobody can see.** A zero-width space
+  inside a URL is invisible on screen and fatal when copied; a 20B reviewer
+  returned "10 confirmed, 0 refuted" on a plan containing one. `src/urls.ts`
+  removes invisible characters **inside URL spans only** before the review sees
+  the plan, records the repair in `state.json`, and flags invisible characters
+  in evidence. It deliberately leaves prose alone and leaves visible non-ASCII
+  (an IDN, an accented path) alone: removing those would change the address
+  rather than fix it. Do not ask a model to be the only check on this.
 - The diff check is a **heuristic** (hunk count vs changelog entries). It flags
-  possible out-of-scope edits; it cannot prove one.
+  possible out-of-scope edits; it cannot prove one, and a legitimately unclaimed
+  consequence of a decision will be flagged as readily as a real edit.
 
 ---
 
 ## Next task
 
-**M2 — evidence execution.** Re-run reviewer evidence commands behind an approval
-prompt (reusing OpenCode's ask flow), write `audit.json`, re-audit `plan.v2` for
-regressions in previously confirmed claims, and disable MCP servers at the server
-level as a second line of defence.
+**M3 — the real trial, before M2.** One genuinely uncertain plan in a real repo,
+a different-family pair, `familyCheck: "require"`, with outcome and cost
+recorded.
 
-Open questions to resolve first:
+The order matters: M2's value proposition is shrinking the `unverifiable`
+bucket, so building it first would confound cross-family review with command
+evidence. Let the trial's own `unverifiable` bucket write M2's spec.
 
-- Which commands belong on the evidence allowlist?
-- Is one rebuttal round enough, or is a correctness-critical adaptive second pass
-  needed?
-- Which model pairing for the M3 trial (must be different families)?
+Before the trial:
 
-Before starting M2, ask the human whether to run anything that calls a model.
+- pick the pair with a 10-second probe — PLAN's original anthropic/openai pair if
+  the account has credit, otherwise a deepseek drafter with a strong (not 20B)
+  reviewer;
+- set `familyCheck: "require"` in that repo's `.adv/config.json` (or pass
+  `--strict`), so the run cannot silently measure an extra pass instead of
+  cross-family review;
+- run it through the TUI: the gate panels are what make the catch — or its
+  absence — visible enough to judge.
+
+M2 then keeps its valuable core: approval-based execution of cited evidence,
+`audit.json`, and the MCP server-level disable. Its allowlist comes from what
+the trial actually returned `unverifiable`.
+
+Before anything that calls a model, ask the human.

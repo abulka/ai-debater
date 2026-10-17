@@ -3,52 +3,37 @@ import React, { useEffect, useMemo, useState } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
 import type { Config } from "./config.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
-import { hasAdvDir, initRepo } from "./init.ts";
-import { familyOf, listModels, sameFamily } from "./models.ts";
+import { advState, initRepo } from "./init.ts";
+import {
+  answersToGate,
+  buildItems,
+  clampOffset,
+  gateWarnings,
+  maxOffset,
+  readEvidenceContext,
+  statusLine,
+  verdictCounts,
+  type GateAnswer,
+  type GateItem,
+} from "./gate-model.ts";
+import { familyClash, familyOf, listModels } from "./models.ts";
 import { appendDecisions, displayPath, readCriteria, readDecisions } from "./orchestrator.ts";
-import { runHead, runTail, saveGate, type Head, type Tail } from "./pipeline.ts";
+import { runHead, runTail, saveGate, type Head, type Reporting, type Tail } from "./pipeline.ts";
 import { renderResult } from "./render.ts";
 import type { Mode } from "./runner.ts";
 
-type Phase = "setup" | "start" | "settings" | "pick" | "running" | "gate" | "working" | "result" | "error";
+type Phase =
+  | "setup"
+  | "start"
+  | "settings"
+  | "pick"
+  | "running"
+  | "gate"
+  | "working"
+  | "result"
+  | "error";
 
-interface GateItem {
-  id: string;
-  kind: "judgment" | "finding";
-  title: string;
-  detail: string[];
-  options: string[];
-  values: string[];
-}
-
-function buildItems(claims: Claims, review: Review): GateItem[] {
-  const items: GateItem[] = [];
-  for (const j of claims.judgment) {
-    const tradeoffs = review.tradeoffs.find((t) => t.id === j.id);
-    items.push({
-      id: j.id,
-      kind: "judgment",
-      title: j.text,
-      detail: j.options.map((option) => {
-        const against = tradeoffs?.per_option.find((p) => p.option === option)?.against ?? [];
-        return `${option}${against.length ? `  — ${against.join("; ")}` : ""}`;
-      }),
-      options: [...j.options, "leave it open"],
-      values: [...j.options, "open"],
-    });
-  }
-  for (const f of review.extra_findings) {
-    items.push({
-      id: f.id,
-      kind: "finding",
-      title: f.text,
-      detail: f.evidence ? [`[${f.evidence}]`] : f.note ? [f.note] : [],
-      options: ["accept", "dismiss"],
-      values: ["accepted", "dismissed"],
-    });
-  }
-  return items;
-}
+type Panel = { title: string; lines: string[] };
 
 function Header({ right }: { right: string }) {
   return (
@@ -67,22 +52,80 @@ function QuitHint() {
   return null;
 }
 
+/** Terminal height for a scrollable pane, leaving room for the chrome. */
+const paneHeight = (chrome: number) => Math.max(6, (process.stdout.rows ?? 24) - chrome);
+
+/* ------------------------------------------------------------------ *
+ * One scrollable pane, used by the panels and by the result view. The
+ * arithmetic lives in gate-model.ts so "the list will not move" is one
+ * bug, tested once, and not four copies of the same off-by-one.
+ * ------------------------------------------------------------------ */
+
+function Scroller({
+  title,
+  lines,
+  footer,
+  onClose,
+}: {
+  title: string;
+  lines: string[];
+  footer: string;
+  onClose: () => void;
+}) {
+  const height = paneHeight(7);
+  const [offset, setOffset] = useState(0);
+
+  useInput((input, key) => {
+    if (key.escape || input === "q") {
+      onClose();
+      return;
+    }
+    if (key.downArrow || input === "j") setOffset((o) => clampOffset(o + 1, lines.length, height));
+    else if (key.upArrow || input === "k") setOffset((o) => clampOffset(o - 1, lines.length, height));
+    else if (key.pageDown || input === " ") setOffset((o) => clampOffset(o + height, lines.length, height));
+    else if (key.pageUp) setOffset((o) => clampOffset(o - height, lines.length, height));
+    else if (input === "g") setOffset(0);
+    else if (input === "G") setOffset(maxOffset(lines.length, height));
+  });
+
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right={title} />
+      </Box>
+      <Box flexDirection="column">
+        {lines.slice(offset, offset + height).map((line, i) => (
+          <Text key={i}>{line}</Text>
+        ))}
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>
+          {lines.length === 0 ? "empty" : `${offset + 1}–${Math.min(lines.length, offset + height)} of ${lines.length}`}
+          {" · ↑↓ scroll · Esc back"}
+        </Text>
+      </Box>
+      <Box>
+        <Text dimColor>{footer}</Text>
+      </Box>
+      <QuitHint />
+    </Box>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 
 function Setup({
   repo,
   selection,
-  onChoose,
 }: {
   repo: string;
   selection: number;
-  onChoose: (action: "init" | "skip") => void;
 }) {
   const options = [
-    { label: "Initialise .adv/ here", hint: "creates criteria, decisions, config and the agents" },
+    { label: "Initialise .adv/ here", hint: "creates criteria, decisions and config" },
     {
       label: "Continue without it",
-      hint: "no criteria — the reviewer may invent them (repo runs still get the agents)",
+      hint: "no criteria — the reviewer has nothing to check trade-offs against",
     },
   ];
 
@@ -97,8 +140,8 @@ function Setup({
         </Text>
       </Box>
       <Text dimColor>
-        .adv/ holds your criteria, settled decisions and model choice. Without it, a run
-        still works but the reviewer has no criteria to check trade-offs against.
+        .adv/ holds your criteria, settled decisions and model choice. Without it, a run still
+        works but the reviewer has no criteria to check trade-offs against.
       </Text>
       <Box flexDirection="column" marginTop={1}>
         {options.map((o, i) => (
@@ -117,11 +160,6 @@ function Setup({
         ))}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>
-          You can choose models on the next screen with Ctrl+P.
-        </Text>
-      </Box>
-      <Box>
         <Text dimColor>↑↓ choose · Enter to confirm · Ctrl+C to quit</Text>
       </Box>
       <QuitHint />
@@ -170,6 +208,8 @@ function Start({
     if (input) setTask(task + input);
   });
 
+  const clash = cfg ? familyClash(cfg.models) : null;
+
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
@@ -187,7 +227,7 @@ function Start({
             : "loading…"}
         </Text>
       </Box>
-      <Box marginBottom={1}>
+      <Box>
         <Text dimColor>mode    </Text>
         <Text color="cyan">{mode === "answer" ? "answer" : "plan"}</Text>
         <Text dimColor>
@@ -198,22 +238,30 @@ function Start({
           {"   (Tab to switch)"}
         </Text>
       </Box>
-      <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+      {clash && (
+        <Box marginTop={1}>
+          <Text color="yellow">
+            ! {clash}
+            {cfg?.familyCheck === "require"
+              ? " — this repo requires different families, so Enter is blocked (Ctrl+P to change)"
+              : " (fine for testing; use --strict or familyCheck: \"require\" for a trial)"}
+          </Text>
+        </Box>
+      )}
+      <Box borderStyle="round" borderColor="cyan" paddingX={1} marginTop={1}>
         {task ? (
           <Text>{task}</Text>
         ) : (
-          <Text dimColor>{mode === "answer" ? "Type your question, then press Enter…" : "Describe the task, then press Enter…"}</Text>
+          <Text dimColor>
+            {mode === "answer" ? "Type your question, then press Enter…" : "Describe the task, then press Enter…"}
+          </Text>
         )}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>
-          Enter run · Tab mode · Ctrl+P settings · Ctrl+C quit
-        </Text>
+        <Text dimColor>Enter run · Tab mode · Ctrl+P settings · Ctrl+C quit</Text>
       </Box>
       <Box>
-        <Text dimColor>
-          models, criteria and decisions live in {repo}/.adv/
-        </Text>
+        <Text dimColor>models, criteria and decisions live in {repo}/.adv/</Text>
       </Box>
       <QuitHint />
     </Box>
@@ -237,12 +285,12 @@ function Settings({
     { label: "mode", value: mode === "answer" ? "answer — general question" : "plan — repository" },
     { label: "back", value: "" },
   ];
-  const warn = sameFamily(cfg.models.drafter.ref, cfg.models.reviewer.ref);
+  const clash = familyClash(cfg.models);
 
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Header right="settings" />
+        <Header right={`settings · family check ${cfg.familyCheck}`} />
       </Box>
       {rows.map((r, i) => (
         <Box key={r.label}>
@@ -253,11 +301,13 @@ function Settings({
           <Text>{r.value}</Text>
         </Box>
       ))}
-      {warn && (
-        <Box marginTop={1}>
-          <Text color="yellow">
-            ! both look like the same family ({familyOf(cfg.models.drafter.ref)}) — the review will
-            add less
+      {clash && (
+        <Box marginTop={1} flexDirection="column">
+          <Text color="yellow">! {clash}</Text>
+          <Text dimColor>
+            {cfg.familyCheck === "require"
+              ? "familyCheck: require — runs here will refuse to start."
+              : "fine for testing. Set familyCheck to \"require\" in .adv/config.json for a trial."}
           </Text>
         </Box>
       )}
@@ -284,9 +334,7 @@ function Pick({
   filter: string;
   index: number;
 }) {
-  const shown = models
-    .filter((m) => m.toLowerCase().includes(filter.toLowerCase()))
-    .slice(0, 500);
+  const shown = models.filter((m) => m.toLowerCase().includes(filter.toLowerCase())).slice(0, 500);
   const height = 12;
   const start = Math.max(0, Math.min(index - 5, Math.max(0, shown.length - height)));
 
@@ -331,18 +379,28 @@ function Busy({ label, log }: { label: string; log: string[] }) {
   }, []);
   const spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[frame % 10];
 
+  // Keep the last few lines in view: a long run would otherwise scroll the
+  // interesting part (what is happening now) off the top.
+  const height = paneHeight(6);
+  const start = Math.max(0, log.length - height);
+
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
         <Header right={label} />
       </Box>
       {log.length === 0 && <Text dimColor>{spinner} starting…</Text>}
-      {log.map((line, i) => (
-        <Box key={i}>
-          <Text color="yellow">{i === log.length - 1 ? `${spinner} ` : "  "}</Text>
-          <Text>{line}</Text>
-        </Box>
-      ))}
+      {log.slice(start).map((line, i) => {
+        const last = start + i === log.length - 1;
+        return (
+          <Box key={start + i}>
+            <Text color="yellow">{last ? `${spinner} ` : "  "}</Text>
+            <Text dimColor={line.startsWith("!")} color={line.startsWith("!") ? "yellow" : undefined}>
+              {line}
+            </Text>
+          </Box>
+        );
+      })}
       <QuitHint />
     </Box>
   );
@@ -355,6 +413,7 @@ function GateView({
   index,
   selection,
   warnings,
+  runDir,
 }: {
   claims: Claims;
   review: Review;
@@ -362,8 +421,10 @@ function GateView({
   index: number;
   selection: number;
   warnings: string[];
+  runDir: string;
 }) {
   const item = items[index];
+  const counts = verdictCounts(claims, review);
   const refuted = review.verdicts.filter((v) => v.verdict === "refuted");
   if (!item) return null;
 
@@ -375,13 +436,22 @@ function GateView({
         />
       </Box>
 
-      {index === 0 && warnings.length > 0 && (
+      {/* The state of the review, on every screen. It used to be shown once,
+          on the first item, and then vanish exactly when it mattered. */}
+      <Box marginBottom={1}>
+        <Text dimColor>{statusLine(counts)}</Text>
+      </Box>
+
+      {warnings.length > 0 && (
         <Box flexDirection="column" marginBottom={1}>
-          {warnings.map((w, i) => (
+          {warnings.slice(0, 3).map((w, i) => (
             <Text key={i} color="yellow">
               ! {w}
             </Text>
           ))}
+          {warnings.length > 3 && (
+            <Text color="yellow">! … and {warnings.length - 3} more</Text>
+          )}
         </Box>
       )}
 
@@ -427,44 +497,10 @@ function GateView({
 
       <Box marginTop={1}>
         <Text dimColor>
-          ↑↓ choose · Enter to confirm
-          {item.kind === "judgment" ? " · l to leave it open" : ""}
-        </Text>
-      </Box>
-    </Box>
-  );
-}
-
-function Result({ text, runDir }: { text: string; runDir: string }) {
-  const { exit } = useApp();
-  const lines = useMemo(() => text.split("\n"), [text]);
-  const height = Math.max(6, (process.stdout.rows ?? 24) - 6);
-  const maxOffset = Math.max(0, lines.length - height);
-  const [offset, setOffset] = useState(0);
-
-  useInput((input, key) => {
-    if (input === "q" || (key.ctrl && input === "c")) exit();
-    if (key.downArrow || input === "j") setOffset((o) => Math.min(maxOffset, o + 1));
-    if (key.upArrow || input === "k") setOffset((o) => Math.max(0, o - 1));
-    if (key.pageDown || input === " ") setOffset((o) => Math.min(maxOffset, o + height));
-    if (key.pageUp) setOffset((o) => Math.max(0, o - height));
-    if (input === "g") setOffset(0);
-    if (input === "G") setOffset(maxOffset);
-  });
-
-  return (
-    <Box flexDirection="column">
-      <Box>
-        <Header right="done" />
-      </Box>
-      <Box flexDirection="column">
-        {lines.slice(offset, offset + height).map((line, i) => (
-          <Text key={i}>{line}</Text>
-        ))}
-      </Box>
-      <Box marginTop={1}>
-        <Text dimColor>
-          {offset + 1}–{Math.min(lines.length, offset + height)} of {lines.length} · ↑↓ scroll · q quit
+          ↑↓ choose · Enter confirm
+          {item.kind === "judgment" ? " · l leave open" : ""}
+          {" · d draft · v verdicts"}
+          {item.evidence ? " · e evidence" : ""}
         </Text>
       </Box>
       <Box>
@@ -476,10 +512,31 @@ function Result({ text, runDir }: { text: string; runDir: string }) {
 
 /* ------------------------------------------------------------------ */
 
+/** Human words for a finished call, in place of `draft/plan`. */
+function callLine(info: {
+  kind: "draft" | "review" | "rebut";
+  step: string;
+  retry: boolean;
+  ms: number;
+  usage: { cost: number };
+}): string {
+  const what =
+    info.kind === "draft"
+      ? info.step === "plan"
+        ? "plan written"
+        : "claims extracted"
+      : info.kind === "review"
+        ? "review returned"
+        : info.step === "plan"
+          ? "revision written"
+          : "changelog written";
+  return `${what}${info.retry ? " (retry)" : ""} — ${(info.ms / 1000).toFixed(1)}s, $${info.usage.cost.toFixed(6)}`;
+}
+
 function App({ repo }: { repo: string }) {
   const { exit } = useApp();
   const [cfg, setCfg] = useState<Config | null>(null);
-  const [hasAdv, setHasAdv] = useState<boolean | null>(null);
+  const [hasCriteria, setHasCriteria] = useState(false);
   const [phase, setPhase] = useState<Phase>("start");
   const [mode, setMode] = useState<Mode>("plan");
   const [task, setTask] = useState("");
@@ -491,26 +548,27 @@ function App({ repo }: { repo: string }) {
   const [index, setIndex] = useState(0);
   const [selection, setSelection] = useState(0);
   const [setupSelection, setSetupSelection] = useState(0);
-  const [answers, setAnswers] = useState<{ id: string; value: string; kind: GateItem["kind"] }[]>([]);
+  const [answers, setAnswers] = useState<GateAnswer[]>([]);
   const [settingsSel, setSettingsSel] = useState(0);
   const [allModels, setAllModels] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
   const [pickIndex, setPickIndex] = useState(0);
   const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
   const [saved, setSaved] = useState<string | null>(null);
+  const [panel, setPanel] = useState<Panel | null>(null);
 
   const addLog = (line: string) => setLog((l) => [...l, line]);
 
   useEffect(() => {
     void (async () => {
       try {
-        const present = await hasAdvDir(repo);
+        const present = await advState(repo);
         const config = await loadConfig(repo);
         setCfg(config);
         setMode(config.mode);
-        setHasAdv(present);
+        setHasCriteria(present.criteria);
         // First run in a repo with no .adv/: ask, rather than silently using defaults.
-        setPhase(present ? "start" : "setup");
+        setPhase(present.dir ? "start" : "setup");
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setPhase("error");
@@ -532,7 +590,7 @@ function App({ repo }: { repo: string }) {
       if (action === "init") {
         await initRepo(repo);
         setCfg(await loadConfig(repo));
-        setHasAdv(true);
+        setHasCriteria(true);
       }
       setPhase("start");
     } catch (e) {
@@ -640,6 +698,23 @@ function App({ repo }: { repo: string }) {
   );
 
   const items = useMemo(() => (head ? buildItems(head.claims, head.review) : []), [head]);
+  const runDir = head ? displayPath(head.paths.dir) : "";
+
+  /* A same-family pair is a warning, unless this repo says the result is
+     evidence — then it is a stop, before any money is spent. */
+  function beginRun() {
+    if (!cfg) return;
+    const clash = familyClash(cfg.models);
+    if (clash && cfg.familyCheck === "require") {
+      setError(
+        `${clash}.\n\nThis repo sets familyCheck: "require", so the run was not started. ` +
+          `Choose a reviewer from another family with Ctrl+P.`,
+      );
+      setPhase("error");
+      return;
+    }
+    setPhase("running");
+  }
 
   /* Run the head of the pipeline once the user commits a task. */
   useEffect(() => {
@@ -648,8 +723,17 @@ function App({ repo }: { repo: string }) {
     void (async () => {
       try {
         const criteria = await readCriteria(repo);
-        if (!criteria.found) addLog("warning: .adv/criteria.md missing — using a fallback");
+        // Answer mode has no repository and needs no criteria; only a plan run
+        // is missing something when the file is absent.
+        if (!criteria.found && mode === "plan") {
+          addLog("! .adv/criteria.md missing — using a fallback");
+        }
+        setHasCriteria(criteria.found);
         const decisions = await readDecisions(repo);
+        const reporting: Reporting = {
+          onCall: (info) => addLog(callLine(info)),
+          onNote: (text) => addLog(text),
+        };
         const result = await runHead(
           repo,
           task,
@@ -657,24 +741,15 @@ function App({ repo }: { repo: string }) {
           decisions,
           cfg.models,
           mode,
-          (info) => {
-            addLog(
-              `${info.kind}/${info.step}${info.retry ? " (retry)" : ""}  ${(info.ms / 1000).toFixed(1)}s  $${info.usage.cost.toFixed(6)}`,
-            );
-          },
+          reporting,
         );
         if (cancelled) return;
-        addLog(
-          `drafted ${result.claims.verifiable.length} verifiable, ${result.claims.judgment.length} judgment`,
-        );
-        addLog(
-          `reviewed ${result.review.verdicts.length} verdicts, ${result.review.extra_findings.length} findings`,
-        );
         setHead(result);
         setPhase("gate");
       } catch (e) {
         if (cancelled) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(`${e instanceof Error ? e.message : String(e)}\n\nthe run is recorded as failed — ` +
+          `adv status shows it, and the artifacts so far are on disk`);
         setPhase("error");
       }
     })();
@@ -683,20 +758,10 @@ function App({ repo }: { repo: string }) {
     };
   }, [phase, head, repo, task, cfg, mode]);
 
-  async function finishGate(all: { id: string; value: string; kind: GateItem["kind"] }[]) {
+  async function finishGate(all: GateAnswer[]) {
     if (!head || !cfg) return;
     setPhase("working");
-    const built: Gate = {
-      decisions: all
-        .filter((a) => a.kind === "judgment")
-        .map((a) => ({ id: a.id, choice: a.value })),
-      findings: all
-        .filter((a) => a.kind === "finding")
-        .map((a) => ({
-          id: a.id,
-          disposition: a.value === "accepted" ? ("accepted" as const) : ("dismissed" as const),
-        })),
-    };
+    const built = answersToGate(all);
     try {
       await saveGate(head.paths, built);
       await appendDecisions(
@@ -710,6 +775,10 @@ function App({ repo }: { repo: string }) {
           })),
       );
       setGate(built);
+      const reporting: Reporting = {
+        onCall: (info) => addLog(callLine(info)),
+        onNote: (text) => addLog(text),
+      };
       const result = await runTail(
         repo,
         head.paths,
@@ -719,8 +788,7 @@ function App({ repo }: { repo: string }) {
         built,
         cfg.models,
         mode,
-        (info) =>
-          addLog(`rebut/${info.step}  ${(info.ms / 1000).toFixed(1)}s  $${info.usage.cost.toFixed(6)}`),
+        reporting,
       );
       setTail(result);
       setPhase("result");
@@ -730,6 +798,67 @@ function App({ repo }: { repo: string }) {
     }
   }
 
+  /* Panels: the draft the calls are about, every verdict, the cited file. */
+  async function openPanel(kind: "draft" | "verdicts" | "evidence") {
+    if (!head) return;
+    const item = items[index];
+
+    if (kind === "draft") {
+      setPanel({
+        title: "plan.v1 — the draft these calls are about",
+        lines: head.plan.split("\n"),
+      });
+      return;
+    }
+
+    if (kind === "verdicts") {
+      const counts = verdictCounts(head.claims, head.review);
+      const lines: string[] = [statusLine(counts), ""];
+      const order = ["refuted", "unverifiable", "confirmed"] as const;
+      for (const verdict of order) {
+        const rows = head.review.verdicts.filter((v) => v.verdict === verdict);
+        if (rows.length === 0) continue;
+        lines.push(verdict.toUpperCase());
+        for (const v of rows) {
+          const text = head.claims.verifiable.find((c) => c.id === v.id)?.text ?? "";
+          lines.push(`  ${v.id}  ${text}`);
+          if (v.verdict === "unverifiable") lines.push(`      ${v.note}`);
+          else lines.push(`      [${v.evidence}]${v.note ? ` — ${v.note}` : ""}`);
+        }
+        lines.push("");
+      }
+      for (const claim of head.claims.verifiable) {
+        if (!head.review.verdicts.some((v) => v.id === claim.id)) {
+          lines.push(`NO VERDICT  ${claim.id}  ${claim.text}`);
+        }
+      }
+      if (head.review.extra_findings.length) {
+        lines.push("", "FINDINGS");
+        for (const f of head.review.extra_findings) {
+          lines.push(`  ${f.id}  ${f.text}`);
+          if (f.evidence) lines.push(`      [${f.evidence}]`);
+          else if (f.note) lines.push(`      ${f.note}`);
+        }
+      }
+      setPanel({ title: "review — every verdict", lines });
+      return;
+    }
+
+    if (!item?.evidence) return;
+    const context = await readEvidenceContext(repo, item.evidence);
+    setPanel({
+      title: `${item.id} — ${item.evidence}`,
+      lines: context
+        ? [`${context.file}${context.line ? `:${context.line}` : ""}`, "", ...context.lines]
+        : [
+            item.evidence,
+            "",
+            "not a readable file in this repository — the reviewer's citation cannot be shown here.",
+            "A citation that does not resolve is itself worth questioning at this gate.",
+          ],
+    });
+  }
+
   /* Gate input. Nothing here is decided by a model. */
   useInput(
     (input, key) => {
@@ -737,7 +866,7 @@ function App({ repo }: { repo: string }) {
       if (!item) return;
 
       const commit = (value: string) => {
-        const next = [...answers, { id: item.id, value, kind: item.kind }];
+        const next = [...answers, { id: item.id, kind: item.kind, value }];
         setAnswers(next);
         setSelection(0);
         if (index + 1 < items.length) setIndex(index + 1);
@@ -752,13 +881,25 @@ function App({ repo }: { repo: string }) {
         setSelection((s) => Math.min(item.options.length - 1, s + 1));
         return;
       }
+      if (input === "d") {
+        void openPanel("draft");
+        return;
+      }
+      if (input === "v") {
+        void openPanel("verdicts");
+        return;
+      }
+      if (input === "e" && item.evidence) {
+        void openPanel("evidence");
+        return;
+      }
       if (input === "l" && item.kind === "judgment") {
         commit("open");
         return;
       }
       if (key.return) commit(item.values[selection] ?? item.values[0]!);
     },
-    { isActive: phase === "gate" },
+    { isActive: phase === "gate" && panel === null },
   );
 
   /* Nothing to ask: go straight through. */
@@ -768,10 +909,8 @@ function App({ repo }: { repo: string }) {
     }
   }, [phase, head, items.length, answers.length]);
 
-  const runDir = head ? displayPath(head.paths.dir) : ".adv/runs";
-
   if (phase === "setup") {
-    return <Setup repo={repo} selection={setupSelection} onChoose={(a) => void chooseSetup(a)} />;
+    return <Setup repo={repo} selection={setupSelection} />;
   }
 
   if (phase === "settings" && cfg) {
@@ -790,7 +929,7 @@ function App({ repo }: { repo: string }) {
         mode={mode}
         task={task}
         setTask={setTask}
-        onRun={() => setPhase("running")}
+        onRun={beginRun}
         onToggleMode={() => setMode((m) => (m === "plan" ? "answer" : "plan"))}
         onSettings={() => void openSettings()}
       />
@@ -801,11 +940,23 @@ function App({ repo }: { repo: string }) {
   if (phase === "working") return <Busy label="applying your decisions" log={log} />;
 
   if (phase === "gate" && head) {
-    const warnings = [
-      ...head.missing.map((id) => `no verdict returned for ${id}`),
-      ...head.evidenceIssues.map((i) => `${i.id} cites a file that does not exist: ${i.evidence}`),
-      ...(hasAdv ? [] : ["no .adv/ — criteria are a fallback"]),
-    ];
+    if (panel) {
+      return (
+        <Scroller
+          title={panel.title}
+          lines={panel.lines}
+          footer={`gate ${index + 1} of ${items.length} · Esc back to the question`}
+          onClose={() => setPanel(null)}
+        />
+      );
+    }
+    const warnings = gateWarnings({
+      missing: head.missing,
+      evidenceIssues: head.evidenceIssues,
+      urlRepairs: head.urlRepairs,
+      // A general question has no repository to take criteria from.
+      hasCriteria: mode === "answer" ? true : hasCriteria,
+    });
     return (
       <GateView
         claims={head.claims}
@@ -814,23 +965,27 @@ function App({ repo }: { repo: string }) {
         index={index}
         selection={selection}
         warnings={warnings}
+        runDir={runDir}
       />
     );
   }
 
   if (phase === "result" && tail && head) {
+    const text = renderResult({
+      plan: tail.plan,
+      changelog: tail.changelog,
+      patch: tail.patch,
+      assessment: tail.assessment,
+      gate: gate ?? { decisions: [], findings: [] },
+      claims: head.claims,
+      review: head.review,
+    });
     return (
-      <Result
-        runDir={runDir}
-        text={renderResult({
-          plan: tail.plan,
-          changelog: tail.changelog,
-          patch: tail.patch,
-          assessment: tail.assessment,
-          gate: gate ?? { decisions: [], findings: [] },
-          claims: head.claims,
-          review: head.review,
-        })}
+      <Scroller
+        title="done"
+        lines={text.split("\n")}
+        footer={`artifacts in ${runDir} · q to quit`}
+        onClose={() => exit()}
       />
     );
   }

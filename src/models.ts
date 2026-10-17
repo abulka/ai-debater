@@ -22,19 +22,37 @@ export async function listModels(repo: string): Promise<string[]> {
 }
 
 /**
- * A coarse family label, used only to warn when the drafter and reviewer look
- * like the same model. It is a heuristic on purpose: providers do not expose a
- * reliable family, and a gateway serves many families under one provider.
+ * A coarse family label, used only to name a model's family in the picker and
+ * to label models in the settings screen.
  *
  * The first token after the provider, lowercased: `opencode-go/muse-spark-1.3`
  * -> "muse", `groq/openai/gpt-oss-120b` -> "openai".
+ *
+ * This is a guess where `familyClash` below is a statement: the explicit
+ * `family` field in `.adv/config.json` is what the diversity check compares,
+ * because a gateway serves many families under one provider.
  */
 export function familyOf(ref: string): string {
   const model = ref.split("/").slice(1).join("/").toLowerCase();
   return model.split(/[-_./]/).filter(Boolean)[0] ?? model;
 }
 
-/** True when the two refs land in the same derived family. */
-export function sameFamily(a: string, b: string): boolean {
-  return familyOf(a) === familyOf(b);
+/**
+ * The diversity check. Compares the **explicit** `family` fields, not the refs:
+ * a gateway serves several families under one provider, and the ref is a guess
+ * where the family is a statement.
+ *
+ * Returns the human-facing sentence, or null when the pair is diverse.
+ */
+export function familyClash(models: {
+  drafter: { ref: string; family: string };
+  reviewer: { ref: string; family: string };
+}): string | null {
+  const a = models.drafter.family.trim().toLowerCase();
+  const b = models.reviewer.family.trim().toLowerCase();
+  if (a !== b) return null;
+  return (
+    `drafter and reviewer share family "${models.drafter.family}" — ` +
+    `the review adds less than a cross-family one would`
+  );
 }

@@ -16,8 +16,10 @@ import { writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "./config.ts";
+import type { FamilyCheck } from "./config.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
 import { collectGate } from "./gate.ts";
+import { gateSummaryLines, gateWarnings } from "./gate-model.ts";
 import { initRepo } from "./init.ts";
 import {
   appendDecisions,
@@ -28,15 +30,17 @@ import {
   readDecisions,
   runPaths,
   runsDir,
+  resumedModels,
   type Paths,
   saveState,
 } from "./orchestrator.ts";
-import { loadArtifacts, runHead, runTail, saveGate, type Models } from "./pipeline.ts";
+import { loadArtifacts, runHead, runTail, saveGate, type Models, type Reporting } from "./pipeline.ts";
+import { familyClash } from "./models.ts";
 import { renderResult } from "./render.ts";
 import type { CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 
-const BOOLEAN_FLAGS = new Set(["no-gate", "general", "help"]);
+const BOOLEAN_FLAGS = new Set(["no-gate", "general", "help", "strict"]);
 
 function parse(args: string[]): { flags: Map<string, string | true>; positional: string[] } {
   const flags = new Map<string, string | true>();
@@ -76,12 +80,38 @@ const resolveRun = (repo: string, dirArg: string) => {
   return runPaths(repo, path.resolve(repo, dirArg));
 };
 
-/** Per-step timing and cost, so a run is legible while it happens. */
+/** Per-call timing and cost, so a run is legible while it happens. */
 const progress: CallHook = ({ kind, step, retry, ms, usage }) => {
   console.log(
-    `  · ${kind}/${step}${retry ? " (retry)" : ""}  ${(ms / 1000).toFixed(1)}s  $${usage.cost.toFixed(6)}`,
+    `    ${kind}/${step}${retry ? " (retry)" : ""}  ${(ms / 1000).toFixed(1)}s  $${usage.cost.toFixed(6)}`,
   );
 };
+
+/** What the pipeline is doing, in words. The TUI renders the same lines. */
+const reporting: Reporting = {
+  onCall: progress,
+  onNote: (text) => console.log(`  ${text}`),
+};
+
+/**
+ * Same-family models are a warning by default, and a hard stop when the result
+ * is meant to be evidence (`familyCheck: "require"`, or `--strict`).
+ *
+ * The trial and the §12 eval exist to measure *cross-family* review. A run that
+ * silently used one family would measure an extra pass instead, and would do it
+ * with the most expensive experiment in the project.
+ */
+function checkFamily(models: Models, check: FamilyCheck, source: string): void {
+  const clash = familyClash(models);
+  if (!clash) return;
+  if (check === "require") {
+    throw new Error(
+      `${clash}.\n  refused: familyCheck is "require" (${source}). ` +
+        `Choose a reviewer from another family, or set it back to "warn".`,
+    );
+  }
+  console.log(`  warning: ${clash}`);
+}
 
 /**
  * A model override must name its family. Defaulting to the provider ID is
@@ -107,37 +137,7 @@ function modelFrom(
 }
 
 function printGateSummary(claims: Claims, review: Review) {
-  const claimText = (id: string) => claims.verifiable.find((c) => c.id === id)?.text ?? "";
-
-  const refuted = review.verdicts.filter((v) => v.verdict === "refuted");
-  if (refuted.length) {
-    console.log(`\n  refuted (${refuted.length}):`);
-    for (const v of refuted) {
-      if (v.verdict !== "refuted") continue;
-      console.log(`    ${v.id}  ${claimText(v.id)}`);
-      console.log(`        [${v.evidence}]${v.note ? ` — ${v.note}` : ""}`);
-    }
-  }
-
-  const unverifiable = review.verdicts.filter((v) => v.verdict === "unverifiable");
-  if (unverifiable.length) {
-    console.log(`\n  unverifiable (${unverifiable.length}):`);
-    for (const v of unverifiable) {
-      if (v.verdict !== "unverifiable") continue;
-      console.log(`    ${v.id}  ${claimText(v.id)}\n        ${v.note}`);
-    }
-  }
-
-  if (review.extra_findings.length) {
-    console.log(`\n  findings (${review.extra_findings.length}):`);
-    for (const f of review.extra_findings) {
-      console.log(`    ${f.id}  ${f.text}`);
-      if (f.evidence) console.log(`        [${f.evidence}]`);
-      else if (f.note) console.log(`        ${f.note}`);
-    }
-  }
-
-  console.log(`\n  judgment calls needing you: ${claims.judgment.length}`);
+  for (const line of gateSummaryLines(claims, review)) console.log(line);
 }
 
 /* ------------------------------------------------------------------ */
@@ -161,7 +161,7 @@ async function finalize(
   mode: Mode,
 ) {
   const state = await loadState(paths);
-  const tail = await runTail(repo, paths, state, claims, review, gate, models, mode, progress);
+  const tail = await runTail(repo, paths, state, claims, review, gate, models, mode, reporting);
   console.log(
     `\n${renderResult({
       plan: tail.plan,
@@ -186,8 +186,11 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
     reviewer: modelFrom(flags.get("reviewer"), flags.get("reviewer-family"), cfg.models.reviewer),
   };
   const mode: Mode = flags.has("general") ? "answer" : cfg.mode;
+  const check: FamilyCheck = flags.has("strict") ? "require" : cfg.familyCheck;
+  const checkSource = flags.has("strict") ? "--strict" : ".adv/config.json";
 
-  const resumeFlag = flags.get("resume");  if (resumeFlag !== undefined) {
+  const resumeFlag = flags.get("resume");
+  if (resumeFlag !== undefined) {
     const dirArg = typeof resumeFlag === "string" ? resumeFlag : await latestRun(repo);
     if (!dirArg) throw new Error("no run to resume");
     const paths = resolveRun(repo, dirArg);
@@ -196,14 +199,36 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
       throw new Error(`run is in state "${art.state.state}", not "gated" — nothing to resume`);
     }
     if (!art.gate) throw new Error("run has no gate answers yet — run `adv decide` first");
-    return finalize(repo, paths, art.claims, art.review, art.gate, models, art.state.mode);
+
+    // The rebuttal is written by the drafter. Resuming with whatever the config
+    // says now means a model can rewrite a plan it did not write, so the run's
+    // own record wins unless the human asks for something else by name.
+    const explicit = {
+      drafter: flags.has("drafter") || flags.has("drafter-family"),
+      reviewer: flags.has("reviewer") || flags.has("reviewer-family"),
+    };
+    const { models: chosen, overrides } = resumedModels(art.state.models, models, explicit);
+    for (const o of overrides) {
+      console.log(
+        `  warning: --${o.role} ${o.chosen} is not the ${o.role} that wrote plan.v1 ` +
+          `(${o.wrote}) — the rebuttal will be written by a different model`,
+      );
+    }
+    console.log(
+      `  models: ${chosen.drafter.ref} [${chosen.drafter.family}]  ->  ` +
+        `${chosen.reviewer.ref} [${chosen.reviewer.family}]  (from the run)`,
+    );
+    checkFamily(chosen, check, checkSource);
+    return finalize(repo, paths, art.claims, art.review, art.gate, chosen, art.state.mode);
   }
 
   const task = positional.join(" ").trim();
   if (!task) throw new Error('usage: adv run "<task>"');
 
   const criteria = await readCriteria(repo);
-  if (!criteria.found) {
+  // Answer mode assumes no repository, so no criteria is the normal case, not a
+  // fault. Warning about it there is noise that makes a correct state look broken.
+  if (!criteria.found && mode === "plan") {
     console.log(
       "  warning: .adv/criteria.md not found — using a minimal fallback. " +
         "Run `adv init`, or the reviewer may invent criteria.",
@@ -214,14 +239,16 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
   console.log(
     `  mode ${mode} · ${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
   );
-  const head = await runHead(repo, task, criteria.text, decisions, models, mode, progress);
+  checkFamily(models, check, checkSource);
+  const head = await runHead(repo, task, criteria.text, decisions, models, mode, reporting);
   console.log(`  run: ${displayPath(head.paths.dir)}`);
-  if (head.missing.length) console.log(`  warning: no verdict for ${head.missing.join(", ")}`);
-  if (head.evidenceIssues.length) {
-    console.log("  warning: evidence cites files that do not exist:");
-    for (const issue of head.evidenceIssues) {
-      console.log(`    ${issue.id}  ${issue.evidence}`);
-    }
+  for (const warning of gateWarnings({
+    missing: head.missing,
+    evidenceIssues: head.evidenceIssues,
+    urlRepairs: head.urlRepairs,
+    hasCriteria: criteria.found || mode === "answer",
+  })) {
+    console.log(`  warning: ${warning}`);
   }
 
   console.log("\n── gate ──");
@@ -279,6 +306,21 @@ async function cmdDecide(flags: Map<string, string | true>, positional: string[]
   if (!dirArg) throw new Error("usage: adv decide <run>");
   const paths = resolveRun(repo, dirArg);
 
+  // Deciding is only meaningful for a run parked at the gate. Without this
+  // check a finished run could be re-parked at `gated` by re-answering it, and
+  // an interrupted one would fail later on a missing artifact instead of
+  // saying what state it is actually in.
+  const state = await loadState(paths);
+  if (state.state === "done") {
+    throw new Error("this run is already done — there is nothing left to decide.");
+  }
+  if (state.state !== "validated" && state.state !== "gated") {
+    throw new Error(
+      `run is in state "${state.state}", not at the gate — only a run that finished ` +
+        `drafting and reviewing can be decided. \`adv status\` shows what it has.`,
+    );
+  }
+
   const art = await loadArtifacts(paths);
   printGateSummary(art.claims, art.review);
   const gate = await collectGate(art.claims, art.review);
@@ -307,8 +349,17 @@ async function cmdStatus(flags: Map<string, string | true>, positional: string[]
   const state = await loadState(paths);
   console.log(`run:    ${displayPath(paths.dir)}`);
   console.log(`state:  ${state.state}`);
+  if (state.error) {
+    const first = state.error.split("\n")[0] ?? state.error;
+    console.log(`error:  ${first.length > 200 ? `${first.slice(0, 200)}…` : first}`);
+  }
   console.log(`task:   ${state.task}`);
   console.log(`models: ${state.models.drafter.ref} -> ${state.models.reviewer.ref}`);
+  const clash = familyClash(state.models);
+  if (clash) console.log(`        ! ${clash}`);
+  for (const r of state.urlRepairs ?? []) {
+    console.log(`repaired: ${r.before} -> ${r.after}`);
+  }
 }
 
 async function cmdTui(flags: Map<string, string | true>) {
@@ -327,10 +378,13 @@ function usage() {
   adv init [--dir <repo>]    criteria, decisions and config (optional)
   adv run "<task>" [--general] [--drafter <model> --drafter-family <f>]
                    [--reviewer <model> --reviewer-family <f>]
-                   [--no-gate] [--dir <repo>]
-  adv run --resume [<run>]
+                   [--strict] [--no-gate] [--dir <repo>]
+  adv run --resume [<run>] [--strict]
   adv decide [<run>]
-  adv status [<run>]`);
+  adv status [<run>]
+
+  --strict  refuse to run when both models share a family. Use it for any run
+            whose result is evidence (the trial, the eval), not for the fast pair.`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -344,6 +398,14 @@ const { flags, positional } = parse(hasCommand ? argv.slice(1) : argv);
 try {
   switch (command) {
     case undefined:
+      // `adv --help` used to fall through to the TUI and fail with "needs a
+      // terminal", which is a bad answer to a question about usage.
+      if (flags.has("help")) {
+        usage();
+        break;
+      }
+      await cmdTui(flags);
+      break;
     case "tui":
       await cmdTui(flags);
       break;

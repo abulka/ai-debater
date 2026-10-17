@@ -12,35 +12,105 @@ a revised plan plus a changelog and a diff. Models verify; the human decides.
 
 **Read these before doing anything:**
 - `AGENTS.md` — the working rules. This is the most important file in the repo.
-- `PLAN.md` — the design and the decisions behind it.
+- `PLAN.md` — the design and the decisions behind it. §14 lists what is still
+  open. It has uncommitted edits in the working tree; read it from disk.
 - `spike/README.md` — findings from the feasibility spike, including four bugs
   that would have silently corrupted runs.
 
-**Where we are.** M0 (spike) and M1 (core loop) are done, plus the TUI, which was
-pulled forward from M4. There is a working `adv` CLI and an Ink TUI, both driven
-by a shared `src/pipeline.ts`. `bun run typecheck` is clean.
+**Where we are.** M0 (spike), M1 (core loop) and the TUI are done. The CLI and
+the Ink TUI both drive `src/pipeline.ts`, `bun run typecheck` is clean, and
+`bun test` covers the gate mapping, the resume-model choice and the failed-state
+write. Since the last handover:
 
-**Next task: M2 — evidence execution.** Re-run the reviewer's cited evidence
-commands behind an approval prompt (reusing OpenCode's ask flow), write
-`audit.json`, re-audit `plan.v2` for regressions in claims that were previously
-confirmed, and consider disabling MCP servers at the server level.
+- **The agent definitions are injected, not installed.** They live in
+  `src/agents.ts` and travel in `OPENCODE_CONFIG_CONTENT` on every call: no files
+  in the target repo, none in `~/.config/opencode`, no setup command. `adv`
+  works in a directory that was never initialised. `templates/agents/*.md` and
+  `adv init --global` are gone; `adv init` now only scaffolds `.adv/`.
+- **Runs live in one user-level store** at
+  `~/.local/share/adv/runs/<repo>-<hash>/<stamp>/` (honours `XDG_DATA_HOME`), for
+  plan and answer mode alike. `adv decide`, `adv run --resume` and `adv status`
+  take a bare run name. `fixtures/toy-repo/.adv/runs/` is a stale leftover from
+  the old layout and can be deleted.
+- A provider-rejected turn now gets **one stateless retry** with a corrective
+  note, and the answer prompt no longer tells the drafter to browse.
+- **The gate is readable.** `d` opens the draft a judgment call is about, `v`
+  opens every verdict with its evidence, `e` opens a finding's cited file at the
+  cited line. The review's state (counts, warnings, refuted) is on every gate
+  screen rather than only the first. The progress log is sentences now
+  ("reviewing — 12 claims sent to …", "rebutting — 1 refuted · 2 decisions",
+  "in scope: V2 fix, J1 → in-process"), and the result leads with what the
+  review actually caught.
+- **Three silent bugs fixed.** `run --resume` uses the models recorded in
+  `state.json` (a run started with `--drafter` no longer resumes with the config
+  default); a failed step persists `state: "failed"` with the error; and the
+  family check is displayed, with `familyCheck: "require"` / `--strict` to make
+  it a hard stop for the trial and the eval.
+- **The default pair is the trial pair** (`anthropic/claude-sonnet-5-5` →
+  `opencode-go/gpt-6-luna`): cross-family, fast, and paid. Free test runs pass
+  the groq pair by flag (see `AGENTS.md`). The old defaults were
+  `deepseek-v4.1-flash` + `glm-5.3-flash`, which took 38.8s just to draft and
+  blew a 120s cap in review.
+- **URLs are checked deterministically.** A zero-width space inside a citation
+  is invisible on screen and fatal when copied; a reviewer confirmed a plan
+  containing one. `src/urls.ts` repairs invisible characters inside URL spans
+  before the review, records the repair, and flags them in evidence.
+- `PLAN.md` §6 and §9 were rewritten to match the above; §8 and §10 now describe
+  `familyCheck` and the gate panels.
+
+**Next task: M3 — the real trial, before M2.** One genuinely uncertain plan in a
+real repo (`~/Devel/test-projects/ai-03-debate` has real history and a real
+stake), a different-family pair, `familyCheck: "require"`, outcome and cost
+recorded.
+
+Why before M2: M2's value is shrinking the `unverifiable` bucket, so building it
+first confounds cross-family review with command evidence. Let the trial's
+`unverifiable` bucket write M2's spec.
+
+Settle these with me before writing code — ask, do not guess:
+
+- Which pairing? Probe the PLAN's original anthropic/openai pair with a
+  10-second probe; if the account has no credit, a deepseek drafter with a
+  **strong** reviewer (not the 20B — a weak adversarial checker tests nothing).
+- Which task in that repo is genuinely uncertain, rather than merely undone?
+- Is one rebuttal round enough, or did the trial leave residue a human would
+  have caught? Only then consider the correctness-critical second review pass.
+
+M2 then keeps: approval-based execution of cited evidence, `audit.json`, and the
+MCP server-level disable as a second line of defence. Its allowlist is the
+trial's `unverifiable` list, not imagination.
+
+**Landmines this repo has already been bitten by** (details in AGENTS.md):
+
+- `OPENCODE_CONFIG_CONTENT` is only read when opencode starts its own server, so
+  every `opencode run` here must pass `--standalone`. Strip it and every run dies
+  with `Agent not found`.
+- `opencode` resolves the project from `$PWD`, and `Bun.spawn({ cwd })` does not
+  set it. Both `--standalone` and an explicit `PWD` are required.
+- opencode's base policy is `allow *`. Deny `*` first: denying only
+  `edit`/`shell` left the reviewer free to route around it with the Playwright
+  MCP tools and open a real browser to download the file.
+- There is no tool named `search`. gpt-oss invents it and the provider rejects
+  the whole turn. `opencode debug agents` and `GET /api/agent` both list hidden
+  agents, so neither is a test of visibility.
 
 **How I want you to work — this is not negotiable:**
 
 1. Do not run any full workflow without asking me first. `adv run`,
-   `adv run --resume`, `adv decide`, and the spike's `roundtrip` check all call
-   models and can take minutes. Tell me what you plan to run and roughly how
-   long, then wait.
+   `adv run --resume`, `adv decide`, and the spike's `roundtrip` and
+   `permissions` checks all call models. Tell me what you plan to run and roughly
+   how long, then wait.
 2. Put an explicit timeout on every shell command. Cap anything that calls a
-   model at 120 seconds. If it times out, report that — do not just retry longer.
-3. For testing, use the fast pair already configured in
-   `fixtures/toy-repo/.adv/config.json`: `groq/openai/gpt-oss-120b` as drafter and
-   `groq/openai/gpt-oss-20b` as reviewer. That runs the whole pipeline in about
-   16 seconds. Do not use the `opencode` provider (no credit) and do not use
-   `mimo-v2.6-flash` (listed but dead).
-4. Keep `bun run typecheck` passing, and do not leave stray processes or files
-   behind.
+   model at 120 seconds. If it times out, report that — do not retry longer.
+3. For testing use the fast pair: `groq/openai/gpt-oss-120b` as **drafter** and
+   `groq/openai/gpt-oss-20b` as **reviewer**. The whole pipeline is ~16s. They
+   are easy to swap by accident, and the 20b is a poor drafter — 3× slower, and
+   it invents tool names. Do not use the `opencode` provider (separate account,
+   no credit) or `mimo-v2.6-flash` (listed but dead).
+4. Keep `bun run typecheck` and `bun test` passing, and leave nothing behind:
+   `pgrep -f 'src/cli.ts'; pgrep -f 'ms-playwright-mcp/mcp-chrome';
+   find . -name 'CANARY*' -not -path './node_modules/*'`.
 
 **Start by** reading `AGENTS.md`, `PLAN.md` and `spike/README.md`, then giving me
-a short summary of the current state and your proposed first step for M2.
+a short summary of the current state and your proposed first step for the trial.
 Do not write code or run anything until I agree with the plan.
