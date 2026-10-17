@@ -58,27 +58,33 @@ write. Since the last handover:
 - `PLAN.md` §6 and §9 were rewritten to match the above; §8 and §10 now describe
   `familyCheck` and the gate panels.
 
-**Next task: M3 — the real trial, before M2.** One genuinely uncertain plan in a
-real repo (`~/Devel/test-projects/ai-03-debate` has real history and a real
-stake), a different-family pair, `familyCheck: "require"`, outcome and cost
-recorded.
+**Next task: M2 — evidence execution**, per `docs/M2-PLAN.md`. The M3 trial is
+done: 30 claims, 29 confirmed, one real refutation (an overbroad claim about the
+gate being the only human interaction), one genuine finding (the MCP disable was
+missing from the slice), 12 decisions settled, 14 changes, $0.48, ~7 minutes.
 
-Why before M2: M2's value is shrinking the `unverifiable` bucket, so building it
-first confounds cross-family review with command evidence. Let the trial's
-`unverifiable` bucket write M2's spec.
+Slice 1 has landed — the contract (`proposes` on `unverifiable`, `audit:<id>`
+evidence, `AuditRecord`), the exact-argv matcher, and the executor (no shell,
+timeout, output cap, scrubbed env, validated record) in `src/audit.ts`, with 30
+tests. Nothing calls it yet.
 
-Settle these with me before writing code — ask, do not guess:
+The next slice, in the plan's §6 order:
 
-- Which pairing? Probe the PLAN's original anthropic/openai pair with a
-  10-second probe; if the account has no credit, a deepseek drafter with a
-  **strong** reviewer (not the 20B — a weak adversarial checker tests nothing).
-- Which task in that repo is genuinely uncertain, rather than merely undone?
-- Is one rebuttal round enough, or did the trial leave residue a human would
-  have caught? Only then consider the correctness-critical second review pass.
+1. a pipeline hook between `reviewed` and `validated` for Tier 1, writing
+   `audit.json`;
+2. merge audit outcomes into the gate and result views — an `audit:<id>` that
+   does not resolve is an evidence defect;
+3. `adv audit <run>` for Tier 2 — the Tier 2 list is empty on purpose, because
+   the trial produced no `unverifiable` claims to build it from;
+4. the MCP server-level disable (still open from the spike).
 
-M2 then keeps: approval-based execution of cited evidence, `audit.json`, and the
-MCP server-level disable as a second line of defence. Its allowlist is the
-trial's `unverifiable` list, not imagination.
+Settle with me before writing code:
+
+- When a proposed check contradicts a claim mechanically, does that claim enter
+  the rebuttal as refuted, or only after the human accepts it at the gate? (The
+  plan settles it: only after acceptance. Confirm the recording mechanism.)
+- Do we run Tier 1 checks *before* the gate (so the human sees outcomes) or only
+  on request? The plan's §4.4 puts the hook between `reviewed` and `validated`.
 
 **Landmines this repo has already been bitten by** (details in AGENTS.md):
 

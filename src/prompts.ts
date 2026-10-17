@@ -17,7 +17,23 @@ const fmt = (v: unknown) => JSON.stringify(v, null, 2);
 
 const EVIDENCE =
   "Evidence is a URL, or a file path optionally with a line (e.g. src/http.ts:88). " +
-  "It is never a command or its output: nothing is executed, so command output cannot be checked.";
+  "It is never a command or its output: you never run anything.";
+
+/**
+ * Plan mode only: a claim that needs a command can be marked unverifiable and a
+ * check proposed. The tool decides whether to run it; the reviewer never sees
+ * the output, and the orchestrator records what actually happened.
+ */
+const PROPOSE_CHECK = `- If a claim could be settled by running ONE command, you may add "proposes" to an
+  "unverifiable" verdict:
+    "proposes": {"argv":["bun","test"],"expect":{"exitCode":0},"why":"one sentence"}
+  - "expect" must be an exit code or an exact substring — something checkable.
+  - "argv" is one executable and its arguments. No shell: no \`sh -c\`, no pipes, no
+    \`&&\`, no globs, no redirection, no \`!\`. If the check needs any of those, it
+    cannot be expressed — leave the claim unverifiable and say what would settle it.
+  - Propose only commands that inspect the repository or run its own checks.
+    Anything else is refused.
+  - You never run it and never see the output. Do not claim you did.`;
 
 const CLAIM_SHAPE = `{"verifiable":[{"id":"V1","text":"..."}],"judgment":[{"id":"J1","text":"...","options":["...","..."]}]}`;
 
@@ -115,7 +131,8 @@ export function reviewPrompt(i: ReviewInput): string {
   - "confirmed": you inspected the evidence and it supports the claim. Give "evidence".
   - "refuted":   you inspected the evidence and it contradicts the claim. Give "evidence".
   - "unverifiable": it cannot be settled by reading a file or a URL. Give a short "note" saying why, and no evidence.
-- ${EVIDENCE}`;
+- ${EVIDENCE}
+${PROPOSE_CHECK}`;
 
   const taskBlock = i.mode === "answer" ? "QUESTION" : "TASK";
 
@@ -145,7 +162,8 @@ ${fmt(i.claims)}
 Reply with ONLY a single fenced \`\`\`json block, nothing else:
 
 {"verdicts":[{"id":"V1","verdict":"confirmed","evidence":"https://…"},
-             {"id":"V2","verdict":"unverifiable","note":"needs a benchmark I cannot run"}],
+             {"id":"V2","verdict":"unverifiable","note":"needs the test suite",
+              "proposes":{"argv":["bun","test"],"expect":{"exitCode":0}}}],
  "tradeoffs":[{"id":"J1","per_option":[{"option":"...","against":["..."]}]}],
  "extra_findings":[{"id":"E1","kind":"verifiable","text":"...","evidence":"https://…"}]}`;
 }

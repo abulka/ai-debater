@@ -1,8 +1,9 @@
 import { Box, Text, render, useApp, useInput } from "ink";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
 import type { Config } from "./config.ts";
-import type { Claims, Gate, Review } from "./contracts.ts";
+import type { AuditRecord, Claims, Gate, Review } from "./contracts.ts";
+import { auditLines, type ApprovalRequest } from "./audit.ts";
 import { advState, initRepo } from "./init.ts";
 import {
   answersToGate,
@@ -371,6 +372,49 @@ function Pick({
   );
 }
 
+function Approve({
+  request,
+  onAnswer,
+}: {
+  request: ApprovalRequest;
+  onAnswer: (ok: boolean) => void;
+}) {
+  useInput((input, key) => {
+    if (input === "y" || input === "Y") onAnswer(true);
+    else if (input === "n" || input === "N" || key.escape || key.return) onAnswer(false);
+  });
+
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="a check needs your ok" />
+      </Box>
+      <Text>The reviewer could not settle {request.claim} from the files.</Text>
+      <Text>It wants to run:</Text>
+      <Box marginLeft={2} marginTop={1}>
+        <Text bold color="cyan">{request.argv.join(" ")}</Text>
+      </Box>
+      {request.why && (
+        <Box marginLeft={2}>
+          <Text dimColor>{request.why}</Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text dimColor>
+          This runs the project's own code and can take a minute. The result is
+          recorded, and if it disagrees with the plan, the plan is corrected.
+        </Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text>
+          <Text bold>y</Text> run it · <Text bold>n</Text> skip it
+        </Text>
+      </Box>
+      <QuitHint />
+    </Box>
+  );
+}
+
 function Busy({ label, log }: { label: string; log: string[] }) {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
@@ -413,6 +457,7 @@ function GateView({
   index,
   selection,
   warnings,
+  checks,
   runDir,
 }: {
   claims: Claims;
@@ -421,6 +466,7 @@ function GateView({
   index: number;
   selection: number;
   warnings: string[];
+  checks: AuditRecord[];
   runDir: string;
 }) {
   const item = items[index];
@@ -442,6 +488,18 @@ function GateView({
         <Text dimColor>{statusLine(counts)}</Text>
       </Box>
 
+      {checks.length > 0 && (
+        <Box flexDirection="column" marginBottom={1}>
+          {auditLines(checks).map((line, i) => {
+            const disagrees = line.includes("DISAGREES");
+            return (
+              <Text key={i} color={disagrees ? "red" : undefined} dimColor={!disagrees}>
+                {line}
+              </Text>
+            );
+          })}
+        </Box>
+      )}
       {warnings.length > 0 && (
         <Box flexDirection="column" marginBottom={1}>
           {warnings.slice(0, 3).map((w, i) => (
@@ -556,8 +614,25 @@ function App({ repo }: { repo: string }) {
   const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
   const [saved, setSaved] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel | null>(null);
+  const [approval, setApproval] = useState<ApprovalRequest | null>(null);
+  const approvalResolver = useRef<((ok: boolean) => void) | null>(null);
 
   const addLog = (line: string) => setLog((l) => [...l, line]);
+
+  /* The pipeline asks for a yes before running a slow check. The promise is
+     resolved by the Approve screen, so the run waits without blocking the UI. */
+  const requestApproval = (request: ApprovalRequest) =>
+    new Promise<boolean>((resolve) => {
+      approvalResolver.current = resolve;
+      setApproval(request);
+    });
+
+  function answerApproval(ok: boolean) {
+    const resolve = approvalResolver.current;
+    approvalResolver.current = null;
+    setApproval(null);
+    resolve?.(ok);
+  }
 
   useEffect(() => {
     void (async () => {
@@ -733,6 +808,7 @@ function App({ repo }: { repo: string }) {
         const reporting: Reporting = {
           onCall: (info) => addLog(callLine(info)),
           onNote: (text) => addLog(text),
+          onApprove: requestApproval,
         };
         const result = await runHead(
           repo,
@@ -936,6 +1012,9 @@ function App({ repo }: { repo: string }) {
     );
   }
 
+  if (phase === "running" && approval) {
+    return <Approve request={approval} onAnswer={answerApproval} />;
+  }
   if (phase === "running") return <Busy label="working" log={log} />;
   if (phase === "working") return <Busy label="applying your decisions" log={log} />;
 
@@ -965,6 +1044,7 @@ function App({ repo }: { repo: string }) {
         index={index}
         selection={selection}
         warnings={warnings}
+        checks={head.checks}
         runDir={runDir}
       />
     );
@@ -979,6 +1059,7 @@ function App({ repo }: { repo: string }) {
       gate: gate ?? { decisions: [], findings: [] },
       claims: head.claims,
       review: head.review,
+      checks: head.checks,
     });
     return (
       <Scroller

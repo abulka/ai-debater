@@ -64,8 +64,8 @@ replacement for tests. The models never resolve judgment calls.
 | M1 core loop | **done** — `adv init`, `run`, `decide`, `run --resume` |
 | TUI | **done early** (was scheduled for M4) — bare `adv` |
 | Visibility batch | **done 17 Oct** — gate panels, readable progress, resume/family/failed fixes |
-| M3 real trial | **next** |
-| M2 evidence execution | after the trial — its scope comes from the trial's `unverifiable` bucket |
+| M3 real trial | **done 17 Oct** — spec in `docs/M2-PLAN.md` |
+| M2 evidence execution | **started** — slice 1: contract, matcher, executor (`src/audit.ts`) |
 | M4 revise | not started |
 
 Typecheck must stay clean: `bun run typecheck`. Tests must stay green:
@@ -182,6 +182,11 @@ src/
   contracts.ts      zod schemas (claims, review, changelog, gate, state)
   gate-model.ts     the gate as data: items, answers->gate.json, verdict counts,
                     scrolling, evidence lookup. Tested.
+  urls.ts           deterministic URL checks: invisible characters, repair,
+                    evidence flags. Tested.
+  audit.ts          M2 evidence execution: exact-argv allowlist, spawn with no
+                    shell + timeout + cap + scrubbed env, audit records.
+                    Tested, not yet wired into the pipeline.
   prompts.ts        plan/answer prompts; one deliverable per call
   orchestrator.ts   run dirs, state machine, decisions.md
   gate.ts           the CLI gate (interactive or piped)
@@ -232,6 +237,15 @@ spike/              M0
   in evidence. It deliberately leaves prose alone and leaves visible non-ASCII
   (an IDN, an accented path) alone: removing those would change the address
   rather than fix it. Do not ask a model to be the only check on this.
+- **One verdict may cite more than one place.** `README.md:8-9; src/rateLimit.ts:3-4`
+  is a legitimate evidence string. The existence check splits on `;` first;
+  checking the combined string as a path reports both files as missing. A run
+  did exactly that on 17 Oct before the split was added.
+- **Reviewers propose shell pipelines.** `sh -c '… | grep …'` is a reasonable way
+  to prove a file is absent, and it is precisely what the allowlist must refuse.
+  The prompt says argv only, no shell; the executor has no shell, so a pipeline
+  can never run. If a check cannot be expressed as one command, the claim stays
+  `unverifiable` — and the reviewer is told to say so.
 - The diff check is a **heuristic** (hunk count vs changelog entries). It flags
   possible out-of-scope edits; it cannot prove one, and a legitimately unclaimed
   consequence of a decision will be flagged as readily as a real edit.
@@ -240,27 +254,24 @@ spike/              M0
 
 ## Next task
 
-**M3 — the real trial, before M2.** One genuinely uncertain plan in a real repo,
-a different-family pair, `familyCheck: "require"`, with outcome and cost
-recorded.
+**M2 — evidence execution**, per `docs/M2-PLAN.md`. The trial is done and its 12
+settled decisions are §3 of that document; do not reopen them without saying why.
 
-The order matters: M2's value proposition is shrinking the `unverifiable`
-bucket, so building it first would confound cross-family review with command
-evidence. Let the trial's own `unverifiable` bucket write M2's spec.
+Slice 1 is in and tested: the contract (`proposes` on `unverifiable`, `audit:<id>`
+evidence, `AuditRecord`), the exact-argv matcher, and the executor with no shell,
+a timeout, an output cap, a scrubbed environment and a validated record
+(`src/audit.ts`).
 
-Before the trial:
+Slice 2 is in too: the reviewer may propose a check, quick checks run by
+themselves, slow ones ask (`y`/`n`), the results are written to `audit.json`, and
+a disagreement corrects the plan automatically. `review.json` stays exactly as
+the reviewer wrote it; the gate and the rebuttal see the merged view, rebuilt
+from `audit.json` on load.
 
-- pick the pair with a 10-second probe — PLAN's original anthropic/openai pair if
-  the account has credit, otherwise a deepseek drafter with a strong (not 20B)
-  reviewer;
-- set `familyCheck: "require"` in that repo's `.adv/config.json` (or pass
-  `--strict`), so the run cannot silently measure an extra pass instead of
-  cross-family review;
-- run it through the TUI: the gate panels are what make the catch — or its
-  absence — visible enough to judge.
+Not yet done:
 
-M2 then keeps its valuable core: approval-based execution of cited evidence,
-`audit.json`, and the MCP server-level disable. Its allowlist comes from what
-the trial actually returned `unverifiable`.
+1. `adv audit <run>` for re-running checks later — the plan's §6 item 3. There is
+   no data to build a Tier 2 list from, so it is deliberately unbuilt;
+2. the MCP server-level disable (plan §6; still open from the spike).
 
 Before anything that calls a model, ask the human.

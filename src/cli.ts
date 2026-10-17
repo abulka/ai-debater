@@ -18,6 +18,7 @@ import path from "node:path";
 import { loadConfig } from "./config.ts";
 import type { FamilyCheck } from "./config.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
+import type { Audit, AuditRecord } from "./contracts.ts";
 import { collectGate } from "./gate.ts";
 import { gateSummaryLines, gateWarnings } from "./gate-model.ts";
 import { initRepo } from "./init.ts";
@@ -28,6 +29,7 @@ import {
   loadState,
   readCriteria,
   readDecisions,
+  readJson,
   runPaths,
   runsDir,
   resumedModels,
@@ -39,6 +41,7 @@ import { familyClash } from "./models.ts";
 import { renderResult } from "./render.ts";
 import type { CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
+import type { ApprovalRequest } from "./audit.ts";
 
 const BOOLEAN_FLAGS = new Set(["no-gate", "general", "help", "strict"]);
 
@@ -136,8 +139,27 @@ function modelFrom(
   return { ref, family: typeof family === "string" ? family : (ref.split("/")[0] ?? ref) };
 }
 
-function printGateSummary(claims: Claims, review: Review) {
-  for (const line of gateSummaryLines(claims, review)) console.log(line);
+function printGateSummary(claims: Claims, review: Review, checks: AuditRecord[] = []) {
+  for (const line of gateSummaryLines(claims, review, checks)) console.log(line);
+}
+
+/** Ask before running a slow check the reviewer proposed. */
+async function askApproval(request: ApprovalRequest): Promise<boolean> {
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const why = request.why ? `\n    why: ${request.why}` : "";
+    const answer = (
+      await rl.question(
+        `  the reviewer asks to run: ${request.argv.join(" ")}  (for ${request.claim})${why}\n  run it? [y/N] `,
+      )
+    )
+      .trim()
+      .toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -159,6 +181,7 @@ async function finalize(
   gate: Gate,
   models: Models,
   mode: Mode,
+  checks: AuditRecord[] = [],
 ) {
   const state = await loadState(paths);
   const tail = await runTail(repo, paths, state, claims, review, gate, models, mode, reporting);
@@ -171,6 +194,7 @@ async function finalize(
       gate,
       claims,
       review,
+      checks,
     })}`,
   );
   console.log(`\nartifacts: ${displayPath(paths.dir)}`);
@@ -219,7 +243,7 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
         `${chosen.reviewer.ref} [${chosen.reviewer.family}]  (from the run)`,
     );
     checkFamily(chosen, check, checkSource);
-    return finalize(repo, paths, art.claims, art.review, art.gate, chosen, art.state.mode);
+    return finalize(repo, paths, art.claims, art.review, art.gate, chosen, art.state.mode, art.checks);
   }
 
   const task = positional.join(" ").trim();
@@ -240,7 +264,14 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
     `  mode ${mode} · ${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
   );
   checkFamily(models, check, checkSource);
-  const head = await runHead(repo, task, criteria.text, decisions, models, mode, reporting);
+  const canAsk = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  const runReporting: Reporting = {
+    ...reporting,
+    // Only ask when there is someone to ask. Without a terminal, a slow check is
+    // recorded as declined rather than silently run.
+    ...(canAsk ? { onApprove: askApproval } : {}),
+  };
+  const head = await runHead(repo, task, criteria.text, decisions, models, mode, runReporting);
   console.log(`  run: ${displayPath(head.paths.dir)}`);
   for (const warning of gateWarnings({
     missing: head.missing,
@@ -252,10 +283,9 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
   }
 
   console.log("\n── gate ──");
-  printGateSummary(head.claims, head.review);
+  printGateSummary(head.claims, head.review, head.checks);
 
   const skipGate = flags.has("no-gate");
-  const canAsk = process.stdin.isTTY === true && process.stdout.isTTY === true;
 
   // --no-gate: run straight through. No model resolves anything: every judgment
   // call is left open, every finding untriaged, and the plan presents options.
@@ -272,7 +302,7 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
       `\n  --no-gate: ${openGate.decisions.length} judgment call(s) left open, ` +
         `${openGate.findings.length} finding(s) untriaged. Nothing was decided for you.`,
     );
-    return finalize(repo, head.paths, head.claims, head.review, openGate, models, mode);
+    return finalize(repo, head.paths, head.claims, head.review, openGate, models, mode, head.checks);
   }
 
   if (!(cfg.gate && canAsk)) {
@@ -297,7 +327,7 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
         choice: d.choice,
       })),
   );
-  return finalize(repo, head.paths, head.claims, head.review, gate, models, mode);
+  return finalize(repo, head.paths, head.claims, head.review, gate, models, mode, head.checks);
 }
 
 async function cmdDecide(flags: Map<string, string | true>, positional: string[]) {
@@ -322,7 +352,7 @@ async function cmdDecide(flags: Map<string, string | true>, positional: string[]
   }
 
   const art = await loadArtifacts(paths);
-  printGateSummary(art.claims, art.review);
+  printGateSummary(art.claims, art.review, art.checks);
   const gate = await collectGate(art.claims, art.review);
   await saveGate(paths, gate);
   await appendDecisions(
@@ -359,6 +389,12 @@ async function cmdStatus(flags: Map<string, string | true>, positional: string[]
   if (clash) console.log(`        ! ${clash}`);
   for (const r of state.urlRepairs ?? []) {
     console.log(`repaired: ${r.before} -> ${r.after}`);
+  }
+  const audit = await readJson<Audit>(paths.audit).catch(() => null);
+  if (audit?.records.length) {
+    const ran = audit.records.filter((r) => r.outcome !== "not-run").length;
+    const disagreed = audit.records.filter((r) => r.outcome === "mismatched").length;
+    console.log(`checks: ${ran} run, ${disagreed} disagreed, ${audit.records.length - ran} not run`);
   }
 }
 

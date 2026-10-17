@@ -15,6 +15,14 @@ import {
 import { OpencodeRunRunner, type CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 import { invisibleCount, repairUrls } from "./urls.ts";
+import {
+
+  mergeAuditIntoReview,
+  resolveAuditRef,
+  runProposedChecks,
+  type ApprovalRequest,
+} from "./audit.ts";
+import type { Audit, AuditRecord } from "./contracts.ts";
 
 export interface Models {
   drafter: ModelRef;
@@ -32,6 +40,12 @@ export interface Models {
 export interface Reporting {
   onCall?: CallHook;
   onNote?: (text: string) => void;
+  /**
+   * Called when the reviewer proposes a slow check (a test suite, a typecheck).
+   * The human said yes to "quick checks run by themselves, slow ones ask".
+   * Without an approver, slow checks are recorded as declined rather than run.
+   */
+  onApprove?: (request: ApprovalRequest) => Promise<boolean>;
 }
 
 /**
@@ -47,29 +61,48 @@ export interface Head {
   /** Verifiable claims the reviewer returned no verdict for. */
   missing: string[];
   /** Evidence that is broken before anyone argues about whether it is true. */
-  evidenceIssues: { id: string; evidence: string; reason: "missing" | "invisible" }[];
+  evidenceIssues: { id: string; evidence: string; reason: "missing" | "invisible" | "unresolved" }[];
   /** URLs repaired deterministically before the reviewer saw them. */
   urlRepairs: { before: string; after: string }[];
+  /** Checks the orchestrator ran, refused, or was told to skip. */
+  checks: AuditRecord[];
 }
 
 /**
- * A reviewer can invent a plausible-looking path, and can copy an invisible
- * character into a URL. The first is the cheapest forgery to catch; the second
- * is a defect no reader can see. Both are checked here rather than trusted.
+ * A reviewer can invent a plausible-looking path, can copy an invisible
+ * character into a URL, and can cite a check that was never recorded. The first
+ * is the cheapest forgery to catch, the second is a defect no reader can see,
+ * and the third is a citation with no evidence behind it. All are checked here
+ * rather than trusted.
  */
-function collectEvidenceIssues(
+export function collectEvidenceIssues(
   repo: string,
   review: Review,
-): { id: string; evidence: string; reason: "missing" | "invisible" }[] {
-  const issues: { id: string; evidence: string; reason: "missing" | "invisible" }[] = [];
+  records: AuditRecord[],
+): { id: string; evidence: string; reason: "missing" | "invisible" | "unresolved" }[] {
+  const issues: { id: string; evidence: string; reason: "missing" | "invisible" | "unresolved" }[] =
+    [];
   const check = (id: string, evidence: string) => {
     if (invisibleCount(evidence) > 0) {
       issues.push({ id, evidence, reason: "invisible" });
       return;
     }
+    if (/^audit:/.test(evidence)) {
+      if (!resolveAuditRef(evidence, records)) {
+        issues.push({ id, evidence, reason: "unresolved" });
+      }
+      return;
+    }
     if (/^https?:\/\//.test(evidence)) return; // a URL cannot be existence-checked here
-    const file = evidence.replace(/:\d+(?:-\d+)?$/, "");
-    if (!existsSync(path.join(repo, file))) issues.push({ id, evidence, reason: "missing" });
+
+    // One verdict may cite more than one place — "README.md:8-9;
+    // src/rateLimit.ts:3-4" is a legitimate answer, and checking the combined
+    // string as a path reports both files as missing. Check each part.
+    for (const part of evidence.split(/\s*;\s*/).filter(Boolean)) {
+      // Line locators come in several shapes: ":88", ":88-92", ":3-4,6-16".
+      const file = part.replace(/:\d+(?:[-,]\d+)*$/, "");
+      if (!existsSync(path.join(repo, file))) issues.push({ id, evidence: part, reason: "missing" });
+    }
   };
   for (const v of review.verdicts) {
     if (v.verdict === "unverifiable") continue;
@@ -124,12 +157,27 @@ export async function runHead(
     await writeJson(paths.review, review);
     await saveState(paths, { ...(await loadState(paths)), state: "reviewed" });
 
+    // The reviewer may propose a check it could not run itself. Quick ones run
+    // now; slow ones ask first; anything unlisted is refused. A contradiction
+    // changes the plan — the human chose that — so the gate and the rebuttal see
+    // the merged view. review.json stays exactly as the reviewer wrote it, and
+    // audit.json is what records why the view differs.
+    const checks = await runProposedChecks(review, {
+      repo,
+      planText,
+      proposedBy: models.reviewer.ref,
+      ...(reporting.onApprove ? { approve: reporting.onApprove } : {}),
+      onNote: note,
+    });
+    if (checks.length) await writeJson(paths.audit, { records: checks });
+    const effective = mergeAuditIntoReview(review, checks);
+
     const missing = draft.claims.verifiable
       .map((c) => c.id)
-      .filter((id) => !review.verdicts.some((v) => v.id === id));
+      .filter((id) => !effective.verdicts.some((v) => v.id === id));
 
-    const evidenceIssues = collectEvidenceIssues(repo, review);
-    const counts = verdictCounts(draft.claims, review);
+    const evidenceIssues = collectEvidenceIssues(repo, effective, checks);
+    const counts = verdictCounts(draft.claims, effective);
 
     note(
       `reviewed — ${counts.confirmed} confirmed · ${counts.refuted} refuted · ` +
@@ -158,10 +206,11 @@ export async function runHead(
       paths,
       plan: planText,
       claims: draft.claims,
-      review,
+      review: effective,
       missing,
       evidenceIssues,
       urlRepairs,
+      checks,
     };
   } catch (err) {
     await markFailed(paths, err);
@@ -298,6 +347,7 @@ export async function loadArtifacts(paths: Paths): Promise<{
   claims: Claims;
   review: Review;
   gate: Gate | null;
+  checks: AuditRecord[];
 }> {
   const state = await loadState(paths);
   // A failed run has whatever artifacts it managed to write, and may have no
@@ -311,7 +361,11 @@ export async function loadArtifacts(paths: Paths): Promise<{
   const plan = await readFile(paths.planV1, "utf8");
   const { readJson } = await import("./orchestrator.ts");
   const claims = await readJson<Claims>(paths.claims);
-  const review = await readJson<Review>(paths.review);
+  const rawReview = await readJson<Review>(paths.review);
+  // Command results are applied on load, not baked into review.json: the merged
+  // view is rebuildable, and the reviewer's original statements stay intact.
+  const audit = await readJson<Audit>(paths.audit).catch(() => null);
+  const review = mergeAuditIntoReview(rawReview, audit?.records ?? []);
   const gate = await readJson<Gate>(paths.gate).catch(() => null);
-  return { state, plan, claims, review, gate };
+  return { state, plan, claims, review, gate, checks: audit?.records ?? [] };
 }

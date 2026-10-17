@@ -59,6 +59,7 @@ export function runPaths(repo: string, dir: string) {
     changelog: path.join(dir, "changelog.json"),
     planV2: path.join(dir, "plan.v2.md"),
     diff: path.join(dir, "diff.patch"),
+    audit: path.join(dir, "audit.json"),
     state: path.join(dir, "state.json"),
   };
 }

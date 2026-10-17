@@ -1,4 +1,4 @@
-import type { Changelog, Claims, Gate, Review } from "./contracts.ts";
+import type { AuditRecord, Changelog, Claims, Gate, Review } from "./contracts.ts";
 import type { DiffAssessment } from "./diff.ts";
 import { verdictCounts } from "./gate-model.ts";
 
@@ -12,6 +12,7 @@ export function renderResult(a: {
   gate: Gate;
   claims: Claims;
   review: Review;
+  checks?: AuditRecord[];
 }): string {
   const out: string[] = [];
   const counts = verdictCounts(a.claims, a.review);
@@ -51,6 +52,18 @@ export function renderResult(a: {
         ? `  ·  ${counts.unverifiable} claim(s) could not be settled from files — the honest answer`
         : ""),
   );
+  const checks = a.checks ?? [];
+  if (checks.length) {
+    const ran = checks.filter((c) => c.outcome !== "not-run");
+    const disagreed = checks.filter((c) => c.outcome === "mismatched");
+    out.push(
+      `  ${ran.length} check(s) run · ${disagreed.length} disagreed` +
+        (ran.length < checks.length ? ` · ${checks.length - ran.length} not run` : ""),
+    );
+    for (const c of disagreed) {
+      out.push(`  disagreed: ${c.argv.join(" ")}${c.exitCode !== undefined ? ` (exit ${c.exitCode})` : ""}`);
+    }
+  }
   out.push("");
 
   out.push(`── plan.v2 ${rule(50)}`);

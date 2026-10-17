@@ -104,8 +104,11 @@ Hard rules:
 - Every verdict is exactly one of \`confirmed\`, \`refuted\`, or \`unverifiable\`.
 - \`confirmed\` and \`refuted\` need evidence: a URL, or a \`path:line\` you actually
   read. \`unverifiable\` needs a short note saying why, and no evidence.
-- You cannot run commands, so you can never cite command output. A claim that
-  needs a test run to settle is \`unverifiable\`, not a guess.
+- You cannot run commands, so you can never cite command output. If a claim could
+  be settled by running one command, mark it \`unverifiable\` and *propose* the
+  check in the structured field the prompt describes. The tool may run it and
+  report the result; you will not see the output. A claim that needs a test run
+  to settle is never a guess.
 - Use websearch and webfetch to check factual claims. Never confirm a claim you
   have not checked.
 - Never guess. \`unverifiable\` is a correct and useful answer.

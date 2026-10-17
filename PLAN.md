@@ -19,8 +19,8 @@ the implementation plan. Where the two disagree, the locked decisions below win.
 | M1 core loop | **done** — `adv init`, `run`, `decide`, `run --resume` |
 | TUI | **done early** (was M4) — bare `adv`; settings and model picker on Ctrl+P |
 | Visibility batch | **done 17 Oct** — gate panels, readable progress, resume/family/failed fixes |
-| M3 real trial | **next** |
-| M2 evidence execution | after the trial — scoped by its `unverifiable` bucket |
+| M3 real trial | **done 17 Oct** — spec in `docs/M2-PLAN.md` |
+| M2 evidence execution | **started** — slice 1: contract, matcher, executor (`src/audit.ts`) |
 | M4 revise | not started |
 
 Working rules for anyone picking this up — especially "do not run a full
@@ -59,7 +59,7 @@ edits the repo.
 | Pipeline | draft → review → validate → **gate** → rebuttal → diff/output |
 | Human gate | Resumable commands: `adv run`, `adv decide <run>`, `adv run --resume <run>` |
 | Rebuttal scope | Refuted claims + human-accepted findings + human decisions. Nothing else. |
-| Evidence (v1) | `file:line` or URL only. No command output, no execution. |
+| Evidence (v1) | `file:line` or URL only. No command output, no execution. M2 adds `audit:<id>` for a check the orchestrator ran and recorded — still never model-claimed output. |
 | Artifacts | Orchestrator writes them by default; agents return JSON in their final message and need no write permission. M0 confirms. |
 | Diff check | In M1, not M2. Changelog keyed to item IDs shown beside the diff. |
 | Output | `plan.v2` + appendix + changelog; artifacts in the run dir |
@@ -519,9 +519,14 @@ wrote a good plan and simply omitted the claims block, twice, and the retry did
 not help. Splitting made it reliable. The cost is a small extra call whose input
 is the plan text.
 
-**M2 — enforcement.** Approval-based execution of cited evidence commands
-(reuse opencode's ask flow: once/always/reject), `audit.json`, and re-audit of
-`plan.v2` for regressions in previously confirmed claims.
+**M2 — evidence execution.** The spec is **`docs/M2-PLAN.md`**, produced by the
+M3 trial on 17 Oct and settled at its gate; build it in the order that
+document's §6 gives. In short: the reviewer may *propose* a check; the
+orchestrator runs it (never a model); quick checks run by themselves and slow
+ones ask; results are written to `audit.json`; a disagreement corrects the plan,
+and the changelog and the diff still show what changed. Re-auditing `plan.v2`
+was cut — a plan does not change the repository, so re-running the same command
+against an unchanged tree proves nothing new.
 
 **M3 — real trial.** Run it on one genuinely uncertain plan in a real repo;
 record outcome and cost.

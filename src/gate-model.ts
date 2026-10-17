@@ -8,7 +8,8 @@
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { Claims, Gate, Review } from "./contracts.ts";
+import type { AuditRecord, Claims, Gate, Review } from "./contracts.ts";
+import { auditLines } from "./audit.ts";
 
 export interface GateItem {
   id: string;
@@ -114,8 +115,21 @@ export function describeJudgmentCall(
  * 1" and nothing else — the human then had to run `adv decide` to discover what
  * the question even was. The TUI never had that problem; the CLI did.
  */
-export function gateSummaryLines(claims: Claims, review: Review): string[] {
+export function gateSummaryLines(
+  claims: Claims,
+  review: Review,
+  checks: AuditRecord[] = [],
+): string[] {
   const out: string[] = [];
+
+  // What the orchestrator actually ran, before anything else: a command result
+  // is not an opinion, and it explains why a verdict may have changed since the
+  // reviewer wrote it.
+  if (checks.length) {
+    out.push(`checks (${checks.length}):`);
+    for (const line of auditLines(checks)) out.push(`  ${line}`);
+    out.push("");
+  }
   const claimText = (id: string) => claims.verifiable.find((c) => c.id === id)?.text ?? "";
 
   const refuted = review.verdicts.filter((v) => v.verdict === "refuted");
@@ -211,7 +225,7 @@ export function statusLine(counts: VerdictCounts): string {
 
 export function gateWarnings(a: {
   missing: string[];
-  evidenceIssues: { id: string; evidence: string; reason: "missing" | "invisible" }[];
+  evidenceIssues: { id: string; evidence: string; reason: "missing" | "invisible" | "unresolved" }[];
   urlRepairs?: { before: string; after: string }[];
   hasCriteria: boolean;
 }): string[] {
@@ -220,7 +234,9 @@ export function gateWarnings(a: {
     ...a.evidenceIssues.map((i) =>
       i.reason === "invisible"
         ? `${i.id} cites evidence containing an invisible character: ${i.evidence}`
-        : `${i.id} cites a file that does not exist: ${i.evidence}`,
+        : i.reason === "unresolved"
+          ? `${i.id} cites ${i.evidence}, but no such check was recorded`
+          : `${i.id} cites a file that does not exist: ${i.evidence}`,
     ),
     ...(a.urlRepairs ?? []).map(
       (r) => `repaired a URL before review (invisible character removed): ${r.before} -> ${r.after}`,
@@ -281,7 +297,9 @@ export async function readEvidenceContext(
   evidence: string,
   radius = 12,
 ): Promise<{ lines: string[]; file: string; line?: number } | null> {
-  const ref = parseEvidence(evidence);
+  // A verdict may cite two places; show the first one.
+  const first = evidence.split(/\s*;\s*/)[0] ?? evidence;
+  const ref = parseEvidence(first);
   if (!ref || ref.kind !== "file") return null;
 
   const abs = resolveInRepo(repo, ref.file);
