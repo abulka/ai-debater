@@ -19,7 +19,13 @@ import {
   type GateItem,
 } from "./gate-model.ts";
 import { familyClash, familyOf, listModels } from "./models.ts";
-import { appendDecisions, displayPath, readCriteria, readDecisions } from "./orchestrator.ts";
+import {
+  appendDecisions,
+  displayPath,
+  NO_CRITERIA,
+  readCriteria,
+  readDecisions,
+} from "./orchestrator.ts";
 import { runHead, runTail, saveGate, type Head, type Reporting, type Tail } from "./pipeline.ts";
 import { renderResult } from "./render.ts";
 import type { Mode } from "./runner.ts";
@@ -846,14 +852,16 @@ function App({ repo }: { repo: string }) {
     let cancelled = false;
     void (async () => {
       try {
-        const criteria = await readCriteria(repo);
+        const criteria =
+          mode === "answer" ? { text: NO_CRITERIA, found: false } : await readCriteria(repo);
         // Answer mode has no repository and needs no criteria; only a plan run
         // is missing something when the file is absent.
         if (!criteria.found && mode === "plan") {
           addLog("! .adv/criteria.md missing — using a fallback");
         }
         setHasCriteria(criteria.found);
-        const decisions = await readDecisions(repo);
+        const decisions =
+          mode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
         const reporting: Reporting = {
           onCall: (info) => addLog(callLine(info)),
           onNote: (text) => addLog(text),
@@ -889,16 +897,19 @@ function App({ repo }: { repo: string }) {
     const built = answersToGate(all);
     try {
       await saveGate(head.paths, built);
-      await appendDecisions(
-        repo,
-        built.decisions
-          .filter((d) => d.choice !== "open")
-          .map((d) => ({
-            id: d.id,
-            text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
-            choice: d.choice,
-          })),
-      );
+      // A gate answer to a general question is not a repository decision.
+      if (mode === "plan") {
+        await appendDecisions(
+          repo,
+          built.decisions
+            .filter((d) => d.choice !== "open")
+            .map((d) => ({
+              id: d.id,
+              text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
+              choice: d.choice,
+            })),
+        );
+      }
       setGate(built);
       const reporting: Reporting = {
         onCall: (info) => addLog(callLine(info)),
@@ -1194,6 +1205,15 @@ function App({ repo }: { repo: string }) {
           </Text>
         </Box>
         <Text>{error}</Text>
+        {error.includes("timed out") && (
+          <Box marginTop={1}>
+            <Text dimColor>
+              The model took longer than three minutes. With web checking that
+              usually means too many searches. Try a different reviewer with
+              Ctrl+P, or a narrower question.
+            </Text>
+          </Box>
+        )}
         {error.startsWith("validation failed") && (
           <Box marginTop={1}>
             <Text dimColor>

@@ -1,3 +1,6 @@
+import { mkdirSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { z } from "zod";
 import { agentsConfigJson } from "../agents.ts";
 import {
@@ -17,7 +20,7 @@ import {
   reviewPrompt,
   toolRetryPrompt,
 } from "../prompts.ts";
-import type { DraftInput, ModelRef, RebutInput, ReviewInput, Runner } from "../runner.ts";
+import type { DraftInput, Mode, ModelRef, RebutInput, ReviewInput, Runner } from "../runner.ts";
 
 export interface OpencodeRunOptions {
   /** Working directory the agents run in — the target repo. */
@@ -25,7 +28,13 @@ export interface OpencodeRunOptions {
   drafter: ModelRef;
   reviewer: ModelRef;
   /** Agent ids under .opencode/agents/. */
-  agents?: { drafter: string; reviewer: string; writer: string };
+  agents?: {
+    drafter: string;
+    reviewer: string;
+    writer: string;
+    drafterAnswer: string;
+    reviewerAnswer: string;
+  };
   timeoutMs?: number;
   /**
    * Pass --auto so a headless run never blocks on an `ask`. Explicit `deny`
@@ -86,6 +95,8 @@ export interface CallRequest {
   agent: string;
   message: string;
   sessionID?: string;
+  /** Working directory for this call. Answer mode uses a neutral one. */
+  cwd?: string;
 }
 
 /** Fired after every model call, for progress and cost reporting. */
@@ -105,11 +116,23 @@ export class OpencodeRunRunner implements Runner {
   readonly familyWarning: string | null;
 
   private readonly repo: string;
-  private readonly agents: { drafter: string; reviewer: string; writer: string };
+  private readonly agents: {
+    drafter: string;
+    reviewer: string;
+    writer: string;
+    drafterAnswer: string;
+    reviewerAnswer: string;
+  };
   private readonly timeoutMs: number;
   private readonly auto: boolean;
   private readonly standalone: boolean;
   private readonly onCall: CallHook | undefined;
+  /**
+   * A neutral working directory for answer mode: a general question must not see
+   * the repository it was launched from, because OpenCode loads AGENTS.md from the
+   * working directory as project instructions even with no file tools.
+   */
+  private readonly answerDir: string;
 
   constructor(o: OpencodeRunOptions) {
     // A warning, not a failure: same-family models reduce diversity but are not
@@ -123,7 +146,11 @@ export class OpencodeRunRunner implements Runner {
       drafter: "adv-drafter",
       reviewer: "adv-reviewer",
       writer: "adv-writer",
+      drafterAnswer: "adv-drafter-answer",
+      reviewerAnswer: "adv-reviewer-answer",
     };
+    this.answerDir = path.join(os.tmpdir(), "adv-answer");
+    mkdirSync(this.answerDir, { recursive: true });
     this.timeoutMs = o.timeoutMs ?? 180_000;
     this.auto = o.auto ?? true;
     this.standalone = o.standalone ?? true;
@@ -131,13 +158,27 @@ export class OpencodeRunRunner implements Runner {
     this.models = { drafter: o.drafter, reviewer: o.reviewer };
   }
 
+  /** A general question gets a neutral cwd: no repo, no project AGENTS.md. */
+  private cwdFor(mode: Mode): string {
+    return mode === "answer" ? this.answerDir : this.repo;
+  }
+
+  private drafterAgent(mode: Mode): string {
+    return mode === "answer" ? this.agents.drafterAnswer : this.agents.drafter;
+  }
+
+  private reviewerAgent(mode: Mode): string {
+    return mode === "answer" ? this.agents.reviewerAnswer : this.agents.reviewer;
+  }
+
   /* Two calls, one deliverable each: a plan, then its claims. Asking for both
    * in one reply is where drafters get flaky. */
   async draft(input: DraftInput): Promise<{ plan: string; claims: Claims }> {
     const model = this.models.drafter.ref;
-    const agent = this.agents.drafter;
+    const agent = this.drafterAgent(input.mode);
+    const cwd = this.cwdFor(input.mode);
 
-    const planCall = await this.request({ model, agent, message: draftPrompt(input) });
+    const planCall = await this.request({ model, agent, message: draftPrompt(input), cwd });
     this.report("draft", "plan", model, planCall.call, planCall.retried);
     const plan = splitPlanAndJson(planCall.call.text).plan.trim();
     if (!plan) throw new Error("the drafter returned an empty plan");
@@ -147,6 +188,7 @@ export class OpencodeRunRunner implements Runner {
       agent: this.agents.writer,
       kind: "draft",
       step: "claims",
+      cwd,
       prompt: claimsPrompt({ mode: input.mode, body: plan }),
       schema: ClaimsSchema,
       extract: extractJson,
@@ -157,9 +199,10 @@ export class OpencodeRunRunner implements Runner {
   async review(input: ReviewInput): Promise<Review> {
     const { value } = await this.validated({
       model: this.models.reviewer.ref,
-      agent: this.agents.reviewer,
+      agent: this.reviewerAgent(input.mode),
       kind: "review",
       step: "review",
+      cwd: this.cwdFor(input.mode),
       prompt: reviewPrompt(input),
       schema: ReviewSchema,
       extract: extractJson,
@@ -171,9 +214,10 @@ export class OpencodeRunRunner implements Runner {
   /* Same split: the revised plan, then the changelog describing it. */
   async rebut(input: RebutInput): Promise<{ plan: string; changelog: Changelog }> {
     const model = this.models.drafter.ref;
-    const agent = this.agents.drafter;
+    const agent = this.drafterAgent(input.mode);
+    const cwd = this.cwdFor(input.mode);
 
-    const planCall = await this.request({ model, agent, message: rebutPrompt(input) });
+    const planCall = await this.request({ model, agent, message: rebutPrompt(input), cwd });
     this.report("rebut", "plan", model, planCall.call, planCall.retried);
     const plan = splitPlanAndJson(planCall.call.text).plan.trim();
     if (!plan) throw new Error("the rebuttal returned an empty plan");
@@ -190,6 +234,7 @@ export class OpencodeRunRunner implements Runner {
       agent: this.agents.writer,
       kind: "rebut",
       step: "changelog",
+      cwd,
       prompt: changelogPrompt({ before: input.plan, after: plan, items }),
       schema: ChangelogSchema,
       extract: extractJson,
@@ -208,8 +253,9 @@ export class OpencodeRunRunner implements Runner {
     args.push(opts.message);
 
     const t0 = Date.now();
+    const cwd = opts.cwd ?? this.repo;
     const proc = Bun.spawn(["opencode", ...args], {
-      cwd: this.repo,
+      cwd,
       // Two things the child needs from us:
       //   PWD                     opencode resolves the project from $PWD, not
       //                           from the process cwd, and Bun.spawn({cwd})
@@ -218,7 +264,7 @@ export class OpencodeRunRunner implements Runner {
       //   OPENCODE_CONFIG_CONTENT the agent definitions, injected rather than
       //                           installed as files. Only read when opencode
       //                           starts its own server — hence --standalone.
-      env: { ...process.env, PWD: this.repo, OPENCODE_CONFIG_CONTENT: agentsConfigJson() },
+      env: { ...process.env, PWD: cwd, OPENCODE_CONFIG_CONTENT: agentsConfigJson() },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -318,6 +364,7 @@ export class OpencodeRunRunner implements Runner {
     kind: "draft" | "review" | "rebut";
     step: string;
     prompt: string;
+    cwd?: string;
     schema: z.ZodType<T>;
     extract: (text: string) => unknown;
     /** Repair the parsed JSON before validation; never invents content. */
@@ -333,7 +380,12 @@ export class OpencodeRunRunner implements Runner {
       }
     };
 
-    const first = await this.request({ model: params.model, agent: params.agent, message: params.prompt });
+    const first = await this.request({
+      model: params.model,
+      agent: params.agent,
+      message: params.prompt,
+      ...(params.cwd ? { cwd: params.cwd } : {}),
+    });
     this.report(params.kind, params.step, params.model, first.call, first.retried);
     const one = attempt(first.call.text);
     if (one.ok) return { value: one.value };
@@ -344,6 +396,7 @@ export class OpencodeRunRunner implements Runner {
       model: params.model,
       agent: params.agent,
       message: `${params.prompt}\n\n---\n\n${retryPrompt(one.error)}`,
+      ...(params.cwd ? { cwd: params.cwd } : {}),
     });
     this.report(params.kind, params.step, params.model, retry.call, true);
     const two = attempt(retry.call.text);

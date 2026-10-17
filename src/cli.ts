@@ -24,6 +24,7 @@ import { gateSummaryLines, gateWarnings } from "./gate-model.ts";
 import { initRepo } from "./init.ts";
 import {
   appendDecisions,
+  NO_CRITERIA,
   displayPath,
   latestRun,
   loadState,
@@ -251,7 +252,11 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
   const task = positional.join(" ").trim();
   if (!task) throw new Error('usage: adv run "<task>"');
 
-  const criteria = await readCriteria(repo);
+  // Answer mode has no repository: no criteria from the directory it was run
+  // in, and no settled decisions either. Both are repo-specific, and loading
+  // them made a general question answer itself from this project's notes.
+  const criteria =
+    mode === "answer" ? { text: NO_CRITERIA, found: false } : await readCriteria(repo);
   // Answer mode assumes no repository, so no criteria is the normal case, not a
   // fault. Warning about it there is noise that makes a correct state look broken.
   if (!criteria.found && mode === "plan") {
@@ -260,7 +265,8 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
         "Run `adv init`, or the reviewer may invent criteria.",
     );
   }
-  const decisions = await readDecisions(repo);
+  const decisions =
+    mode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
 
   console.log(
     `  mode ${mode} · ${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
@@ -319,16 +325,19 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
 
   const gate = await collectGate(head.claims, head.review);
   await saveGate(head.paths, gate);
-  await appendDecisions(
-    repo,
-    gate.decisions
-      .filter((d) => d.choice !== "open")
-      .map((d) => ({
-        id: d.id,
-        text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
-        choice: d.choice,
-      })),
-  );
+  // A gate answer to a general question is not a repository decision.
+  if (mode === "plan") {
+    await appendDecisions(
+      repo,
+      gate.decisions
+        .filter((d) => d.choice !== "open")
+        .map((d) => ({
+          id: d.id,
+          text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
+          choice: d.choice,
+        })),
+    );
+  }
   return finalize(repo, head.paths, head.claims, head.review, gate, models, mode, head.checks);
 }
 
@@ -357,16 +366,18 @@ async function cmdDecide(flags: Map<string, string | true>, positional: string[]
   printGateSummary(art.claims, art.review, art.checks);
   const gate = await collectGate(art.claims, art.review);
   await saveGate(paths, gate);
-  await appendDecisions(
-    repo,
-    gate.decisions
-      .filter((d) => d.choice !== "open")
-      .map((d) => ({
-        id: d.id,
-        text: art.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
-        choice: d.choice,
-      })),
-  );
+  if (art.state.mode === "plan") {
+    await appendDecisions(
+      repo,
+      gate.decisions
+        .filter((d) => d.choice !== "open")
+        .map((d) => ({
+          id: d.id,
+          text: art.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
+          choice: d.choice,
+        })),
+    );
+  }
   console.log(`\n  recorded. next: adv run --resume ${path.basename(paths.dir)}`);
 }
 

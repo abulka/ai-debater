@@ -313,12 +313,19 @@ export async function runTail(
       });
       plan = `${rebut.plan}\n`;
       changelog = rebut.changelog;
+      const applied = rebut.changelog.changes.filter((c) => c.disposition !== "no-op");
+      const noops = rebut.changelog.changes.length - applied.length;
       note(
-        `changelog — ${rebut.changelog.changes.length} change(s): ` +
-          rebut.changelog.changes.map((c) => `${c.item} ${c.disposition}`).join(", "),
+        `changelog — ${applied.length} change(s)` +
+          (noops ? `, ${noops} no-op(s)` : "") +
+          (applied.length ? `: ${applied.map((c) => `${c.item} ${c.disposition}`).join(", ")}` : ""),
       );
     } else {
-      note("nothing authorised at the gate — plan.v2 is plan.v1 unchanged");
+      note(
+        `nothing authorised at the gate — ${
+          mode === "answer" ? "the answer" : "plan.v2"
+        } is unchanged`,
+      );
     }
     await writeFile(paths.planV2, plan);
     await writeJson(paths.changelog, changelog);

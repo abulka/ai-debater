@@ -157,14 +157,19 @@ export async function latestRun(repo: string): Promise<string | null> {
   }
 }
 
+/**
+ * What the models get when there is no criteria file. Answer mode always uses
+ * this: a general question has no repository, and the criteria in whatever
+ * directory the human ran from are not its criteria.
+ */
+export const NO_CRITERIA =
+  "- (none supplied; use judgement sparingly and flag anything you had to assume)";
+
 export async function readCriteria(repo: string): Promise<{ text: string; found: boolean }> {
   try {
     return { text: await readFile(path.join(advDir(repo), "criteria.md"), "utf8"), found: true };
   } catch {
-    return {
-      text: "- (none supplied; use judgement sparingly and flag anything you had to assume)",
-      found: false,
-    };
+    return { text: NO_CRITERIA, found: false };
   }
 }
 

@@ -139,11 +139,79 @@ and nothing before or after it.`,
   permissions: [DENY_ALL],
 };
 
+/* ------------------------------------------------------------------ *
+ * Answer mode.
+ *
+ * A general question assumes no repository. That has to be enforced by the
+ * permissions and the working directory, not by asking the model nicely: an
+ * earlier run answered "is Claude the best AI?" by reading this repository's
+ * AGENTS.md and citing it, because the file tools were there and the working
+ * directory was a repo.
+ * ------------------------------------------------------------------ */
+
+const WEB_ONLY: Permission[] = [
+  DENY_ALL,
+  { action: "webfetch", resource: "*", effect: "allow" },
+  { action: "websearch", resource: "*", effect: "allow" },
+];
+
+const drafterAnswer: AgentDefinition = {
+  description:
+    "Answers general questions with no repository and no tools. Used by the adv tool in answer mode.",
+  mode: "primary",
+  hidden: true,
+  system: `You answer general questions. You have no repository, no files and no tools.
+
+Hard rules:
+
+- Everything you say comes from your own knowledge. You cannot look anything up;
+  the reviewer checks your facts against sources.
+- Never refer to a repository, a working directory, project notes or configuration
+  files. None exist for this question.
+- Never invent a source. If you are unsure, say so briefly.
+- If the question asks which option is best, recommend one and say why.
+- Do not choose between options where a reasonable person could differ; name the
+  trade-off and leave that part open.
+
+Your reply must end with exactly one fenced \`json\` block containing your
+verifiable claims and judgment calls, as instructed in the prompt.`,
+  permissions: [DENY_ALL],
+};
+
+const reviewerAnswer: AgentDefinition = {
+  description:
+    "Checks an answer to a general question against web sources. Used by the adv tool in answer mode.",
+  mode: "primary",
+  hidden: true,
+  system: `You are an adversarial reviewer of an answer to a general question.
+
+Hard rules:
+
+- Verify. Never rewrite the answer.
+- Every verdict is \`confirmed\`, \`refuted\` or \`unverifiable\`.
+- \`confirmed\` and \`refuted\` need a URL you actually checked. \`unverifiable\`
+  needs a short note saying why.
+- There is no repository and no local file to read: use websearch and webfetch.
+  Never cite a path.
+- Be quick: check at most three sources in total. If a claim needs more than one
+  search to settle, mark it \`unverifiable\` and move on. Judgment calls need no
+  search at all.
+- Never confirm a claim you have not checked. Never guess.
+- For judgment calls, list trade-offs. Do not resolve them.
+- Add problems the author did not list as separate findings, at most two
+  sentences each.
+
+Your reply must be exactly one fenced \`json\` block, as instructed in the prompt.`,
+  permissions: WEB_ONLY,
+};
+
 /** Keyed by the agent id the runner passes to `--agent`. */
 export const AGENTS: Record<string, AgentDefinition> = {
   "adv-drafter": drafter,
   "adv-reviewer": reviewer,
   "adv-writer": writer,
+  "adv-drafter-answer": drafterAnswer,
+  "adv-reviewer-answer": reviewerAnswer,
 };
 
 /**

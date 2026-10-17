@@ -42,8 +42,11 @@ const claimsInstruction = (subject: string) => `Below is ${subject}. List what i
 Produce exactly two categories:
 - "verifiable": factual assertions that can be checked against a URL, or against
   a file in the working directory.
-- "judgment": choices where reasonable alternatives exist. List the options, at
-  least two. Do NOT choose between them.
+- "judgment": choices the text deliberately leaves to the human — how to weigh
+  criteria, which constraint matters most. A judgment call is NEVER the question
+  itself. If the user asked "which X is best", an option list of X's is not a
+  judgment call: that is the answer, and the text must recommend one.
+  Do NOT choose between them.
 
 Reply with ONLY a fenced \`\`\`json block, nothing before or after it:
 
@@ -92,15 +95,25 @@ function answerPrompt(i: DraftInput): string {
 
 RULES
 - Lead with the answer in one sentence, then the detail. No preamble.
+- If the question asks which option is best, RECOMMEND ONE and say why. State the
+  criteria you used. Never hand the choice back — an option list instead of an
+  answer is a failure to answer. If the best choice depends on what the reader
+  values, say what changes with each value and still pick a default.
+- Do not write about the process: no "I did not browse", no "from memory", no
+  "you settled", no "the reviewer". The answer stands on its own.
+- At most ONE judgment call for a general question, and only if the answer cannot
+  proceed without it. If a sensible default exists, take it and say so.
+- If a fact is uncertain, say so in a short clause and move on. Do not build a
+  section of caveats.
+- Prefer short prose: the answer, the reasoning, then sources. Bullets only when
+  the answer is genuinely a list. Aim for about 300 words.
 - Every factual assertion must be checkable. Put sources at the END as numbered
   footnotes, with markers such as [1] in the text. Never write a URL inline in
   prose or inside a table cell: a wall of links is unreadable.
 - Answer from what you know. Do NOT browse, fetch or search to do it yourself:
   a separate reviewer checks your facts against sources, and it has the tools for
-  that. Mark anything you are unsure of plainly rather than asserting it.
+  that.
 - Never invent a source, and never call a tool by a name you were not given.
-- Do not choose between options where reasonable people could differ. Name the
-  decision and the options, and leave it open for the human.
 - The criteria below are fixed — they describe what a good answer looks like for
   this person. Do not invent criteria.
 
@@ -128,6 +141,8 @@ export function reviewPrompt(i: ReviewInput): string {
   - "refuted":   you checked and it is wrong. Give "evidence" (a URL) and a "note".
   - "unverifiable": you could not check it. Give a short "note" saying why, and no evidence.
 - Use websearch and webfetch to check claims. Do not confirm a claim you have not checked.
+- Be quick: check at most three sources in total. If a claim needs more than one
+  search to settle, mark it "unverifiable" and move on. Judgment calls need no search.
 - Watch for claims that are true but misleading, stale numbers, and unsupported
   certainty. These are the common failures in a confident answer.`
       : `- For every verifiable claim, give exactly one verdict:
