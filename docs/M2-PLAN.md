@@ -15,6 +15,13 @@
 > - **D2** — the split is *quick vs slow*, not tier 1 vs tier 2. Version and git
 >   checks run by themselves; `bun test` and `bun run typecheck` ask first.
 
+> **Status (18 Oct).** Implemented: the audit record, exact-argv matcher, executor
+> with timeout/cap/scrubbed environment, the quick-versus-slow approval split,
+> `audit.json`, merging results into the gate and rebuttal, and the URL/evidence
+> checks. **Not implemented:** `adv audit <run>` (Tier 2, deliberately unbuilt) and
+> the MCP server-level disable. Do not read §6 as a live roadmap — `AGENTS.md`
+> carries the current state.
+
 # M2 plan: evidence execution
 
 ## 0. Limits and assumptions

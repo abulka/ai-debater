@@ -111,11 +111,16 @@ for both modes. `adv decide`/`run --resume`/`status` take a bare run name.
 | Ctrl+P | Settings — choose drafter/reviewer, switch mode |
 | Tab | Toggle plan / answer mode |
 | Enter | Run the typed task |
-| ↑↓ Enter | Answer the gate |
-| l | Gate: leave a judgment call open (a real disposition, not a skip) |
-| d | Gate: open the draft the current call is about, scrollable |
-| v | Gate: open every verdict with its evidence |
-| e | Gate: open the cited file at the cited line (findings only) |
+| ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
+| s | Skip the current question (finding: untriaged; judgment: open) |
+| o | Gate: leave a judgment call open |
+| d | Gate: open the answer/plan text these questions are about |
+| v | Gate: every verdict, with its evidence |
+| e | Gate: the cited source — the file around the line, or the URL |
+| w | Gate: the current item's whole text, unclipped |
+| i | Gate: the review summary — warnings, checks, refuted claims |
+| l | Gate: the full run log |
+| x | Result: show or hide the exact text diff |
 | Esc | Close a panel and return to the same question |
 | ↑↓ · q | Scroll the result; `q` quits |
 
