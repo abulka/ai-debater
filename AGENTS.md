@@ -114,6 +114,16 @@ repository's own run wins the only ambiguous case: the same second in both).
 Runs recorded before this stay where they were; they are records, and they are
 still found by name. `adv run --resume` with no name takes the newest of either.
 
+`adv rm <run> | --all | --older-than 30d [--yes]` removes runs, and the TUI's
+runs screen does the same with `d`/`D`. Deleting removes only run directories
+under the store: never a repository, never `.adv/`, never `~/.config/adv`. It
+also does not un-settle anything — decisions already appended to a repo's
+`.adv/decisions.md` stay there, which is why this is "delete the run", not
+"undo". Nothing is deleted on one keystroke: the TUI confirms with the count,
+the split (this repository's runs versus questions from any directory) and each
+run by name, and the CLI prints the same and asks, refusing without a terminal
+unless `--yes` is passed.
+
 The answer is `plan.v2.md`; `answer.md` (the answer) and `result.md` (the answer
 plus the commentary) appear when the TUI copies them out.
 
@@ -153,6 +163,10 @@ supersede rule.
 | n | Result/Gate/Runs: back to your question — the draft, subject and models you had are kept |
 | Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `n` is a new question, `q` quits (the run stays on disk — reopen it with Ctrl+R) |
 | Ctrl+R | Past runs — open a finished or parked run, from home, the gate or a result |
+| space | Runs: tag the highlighted run (`●`), and move on — tag several in a row |
+| a / A | Runs: tag all listed / clear the tags |
+| d | Runs: delete the tagged runs, or the highlighted one when none are tagged |
+| D | Runs: delete every run listed, questions included — the confirmation states the split |
 | Ctrl+U | Start: clear the prompt |
 | ↑↓ · q | Scroll the result; `q` quits |
 

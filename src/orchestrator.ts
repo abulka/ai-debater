@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { RunState } from "./contracts.ts";
@@ -207,6 +207,98 @@ export function findRunDir(repo: string, name: string): string | null {
   return null;
 }
 
+/**
+ * Remove runs.
+ *
+ * The one operation here that cannot be undone, so it is guarded twice: nothing
+ * outside the store is ever removed — a path that is not under `runsRoot()` is
+ * refused rather than handed to `rm` — and a missing directory is not an error,
+ * because deleting a run twice should not fail the second time.
+ *
+ * A run's artefacts are all inside the store, so this never touches a
+ * repository: not the source tree, not `.adv/`. It also does not un-settle
+ * anything: decisions already appended to `.adv/decisions.md` stay there, which
+ * is why the CLI and the TUI say "delete the run", not "undo".
+ */
+export async function deleteRuns(
+  dirs: string[],
+): Promise<{ deleted: string[]; failed: { dir: string; error: string }[] }> {
+  const root = runsRoot();
+  const deleted: string[] = [];
+  const failed: { dir: string; error: string }[] = [];
+
+  for (const dir of dirs) {
+    const abs = path.resolve(dir);
+    if (abs === root || !abs.startsWith(`${root}${path.sep}`)) {
+      failed.push({ dir, error: "refused: not inside the run store" });
+      continue;
+    }
+    try {
+      await rm(abs, { recursive: true, force: true });
+      deleted.push(abs);
+    } catch (error) {
+      failed.push({ dir: abs, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { deleted, failed };
+}
+
+/** What a deletion will remove, phrased once for both front ends. */
+export interface DeletionSummary {
+  /** Runs filed under this repository's bucket. */
+  here: number;
+  /**
+   * Runs under the questions bucket — asked from any directory, which is why
+   * the count is stated before anything is removed.
+   */
+  elsewhere: number;
+  /** One line per run: name, state, kind and the start of the task. */
+  lines: { dir: string; text: string }[];
+}
+
+/**
+ * Describe a deletion without performing it.
+ *
+ * Split by *bucket*, not by mode: what matters before a delete is the blast
+ * radius, and a pre-existing question filed under a repository is still inside
+ * that repository's bucket. Each line names the run's kind, so the split never
+ * misreports what a run is.
+ */
+export function deletionSummary(runs: RunSummary[], repo: string): DeletionSummary {
+  const here = `${runsDir(repo)}${path.sep}`;
+  const mine = runs.filter((run) => run.dir.startsWith(here));
+  return {
+    here: mine.length,
+    elsewhere: runs.length - mine.length,
+    lines: runs.map((run) => ({
+      dir: run.dir,
+      text:
+        `${run.name}  ${run.state.padEnd(8)} ` +
+        `${run.mode === "answer" ? "question" : "task    "} · ` +
+        run.task.replace(/\s+/g, " ").trim(),
+    })),
+  };
+}
+
+/**
+ * The instant a run must predate to be removed by `--older-than`.
+ *
+ * `30d`, `12h`, `45m`, or a date (`2026-10-01`, or a full ISO stamp). Null means
+ * the argument was not one of those, and the caller says so instead of deleting
+ * nothing quietly.
+ */
+export function olderThanCutoff(spec: string, now = new Date()): Date | null {
+  const relative = /^(\d+)\s*([dhm])$/.exec(spec.trim());
+  if (relative) {
+    const count = Number(relative[1]);
+    const unit = relative[2] === "d" ? 86_400_000 : relative[2] === "h" ? 3_600_000 : 60_000;
+    return new Date(now.getTime() - count * unit);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}(?:T[\d:.+-]+Z?)?$/.test(spec.trim())) return null;
+  const date = new Date(spec.trim());
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export interface RunSummary {
   /** The run directory's name: its timestamp stamp. */
   name: string;
@@ -218,6 +310,8 @@ export interface RunSummary {
   state: RunState["state"];
   task: string;
   mode: RunState["mode"];
+  /** When the run was created, ISO. Filtering by age is the CLI's business. */
+  createdAt: string;
 }
 
 /**
@@ -247,7 +341,14 @@ export async function listRuns(repo: string): Promise<RunSummary[]> {
   for (const { name, dir } of found) {
     try {
       const state = await loadState(runPaths(repo, dir));
-      out.push({ name, dir, state: state.state, task: state.task, mode: state.mode });
+      out.push({
+        name,
+        dir,
+        state: state.state,
+        task: state.task,
+        mode: state.mode,
+        createdAt: state.createdAt,
+      });
     } catch {
       /* no readable state — not a run worth listing */
     }

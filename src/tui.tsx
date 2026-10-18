@@ -25,6 +25,8 @@ import {
 import { familyClash, familyOf, listModels } from "./models.ts";
 import {
   appendDecisions,
+  deleteRuns,
+  deletionSummary,
   displayPath,
   listRuns,
   loadState,
@@ -34,6 +36,7 @@ import {
   rotateGate,
   runPaths,
   saveState,
+  type DeletionSummary,
   type RunSummary,
 } from "./orchestrator.ts";
 import {
@@ -563,11 +566,19 @@ function Pick({
 function Runs({
   runs,
   index,
+  offset,
+  height,
+  tagged,
 }: {
   runs: RunSummary[];
   index: number;
+  /** The window's first row: the list is longer than the screen. */
+  offset: number;
+  height: number;
+  tagged: Set<string>;
 }) {
-  const width = Math.max(40, (process.stdout.columns ?? 100) - 4);
+  const width = Math.max(40, (process.stdout.columns ?? 100) - 6);
+  const window = runs.slice(offset, offset + height);
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
@@ -577,12 +588,15 @@ function Runs({
         open one to continue it — a finished run can be revisited, a parked one finished
       </Text>
       <Box marginTop={1} flexDirection="column">
-        {runs.slice(0, 12).map((r, i) => {
-          const selected = i === index;
+        {window.map((r, i) => {
+          const at = offset + i;
+          const selected = at === index;
+          const marked = tagged.has(r.dir);
           const label = r.mode === "answer" ? "question" : "task";
           const text = r.task.length > width - 34 ? `${r.task.slice(0, width - 37)}…` : r.task;
           return (
-            <Box key={r.name}>
+            <Box key={r.dir}>
+              <Text color={marked ? THEME.warn : undefined}>{marked ? "● " : "  "}</Text>
               <Text color={selected ? THEME.accent : undefined}>{selected ? "❯ " : "  "}</Text>
               <Text color={selected ? THEME.accent : undefined} bold={selected}>
                 {r.name}
@@ -597,10 +611,94 @@ function Runs({
             </Box>
           );
         })}
-        {runs.length === 0 && <Text dimColor>no runs recorded for this repository yet</Text>}
+        {runs.length === 0 && (
+          <Text dimColor>no runs yet — this repository has none, and no question has been asked</Text>
+        )}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>↑↓ choose · Enter open · n question · Esc back</Text>
+        <Text dimColor>
+          {runs.length > height ? `${offset + 1}–${Math.min(runs.length, offset + height)} of ${runs.length} · ` : ""}
+          ↑↓ choose · Enter open
+          {tagged.size ? ` · ${tagged.size} tagged` : ""}
+        </Text>
+      </Box>
+      <Box>
+        <Text>
+          <Line
+            spans={hints(
+              ["space", tagged.size ? "untag/tag" : "tag"],
+              ["d", tagged.size ? `delete ${tagged.size}` : "delete"],
+              ["D", "delete all"],
+              ["a", "tag all"],
+              ["A", "clear"],
+              ["n", "question"],
+              ["Esc", "back"],
+            )}
+          />
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * The delete confirmation.
+ *
+ * Nothing is removed on one keystroke: the count, the split, and each run by
+ * name and task are on the screen before `y` means anything. The split matters
+ * most for the questions bucket, which reaches runs asked from other
+ * directories entirely.
+ */
+function ConfirmDelete({
+  summary,
+  onAnswer,
+}: {
+  summary: DeletionSummary;
+  onAnswer: (ok: boolean) => void;
+}) {
+  useInput((input, key) => {
+    if (input === "y" || input === "Y") onAnswer(true);
+    else if (input === "n" || input === "N" || key.escape || key.return) onAnswer(false);
+  });
+
+  const total = summary.here + summary.elsewhere;
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="delete runs" />
+      </Box>
+      <Text bold color={THEME.danger}>
+        delete {total} run{total === 1 ? "" : "s"}?
+      </Text>
+      <Box marginTop={1} flexDirection="column">
+        {summary.here > 0 && <Text>{`  ${summary.here} filed under this repository`}</Text>}
+        {summary.elsewhere > 0 && (
+          <Text color={THEME.warn}>
+            {`  ${summary.elsewhere} question${summary.elsewhere === 1 ? "" : "s"}, asked from any directory`}
+          </Text>
+        )}
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        {summary.lines.slice(0, 8).map((line) => (
+          <Text key={line.dir} dimColor>
+            {"  "}
+            {line.text}
+          </Text>
+        ))}
+        {summary.lines.length > 8 && <Text dimColor>{`  … and ${summary.lines.length - 8} more`}</Text>}
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>
+          the run directories are removed for good; nothing in any repository is touched, and
+          decisions already written to a repo's .adv/decisions.md stay
+        </Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text>
+          <Line
+            spans={hints(["y", `delete ${total}`], ["n", "cancel"])}
+          />
+        </Text>
       </Box>
     </Box>
   );
@@ -957,6 +1055,19 @@ function App({ repo }: { repo: string }) {
   const [runMode, setRunMode] = useState<Mode | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [runsIndex, setRunsIndex] = useState(0);
+  /**
+   * The cursor, readable by a key handler mid-frame.
+   *
+   * Two keystrokes can be delivered before React commits — a held `space`, or
+   * two presses in one read from the terminal — and both handlers then close
+   * over the same `runsIndex`. Tagging and moving would read the same row
+   * twice, which toggles it back off: a fast tag did nothing. Handlers read the
+   * ref; the state is what draws.
+   */
+  const runsCursor = useRef(0);
+  const [runsOffset, setRunsOffset] = useState(0);
+  const [taggedRuns, setTaggedRuns] = useState<Set<string>>(new Set());
+  const [pendingDelete, setPendingDelete] = useState<string[] | null>(null);
   const [runsLoading, setRunsLoading] = useState(false);
 
   /* The mode a run runs in: the run's own, or the subject preference for a
@@ -1338,13 +1449,72 @@ function App({ repo }: { repo: string }) {
     }
   }
 
+  /**
+   * The runs list is longer than the screen, so it shows a window of it — the
+   * same arithmetic the panes use, because an index that can walk past the
+   * visible rows is a row you cannot see you are about to delete.
+   */
+  const runsHeight = paneHeight(10);
+
+  function moveRuns(next: number) {
+    const index = Math.max(0, Math.min(runs.length - 1, next));
+    runsCursor.current = index;
+    setRunsIndex(index);
+    setRunsOffset((offset) => {
+      if (index < offset) return index;
+      if (index >= offset + runsHeight) return index - runsHeight + 1;
+      return clampOffset(offset, runs.length, runsHeight);
+    });
+  }
+
+  /**
+   * Delete the runs the confirmation named.
+   *
+   * The store refuses anything outside itself, so a failure here is reported
+   * rather than thrown, and a partial failure still refreshes the list: what is
+   * gone is gone, and the reader is told what is left.
+   */
+  async function deleteSelected(dirs: string[]) {
+    setPendingDelete(null);
+    const result = await deleteRuns(dirs);
+    addLog(
+      result.failed.length
+        ? `deleted ${result.deleted.length} run(s); ${result.failed.length} refused: ` +
+            result.failed.map((f) => `${f.dir} — ${f.error}`).join("; ")
+        : `deleted ${result.deleted.length} run(s)`,
+    );
+    setTaggedRuns(new Set());
+    const fresh = await listRuns(repo);
+    setRuns(fresh);
+    // Whatever was under the cursor is gone or has moved; both the ref and the
+    // window start again from the top.
+    runsCursor.current = Math.min(runsCursor.current, Math.max(0, fresh.length - 1));
+    setRunsIndex(runsCursor.current);
+    setRunsOffset(0);
+    // The run on screen may be one of them: the screen is then a record of
+    // something that no longer exists, and `r` would fail on a missing
+    // directory. Back to the question desk rather than a stale result.
+    if (head && result.deleted.includes(head.paths.dir)) {
+      setHead(null);
+      setTail(null);
+      setGate(null);
+      setRunTask("");
+      addLog("the run on screen was deleted — back to the start screen");
+      setPhase("start");
+    }
+  }
+
   /* Past runs: this repository's, plus every question, newest first. */
   async function openRuns() {
     setPhase("runs");
     // Any pane is on the screen we are leaving; it must not reappear when we
     // come back to a gate or a result later.
     setPanel(null);
+    runsCursor.current = 0;
     setRunsIndex(0);
+    setRunsOffset(0);
+    setTaggedRuns(new Set());
+    setPendingDelete(null);
     setRunsLoading(true);
     setRuns(await listRuns(repo));
     setRunsLoading(false);
@@ -1830,30 +2000,87 @@ function App({ repo }: { repo: string }) {
   useInput(
     (input, key) => {
       if (key.upArrow) {
-        setRunsIndex((i) => Math.max(0, i - 1));
+        moveRuns(runsCursor.current - 1);
         return;
       }
       if (key.downArrow) {
-        setRunsIndex((i) => Math.min(runs.length - 1, i + 1));
+        moveRuns(runsCursor.current + 1);
+        return;
+      }
+      if (key.pageDown) {
+        moveRuns(runsCursor.current + runsHeight);
+        return;
+      }
+      if (key.pageUp) {
+        moveRuns(runsCursor.current - runsHeight);
+        return;
+      }
+      if (input === "g") {
+        moveRuns(0);
+        return;
+      }
+      if (input === "G") {
+        moveRuns(runs.length - 1);
         return;
       }
       if (key.return) {
-        const chosen = runs[runsIndex];
+        const chosen = runs[runsCursor.current];
         // The row carries its own directory: a question and a task recorded in
         // the same second share a name, and only the row knows which is which.
         if (chosen) void openRun(chosen);
         return;
       }
+      if (input === " ") {
+        const at = runs[runsCursor.current];
+        if (at) {
+          setTaggedRuns((tags) => {
+            const next = new Set(tags);
+            if (next.has(at.dir)) next.delete(at.dir);
+            else next.add(at.dir);
+            return next;
+          });
+          moveRuns(runsCursor.current + 1);
+        }
+        return;
+      }
+      if (input === "a") {
+        setTaggedRuns(new Set(runs.map((r) => r.dir)));
+        return;
+      }
+      if (input === "A") {
+        setTaggedRuns(new Set());
+        return;
+      }
+      if (input === "d") {
+        // Tagged runs are a selection: `d` acts on it, or on the cursor when
+        // there is none. The footer says which before the key is pressed.
+        const dirs = taggedRuns.size
+          ? [...taggedRuns]
+          : runs[runsCursor.current]
+            ? [runs[runsCursor.current]!.dir]
+            : [];
+        if (dirs.length) setPendingDelete(dirs);
+        return;
+      }
+      if (input === "D") {
+        if (runs.length) setPendingDelete(runs.map((r) => r.dir));
+        return;
+      }
       if (key.escape) {
+        setTaggedRuns(new Set());
         setPhase("start");
         return;
       }
       if (input === "n" && !key.ctrl && !key.meta) {
+        setTaggedRuns(new Set());
         setPhase("start");
       }
     },
-    { isActive: phase === "runs" },
+    // While the confirmation is up, the confirmation owns the keys: it is a
+    // component with its own handler, like the check approval.
+    { isActive: phase === "runs" && pendingDelete === null },
   );
+
 
   /* Nothing to ask: go straight through. */
   useEffect(() => {
@@ -1911,8 +2138,22 @@ function App({ repo }: { repo: string }) {
   } else if (phase === "runs") {
     content = runsLoading ? (
       <Text dimColor>loading past runs…</Text>
+    ) : pendingDelete ? (
+      <ConfirmDelete
+        summary={deletionSummary(
+          runs.filter((r) => pendingDelete.includes(r.dir)),
+          repo,
+        )}
+        onAnswer={(ok) => void (ok ? deleteSelected(pendingDelete) : setPendingDelete(null))}
+      />
     ) : (
-      <Runs runs={runs} index={runsIndex} />
+      <Runs
+        runs={runs}
+        index={runsIndex}
+        offset={runsOffset}
+        height={runsHeight}
+        tagged={taggedRuns}
+      />
     );
   } else if (phase === "gate" && head) {
     if (panel) {

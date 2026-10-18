@@ -84,6 +84,7 @@ adv decide [<run>]             # answer the gate
 adv run --resume [<run>]       # rebut -> diff -> result
 adv revise [<run>] [--rewrite] # re-ask the gate prefilled, re-run only the tail
 adv status [<run>]             # show the current state
+adv rm <run> | --all | --older-than 30d [--yes]   # remove runs from the store
 ```
 
 Useful flags: `--dir <repo>` to target another repository, `--no-gate` to run

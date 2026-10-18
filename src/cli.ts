@@ -11,6 +11,11 @@
  *   adv decide [<run>]
  *   adv revise [<run>] [--rewrite]
  *   adv status [<run>]
+  adv rm <run> | --all | --older-than 30d [--yes]
+
+  rm removes run directories from the store. Nothing in a repository is touched:
+  not the source, not .adv/. Decisions already written to .adv/decisions.md stay.
+  Without a terminal it refuses unless --yes is passed.
  */
 
 import { writeFile } from "node:fs/promises";
@@ -33,7 +38,11 @@ import {
   readJson,
   rotateGate,
   runPaths,
+  deleteRuns,
+  deletionSummary,
   findRunDir,
+  listRuns,
+  olderThanCutoff,
   resumedModels,
   type Paths,
   saveState,
@@ -45,7 +54,7 @@ import type { CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 import type { ApprovalRequest } from "./audit.ts";
 
-const BOOLEAN_FLAGS = new Set(["no-gate", "general", "plan", "rewrite", "help", "strict"]);
+const BOOLEAN_FLAGS = new Set(["no-gate", "general", "plan", "rewrite", "help", "strict", "all", "yes"]);
 
 function parse(args: string[]): { flags: Map<string, string | true>; positional: string[] } {
   const flags = new Map<string, string | true>();
@@ -553,6 +562,102 @@ async function cmdTui(flags: Map<string, string | true>) {
   await startTui({ repo });
 }
 
+
+/**
+ * `adv rm` — remove runs.
+ *
+ * One run by name, or every run this directory can see (`--all`), or those
+ * older than a span (`--older-than 30d`). Deleting is not undoable and the
+ * questions bucket reaches runs asked from other directories, so the set is
+ * printed before it goes and a terminal is asked to confirm: without one, the
+ * command refuses unless `--yes` says the caller already decided.
+ */
+async function cmdRm(flags: Map<string, string | true>, positional: string[]) {
+  const repo = repoOf(flags);
+  const name = positional[0];
+  const all = flags.has("all");
+  const olderSpec = typeof flags.get("older-than") === "string" ? (flags.get("older-than") as string) : null;
+
+  if (name && (all || olderSpec)) {
+    throw new Error("usage: adv rm <run> | adv rm --all | adv rm --older-than 30d — pick one");
+  }
+  if (!name && !all && !olderSpec) {
+    throw new Error("usage: adv rm <run> | adv rm --all | adv rm --older-than 30d");
+  }
+
+  let dirs: string[];
+  if (name) {
+    const found = findRunDir(repo, name) ?? (path.isAbsolute(name) ? name : null);
+    if (!found) throw new Error(`no run called ${name}`);
+    dirs = [found];
+  } else {
+    const runs = await listRuns(repo);
+    let chosen = runs;
+    if (olderSpec) {
+      const cutoff = olderThanCutoff(olderSpec);
+      if (!cutoff) {
+        throw new Error(
+          `--older-than takes a span (30d, 12h, 45m) or a date (2026-10-01), not "${olderSpec}"`,
+        );
+      }
+      chosen = [];
+      const undated: string[] = [];
+      for (const run of runs) {
+        const at = new Date(run.createdAt).getTime();
+        // `createdAt` is a plain string in the schema, so an odd one is
+        // possible. Pruning must say it left such a run alone rather than look
+        // like it covered everything.
+        if (Number.isNaN(at)) undated.push(run.name);
+        else if (at < cutoff.getTime()) chosen.push(run);
+      }
+      if (undated.length) {
+        console.log(
+          `left alone: ${undated.length} run(s) with no readable timestamp — ${undated.join(", ")}`,
+        );
+      }
+    }
+    if (chosen.length === 0) {
+      console.log("nothing to remove");
+      return;
+    }
+    dirs = chosen.map((run) => run.dir);
+    const summary = deletionSummary(chosen, repo);
+    console.log(
+      `\n${dirs.length} run(s): ${summary.here} filed under this repository, ` +
+        `${summary.elsewhere} question(s) asked from any directory`,
+    );
+    for (const line of summary.lines) console.log(`  ${line.text}`);
+    // A terminal is asked; a script must say --yes instead of having stdin read
+    // as "no" and a delete that silently did nothing.
+    if (!flags.has("yes")) {
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new Error("refusing to delete without a terminal — pass --yes if you mean it");
+      }
+      process.stdout.write("\ndelete these? (y/N) ");
+      const answer = await readLine();
+      if (!/^y(es)?$/i.test(answer.trim())) {
+        console.log("nothing was deleted");
+        return;
+      }
+    }
+  }
+
+  const result = await deleteRuns(dirs);
+  for (const dir of result.deleted) console.log(`deleted ${displayPath(dir)}`);
+  for (const f of result.failed) console.log(`not deleted ${displayPath(f.dir)} — ${f.error}`);
+  if (result.failed.length) process.exitCode = 1;
+}
+
+/** One line from stdin, for the one question this CLI asks. */
+async function readLine(): Promise<string> {
+  const chunks: string[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(String(chunk));
+    if (chunks.join("").includes("\n")) break;
+  }
+  return chunks.join("");
+}
+
 function usage() {
   console.log(`adv — adversarial two-model plan review
 
@@ -565,6 +670,11 @@ function usage() {
   adv decide [<run>]
   adv revise [<run>] [--rewrite] [--strict]
   adv status [<run>]
+  adv rm <run> | --all | --older-than 30d [--yes]
+
+  rm removes run directories from the store. Nothing in a repository is touched:
+  not the source, not .adv/. Decisions already written to .adv/decisions.md stay.
+  Without a terminal it refuses unless --yes is passed.
 
   --general / --plan   force the subject for this run, without changing the saved one
   --strict             refuse to run when both models share a family. Use it for any
@@ -609,6 +719,9 @@ try {
       break;
     case "revise":
       await cmdRevise(flags, positional);
+      break;
+    case "rm":
+      await cmdRm(flags, positional);
       break;
     case "status":
       await cmdStatus(flags, positional);
