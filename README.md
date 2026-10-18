@@ -7,6 +7,9 @@ changelog and a diff.
 
 The rule the whole tool is built around: **models verify, the human decides.**
 
+![adv TUI screenshot](docs/screenshot-ai-debater-01.png)
+*Example TUI screenshot of `adv` TUI, showing a corrected result - one LLM correcting another LLM.*
+
 ## The problem
 
 The starting point was simple: run a prompt through two different LLM models so
@@ -21,8 +24,11 @@ What actually works is narrower and cheaper:
   path, a claim about code — gets caught and fixed in one adversarial pass,
   because evidence resolves it.
 - **Preference debates do not settle.** On judgment calls with reasonable
-  options on both sides, more model turns do not help. A model tends to concede
-  to the last argument it saw; the decision belongs to a human with criteria.
+  options on both sides, more model turns do not help. A model *can* tend to
+  concede to the last argument it evaluated — a plausible explanation, but one
+  drawn from a single model's account of its own session, and unproven. What is
+  clear is that the decision belongs to a human with criteria, not to another
+  model turn.
 
 The manual version of this loop (two chat windows, copy-paste back and forth)
 also fails in predictable ways: unfilled placeholders sent to the reviewer,
@@ -56,12 +62,20 @@ answers, and never edits the repository.
 ```sh
 bun install
 bun link                       # once: puts `adv` on PATH
-
-adv                            # TUI for the current directory
-adv --dir /path/to/repo        # TUI for another repo
 ```
 
-The CLI is the scriptable path:
+There are two front ends over the same pipeline: an interactive **TUI** (bare
+`adv`) and a scriptable **CLI** (`adv <command>`). Both drive `src/pipeline.ts`,
+so a run started in one can be finished in the other.
+
+Use the tool for unfamiliar codebases, correctness-critical plans and
+high-stakes changes; skip it for small or familiar tasks, where the overhead
+exceeds the gain.
+
+### CLI mode
+
+The CLI is the scriptable path — everything can run non-interactively and pipe
+its output.
 
 ```sh
 adv init --dir <repo>          # criteria, decisions and config (optional)
@@ -72,10 +86,45 @@ adv revise [<run>] [--rewrite] # re-ask the gate prefilled, re-run only the tail
 adv status [<run>]             # show the current state
 ```
 
-Typing a task in the TUI, or passing one to `adv run`, is the whole interface:
-the run is one command and the gate is one screen. Use the tool for unfamiliar
-codebases, correctness-critical plans and high-stakes changes; skip it for small
-or familiar tasks, where the overhead exceeds the gain.
+Useful flags: `--dir <repo>` to target another repository, `--no-gate` to run
+through without stopping, `--drafter` / `--reviewer` to override the models,
+`--general` for a general question with no repository, and `--strict` to make a
+same-family pair a hard stop. `adv run "<task>" > plan.md` writes the plan as
+plain Markdown into a file; `NO_COLOR` turns off the styling.
+
+### TUI mode
+
+Bare `adv` opens the interactive TUI for the current directory (`adv --dir
+/path/to/repo` for another). Type the task; the rest is keys.
+
+| Key | Action |
+| --- | --- |
+| Ctrl+P | Settings — choose drafter/reviewer, switch mode |
+| Tab | Switch subject: **this repository** or a **general question** |
+| Enter | Run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
+| ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
+| s | Skip the current question (finding: untriaged; judgment: open) |
+| o | Gate: leave a judgment call open |
+| d | Gate: the answer/plan text these questions are about, rendered. Result: the draft the review saw, before the gate |
+| v | Gate/Result: every verdict, with its evidence |
+| e | Gate: the cited source — the file around the line, or the URL |
+| w | Gate: the current item's whole text, unclipped |
+| i | Gate/Result: the review summary — warnings, checks, refuted claims |
+| l | Gate/Result: the full run log |
+| c | Result: the claims the drafter declared, and the options each judgment call offered |
+| R | Result: the reviewer's raw reply, before the tool merged a check result into it |
+| ? | Result: the keys that work on this screen |
+| x | Result: show or hide the exact text diff |
+| y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
+| Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
+| r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
+| Esc | Close a panel and return to the same question. At the gate, leave the run; on the result screen there is nothing to go back to, so it quits (the run stays on disk — reopen it with Ctrl+R) |
+| Ctrl+R | Start: past runs — open a finished or parked run |
+| ↑↓ · q | Scroll the result; `q` quits |
+
+The first-run screen appears when the directory has no `.adv/`: choose
+"Initialise .adv/ here", or "Continue without it" (models then default to the
+built-in config). Models can be changed afterwards with Ctrl+P.
 
 ## How it works
 
