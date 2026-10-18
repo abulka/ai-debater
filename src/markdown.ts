@@ -31,6 +31,8 @@
  */
 
 /** One run of text with one style. Styles compose: `{ bold: true, dim: true }`. */
+import { ANSI_CODES, THEME } from "./theme.ts";
+
 export interface Span {
   text: string;
   bold?: boolean;
@@ -196,7 +198,9 @@ export function formatTable(block: string[], width: number): StyledLine[] {
         line.push(...padTo(wrapped[c]![h] ?? [], widths[c] ?? 1));
       }
       // The header row carries its styles through; nothing is invented here.
-      out.push(trimEnd(row === 0 ? line.map((s) => ({ ...s, bold: true })) : line));
+      out.push(
+      trimEnd(row === 0 ? line.map((s) => ({ ...s, bold: true, color: THEME.accent })) : line),
+    );
     }
     if (row === 0) out.push([{ text: widths.map((w) => "─".repeat(w)).join("  "), dim: true }]);
     return out;
@@ -265,7 +269,7 @@ export function inline(text: string): Span[] {
     if (rest.startsWith("`")) {
       const code = rest.match(/^`([^`]+)`/);
       if (code) {
-        push(code[1]!, { color: "cyan" });
+        push(code[1]!, { color: THEME.code });
         i += code[0].length;
         continue;
       }
@@ -421,35 +425,100 @@ export function wrapSpans(words: Span[][], width: number, firstIndent = "", rest
   return out;
 }
 
+/** A styled line as its text, which is what the layout measures. */
+export const lineText = (line: StyledLine): string => line.map((span) => span.text).join("");
+
+/** Split a styled line at a character index, keeping each piece's styles. */
+function splitAt(line: StyledLine, index: number): [StyledLine, StyledLine] {
+  const head: StyledLine = [];
+  const tail: StyledLine = [];
+  let at = 0;
+  for (const span of line) {
+    const end = at + span.text.length;
+    if (end <= index) head.push(span);
+    else if (at >= index) tail.push(span);
+    else {
+      head.push({ ...span, text: span.text.slice(0, index - at) });
+      tail.push({ ...span, text: span.text.slice(index - at) });
+    }
+    at = end;
+  }
+  return [head, tail];
+}
+
+const dropTrailingSpace = (line: StyledLine): StyledLine => {
+  const out = [...line];
+  while (out.length) {
+    const last = out[out.length - 1]!;
+    const trimmed = last.text.replace(/ +$/, "");
+    if (trimmed === last.text) break;
+    if (trimmed) {
+      out[out.length - 1] = { ...last, text: trimmed };
+      break;
+    }
+    out.pop();
+  }
+  return out;
+};
+
+const dropLeadingSpace = (line: StyledLine): StyledLine => {
+  const out = [...line];
+  while (out.length) {
+    const first = out[0]!;
+    const trimmed = first.text.replace(/^ +/, "");
+    if (trimmed === first.text) break;
+    if (trimmed) {
+      out[0] = { ...first, text: trimmed };
+      break;
+    }
+    out.shift();
+  }
+  return out;
+};
+
 /**
- * Wrap text that is already laid out, keeping the spacing exactly as written.
+ * Wrap lines that are already laid out, keeping the spacing exactly as written.
  *
  * Not `toWords`: that is for Markdown, where runs of spaces mean nothing. These
  * lines are columns — `  V14  fixed     the sentence` — and collapsing the
  * spaces would move the sentence out from under its heading. Breaks are at
  * spaces so a summary is not cut mid-word; a word too long for the line is
  * split rather than overhanging, because the pane scrolls by row count.
+ *
+ * Styles survive the break: a red diff line stays red across the fold.
  */
-function wrapLoose(text: string, width: number, hang: number): string[] {
-  const lines: string[] = [];
-  let rest = text;
-  let indent = "";
+export function fitSpans(lines: StyledLine[], width = wrapWidth(), hang = 0): StyledLine[] {
+  const room = Math.max(8, width);
+  const out: StyledLine[] = [];
 
-  for (;;) {
-    const limit = Math.max(8, width - indent.length);
-    if (rest.length <= limit) {
-      lines.push(indent + rest);
-      return lines;
+  for (const line of lines) {
+    let rest = line;
+    let indent: StyledLine = [];
+    // A blank line is an empty element, which the pane draws as a blank row.
+    if (!lineText(line)) {
+      out.push([]);
+      continue;
     }
-    const lead = /^ */.exec(rest)![0].length;
-    let cut = rest.lastIndexOf(" ", limit);
-    // No usable space: a word longer than the line, or only the indent itself.
-    if (cut <= lead) cut = limit;
-    lines.push(indent + rest.slice(0, cut).trimEnd());
-    rest = rest.slice(cut).replace(/^ +/, "");
-    indent = " ".repeat(Math.max(0, hang));
-    if (!rest) return lines;
+    for (;;) {
+      const text = lineText(rest);
+      const limit = Math.max(8, room - lineText(indent).length);
+      if (text.length <= limit) {
+        out.push([...indent, ...rest]);
+        break;
+      }
+      const lead = /^ */.exec(text)![0].length;
+      let cut = text.lastIndexOf(" ", limit);
+      // No usable space: a word longer than the line, or only the indent itself.
+      if (cut <= lead) cut = limit;
+      const [head, tail] = splitAt(rest, cut);
+      out.push([...indent, ...dropTrailingSpace(head)]);
+      rest = dropLeadingSpace(tail);
+      // The indent is scaffolding: the pane draws it, the reader does not read it.
+      indent = hang > 0 ? [{ text: " ".repeat(hang), dim: true }] : [];
+      if (!lineText(rest)) break;
+    }
   }
+  return out;
 }
 
 /**
@@ -465,9 +534,15 @@ function wrapLoose(text: string, width: number, hang: number): string[] {
  * item id.
  */
 export function fitLines(lines: string[], width = wrapWidth(), hang = 0): StyledLine[] {
-  const room = Math.max(8, width);
-  return lines.flatMap((line) => wrapLoose(line, room, hang).map((text) => [{ text }]));
+  return fitSpans(textLines(lines), width, hang);
 }
+
+/**
+ * Build a styled line from strings and spans, so a builder reads like what it
+ * draws: `spans("  ", { text: "REFUTED", color: THEME.danger }, " ", claim)`.
+ */
+export const spans = (...parts: (string | Span)[]): StyledLine =>
+  parts.map((part) => (typeof part === "string" ? { text: part } : part));
 
 /**
  * Re-fit a section header to the terminal.
@@ -651,7 +726,10 @@ export function renderMarkdownLines(md: string, width = wrapWidth()): StyledLine
     blank();
 
     if (block.kind === "heading") {
-      const style = block.level === 1 ? { bold: true, underline: true } : { bold: true };
+      const style =
+        block.level === 1
+          ? { bold: true, underline: true, color: THEME.accent }
+          : { bold: true, color: THEME.accent };
       pushAll(wrapSpans(toWords(inline(block.text).map((s) => ({ ...style, ...s }))), width));
       continue;
     }
@@ -681,7 +759,9 @@ export function renderMarkdownLines(md: string, width = wrapWidth()): StyledLine
         const room = Math.max(8, width - 4);
         const chunks = chunkWord([{ text: line }], room);
         chunks.forEach((chunk, index) => {
-          pushAll([[{ text: index === 0 ? "│ " : "│   ", dim: true }, ...chunk]]);
+          pushAll([
+            [{ text: index === 0 ? "│ " : "│   ", dim: true }, ...chunk.map((sp) => ({ ...sp, color: THEME.code }))],
+          ]);
         });
       }
       continue;
@@ -715,8 +795,6 @@ export function renderMarkdownLines(md: string, width = wrapWidth()): StyledLine
  * The same lines, as ANSI
  * ------------------------------------------------------------------ */
 
-const CODES: Record<string, number> = { cyan: 36, green: 32, yellow: 33, red: 31, magenta: 35, blue: 34 };
-
 /**
  * Styled lines as ANSI, for the CLI.
  *
@@ -738,7 +816,7 @@ export function toAnsi(lines: StyledLine[]): string {
           if (span.italic) codes.push(3);
           if (span.underline) codes.push(4);
           if (span.strike) codes.push(9);
-          if (span.color && CODES[span.color]) codes.push(CODES[span.color]!);
+          if (span.color && ANSI_CODES[span.color]) codes.push(ANSI_CODES[span.color]!);
           return codes.length ? `\u001b[${codes.join(";")}m${span.text}\u001b[0m` : span.text;
         })
         .join(""),

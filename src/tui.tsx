@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
 import type { Config } from "./config.ts";
 import type { AuditRecord, Claims, Gate, Review } from "./contracts.ts";
-import { auditLines, type ApprovalRequest } from "./audit.ts";
+import { auditSpans, type ApprovalRequest } from "./audit.ts";
 import { advState, initRepo } from "./init.ts";
 import {
   answersToGate,
@@ -17,7 +17,7 @@ import {
   parseEvidence,
   readEvidenceContext,
   selectionForCurrent,
-  statusLine,
+  statusSpans,
   verdictCounts,
   type GateAnswer,
   type GateItem,
@@ -51,12 +51,14 @@ import {
 } from "./pipeline.ts";
 import { renderAnswer, renderResult, renderResultLines } from "./render.ts";
 import {
+  fitSpans,
   renderMarkdownLines,
-  textLines,
+  spans,
   wrapWidth,
   type Span,
   type StyledLine,
 } from "./markdown.ts";
+import { THEME } from "./theme.ts";
 import { copyMarkdown, copyNotice } from "./clipboard.ts";
 import type { Mode } from "./runner.ts";
 
@@ -138,12 +140,36 @@ function Line({ spans }: { spans: StyledLine }) {
   );
 }
 
+/**
+ * The top line: the tool's name, and which screen you are on.
+ *
+ * Both take the accent, because "where am I" is the thing a reader needs
+ * without reading: at a glance, the gate and the result should not look alike.
+ */
 function Header({ right }: { right: string }) {
   return (
     <Box>
-      <Text bold>adv</Text>
-      <Text dimColor>  {right}</Text>
+      <Text bold color={THEME.accent}>
+        adv
+      </Text>
+      <Text color={THEME.accent}>  {right}</Text>
     </Box>
+  );
+}
+
+/**
+ * A footer of keys: the key itself takes the accent and its label recedes, so
+ * the eye can find "which key" without reading "what it does".
+ */
+function hints(...pairs: [string, string][]): StyledLine {
+  return pairs.flatMap(([key, what], i) =>
+    i === 0
+      ? [{ text: key, color: THEME.accent, bold: true }, { text: ` ${what}` }]
+      : [
+          { text: " · " },
+          { text: key, color: THEME.accent, bold: true },
+          { text: ` ${what}` },
+        ],
   );
 }
 
@@ -168,7 +194,7 @@ function Scroller({
   title: string;
   /** Pre-wrapped styled lines: one element is one row, so scrolling stays honest. */
   lines: StyledLine[];
-  footer: string;
+  footer: StyledLine;
   /** A one-line answer to the last key, shown under the footer. */
   notice?: string | null;
   /**
@@ -214,11 +240,11 @@ function Scroller({
         </Text>
       </Box>
       <Box>
-        <Text dimColor>{footer}</Text>
+        <Line spans={footer} />
       </Box>
       {notice && (
         <Box>
-          <Text color="green">{notice}</Text>
+          <Text color={THEME.ok}>{notice}</Text>
         </Box>
       )}
     </Box>
@@ -260,8 +286,8 @@ function Setup({
         {options.map((o, i) => (
           <Box key={o.label} flexDirection="column">
             <Box>
-              <Text color={i === selection ? "cyan" : undefined}>{i === selection ? "❯ " : "  "}</Text>
-              <Text color={i === selection ? "cyan" : undefined} bold={i === selection}>
+              <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
+              <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
                 {o.label}
               </Text>
             </Box>
@@ -363,7 +389,7 @@ function Start({
       </Box>
       <Box>
         <Text dimColor>subject </Text>
-        <Text color="cyan">{mode === "answer" ? "general question" : "this repository"}</Text>
+        <Text color={THEME.accent}>{mode === "answer" ? "general question" : "this repository"}</Text>
         <Text dimColor>
           {"  "}
           {mode === "answer"
@@ -438,8 +464,8 @@ function Settings({
       </Box>
       {rows.map((r, i) => (
         <Box key={r.label}>
-          <Text color={i === selection ? "cyan" : undefined}>{i === selection ? "❯ " : "  "}</Text>
-          <Text color={i === selection ? "cyan" : undefined} bold={i === selection}>
+          <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
+          <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
             {r.label.padEnd(10)}
           </Text>
           <Text>{r.value}</Text>
@@ -447,7 +473,7 @@ function Settings({
       ))}
       {clash && (
         <Box marginTop={1} flexDirection="column">
-          <Text color="yellow">! {clash}</Text>
+          <Text color={THEME.warn}>! {clash}</Text>
           <Text dimColor>
             {cfg.familyCheck === "require"
               ? "familyCheck: require — runs here will refuse to start."
@@ -457,7 +483,7 @@ function Settings({
       )}
       {saved && (
         <Box marginTop={1}>
-          <Text color="green">{saved}</Text>
+          <Text color={THEME.ok}>{saved}</Text>
         </Box>
       )}
       <Box marginTop={1}>
@@ -498,8 +524,8 @@ function Pick({
           const selected = absolute === index;
           return (
             <Box key={m}>
-              <Text color={selected ? "cyan" : undefined}>{selected ? "❯ " : "  "}</Text>
-              <Text color={selected ? "cyan" : undefined} bold={selected}>
+              <Text color={selected ? THEME.accent : undefined}>{selected ? "❯ " : "  "}</Text>
+              <Text color={selected ? THEME.accent : undefined} bold={selected}>
                 {m}
               </Text>
               <Text dimColor>{`  [${familyOf(m)}]`}</Text>
@@ -539,15 +565,15 @@ function Runs({
           const text = r.task.length > width - 34 ? `${r.task.slice(0, width - 37)}…` : r.task;
           return (
             <Box key={r.name}>
-              <Text color={selected ? "cyan" : undefined}>{selected ? "❯ " : "  "}</Text>
-              <Text color={selected ? "cyan" : undefined} bold={selected}>
+              <Text color={selected ? THEME.accent : undefined}>{selected ? "❯ " : "  "}</Text>
+              <Text color={selected ? THEME.accent : undefined} bold={selected}>
                 {r.name}
               </Text>
-              <Text color={selected ? "cyan" : undefined}>
+              <Text color={selected ? THEME.accent : undefined}>
                 {"   "}
                 {r.state.padEnd(8)}
               </Text>
-              <Text color={selected ? "cyan" : undefined} dimColor={!selected}>
+              <Text color={selected ? THEME.accent : undefined} dimColor={!selected}>
                 {label} · {text}
               </Text>
             </Box>
@@ -582,7 +608,7 @@ function Approve({
       <Text>The reviewer could not settle {request.claim} from the files.</Text>
       <Text>It wants to run:</Text>
       <Box marginLeft={2} marginTop={1}>
-        <Text bold color="cyan">{request.argv.join(" ")}</Text>
+        <Text bold color={THEME.accent}>{request.argv.join(" ")}</Text>
       </Box>
       {request.why && (
         <Box marginLeft={2}>
@@ -637,7 +663,7 @@ function Log({ log, label }: { log: string[]; label: string | null }) {
       </Static>
       {label !== null && (
         <Box>
-          <Text color="yellow">{spinner} </Text>
+          <Text color={THEME.warn}>{spinner} </Text>
           <Text dimColor>{label}</Text>
         </Box>
       )}
@@ -724,11 +750,16 @@ function GateView({
       {revisit && (
         <Text dimColor>your recorded answers are prefilled — change only what you mean to</Text>
       )}
-      <Text dimColor>{statusLine(counts)}</Text>
-      {extras.length > 0 && <Text dimColor>! {extras.join(" · ")} — i for details</Text>}
+      <Line spans={statusSpans(counts)} />
+      {extras.length > 0 && (
+        <Text>
+          <Text color={THEME.warn}>! {extras.join(" · ")}</Text>
+          <Text dimColor> — i for details</Text>
+        </Text>
+      )}
 
       <Box marginTop={1} flexDirection="column">
-        <Text>
+        <Text dimColor>
           {item.kind === "finding"
             ? `${checker} noticed this in the ${thing} ${author} wrote:`
             : `${author} left this open for you:`}
@@ -737,7 +768,9 @@ function GateView({
 
       <Box flexDirection="column">
         {wrapText(item.title, 4).map((line, i) => (
-          <Text key={i}>{line}</Text>
+          <Text key={i} bold>
+            {line}
+          </Text>
         ))}
       </Box>
 
@@ -752,7 +785,7 @@ function GateView({
       )}
 
       <Box marginTop={1}>
-        <Text>
+        <Text bold color={THEME.accent}>
           {item.kind === "finding"
             ? `Change the ${thing} to cover this?`
             : `Which should the ${thing} do?`}
@@ -762,14 +795,14 @@ function GateView({
       <Box flexDirection="column">
         {item.options.map((option, i) => (
           <Box key={i}>
-            <Text color={i === selection ? "cyan" : undefined}>{i === selection ? "❯ " : "  "}</Text>
-            <Text color={i === selection ? "cyan" : undefined} bold={i === selection}>
+            <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
+            <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
               {option}
             </Text>
             {option === current && (
               <Text dimColor>
                 {"   · "}
-                <Text color="green">current — Enter keeps it</Text>
+                <Text color={THEME.ok}>current — Enter keeps it</Text>
               </Text>
             )}
           </Box>
@@ -777,10 +810,20 @@ function GateView({
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor>
-          {`↑↓ · Enter${revisit ? " keeps current" : ""} · w whole text · d ${thing} · v verdicts`}
-          {item.evidence ? " · e source" : ""}
-          {" · i summary · l log · Esc leave"}
+        <Text>
+          <Line
+            spans={hints(
+              ["↑↓", "move"],
+              ["Enter", revisit ? "keeps current" : "answer"],
+              ["w", "whole text"],
+              ["d", thing],
+              ["v", "verdicts"],
+              ...(item.evidence ? ([["e", "source"]] as [string, string][]) : []),
+              ["i", "summary"],
+              ["l", "log"],
+              ["Esc", "leave"],
+            )}
+          />
         </Text>
       </Box>
     </Box>
@@ -1390,9 +1433,15 @@ function App({ repo }: { repo: string }) {
     setNotice(copyNotice(result, text.length, path.basename(file)));
   }
 
-  /** A panel with a title and plain lines. */
-  function showPanel(title: string, lines: string[]) {
-    setPanel({ title, lines: textLines(lines) });
+  /**
+   * A panel: a title, and lines wrapped to the pane.
+   *
+   * Everything goes through `fitSpans`, for the same reason the result does —
+   * one element has to be one row, or the panel's scroll count stops matching
+   * what is on the screen.
+   */
+  function showPanel(title: string, lines: StyledLine[], hang = 2) {
+    setPanel({ title, lines: fitSpans(lines, wrapWidth(), hang) });
   }
 
   /** Keys, the draft, the claims, the raw review reply: curiosity and debugging. */
@@ -1401,20 +1450,32 @@ function App({ repo }: { repo: string }) {
     if (kind === "keys") {
       showPanel(
         "keys on this screen",
-        RESULT_KEYS.map((k) => `  ${k.key.padEnd(12)} ${k.what}`),
+        RESULT_KEYS.map((k) =>
+          spans({ text: `  ${k.key.padEnd(12)}`, color: THEME.accent, bold: true }, k.what),
+        ),
+        14,
       );
       return;
     }
     if (kind === "claims") {
-      const lines: string[] = ["VERIFIABLE — the reviewer must return a verdict on each", ""];
-      for (const c of head.claims.verifiable) lines.push(`  ${c.id}  ${c.text}`);
-      lines.push("", "JUDGMENT CALLS — the human decides these, not a model", "");
+      const lines: StyledLine[] = [
+        spans({ text: "VERIFIABLE", bold: true }, " — the reviewer must return a verdict on each"),
+        [],
+      ];
+      for (const c of head.claims.verifiable) {
+        lines.push(spans({ text: `  ${c.id}`, dim: true }, `  ${c.text}`));
+      }
+      lines.push([], spans({ text: "JUDGMENT CALLS", bold: true }, " — the human decides these, not a model"), []);
       for (const j of head.claims.judgment) {
-        lines.push(`  ${j.id}  ${j.text}`);
-        for (const option of j.options) lines.push(`      · ${option}`);
+        lines.push(spans({ text: `  ${j.id}`, dim: true }, `  ${j.text}`));
+        for (const option of j.options) lines.push(spans({ text: `      · ${option}`, dim: true }));
       }
       if (head.missing.length) {
-        lines.push("", "NO VERDICT RETURNED", ...head.missing.map((id) => `  ${id}`));
+        lines.push(
+          [],
+          spans({ text: "NO VERDICT RETURNED", color: THEME.warn }),
+          ...head.missing.map((id) => spans({ text: `  ${id}`, dim: true })),
+        );
       }
       showPanel("the claims the drafter declared", lines);
       return;
@@ -1424,7 +1485,8 @@ function App({ repo }: { repo: string }) {
     // exactly what the audit changed.
     showPanel(
       "the reviewer's raw reply",
-      JSON.stringify(head.review, null, 2).split("\n"),
+      JSON.stringify(head.review, null, 2).split("\n").map((text) => spans({ text, dim: true })),
+      0,
     );
   }
 
@@ -1435,38 +1497,57 @@ function App({ repo }: { repo: string }) {
     const thing = effectiveMode === "answer" ? "answer" : "plan";
 
     if (kind === "log") {
-      setPanel({
-        title: "run log",
-        lines: textLines(log.length ? log : ["(nothing logged yet)"]),
-      });
+      showPanel(
+        "run log",
+        (log.length ? log : ["(nothing logged yet)"]).flatMap((line) =>
+          line.startsWith("!")
+            ? [spans({ text: line, color: THEME.warn })]
+            : [spans({ text: line })],
+        ),
+        0,
+      );
       return;
     }
 
     if (kind === "info") {
-      const lines: string[] = [];
-      if (warnings.length) lines.push("WARNINGS", ...warnings.map((w) => `  ${w}`), "");
+      const lines: StyledLine[] = [];
+      if (warnings.length) {
+        lines.push(spans({ text: "WARNINGS", color: THEME.warn }));
+        for (const w of warnings) lines.push(spans("  ", { text: w, color: THEME.warn }));
+        lines.push([]);
+      }
       if (head.checks.length) {
-        lines.push("CHECKS THE TOOL RAN", ...auditLines(head.checks).map((l) => `  ${l}`), "");
+        lines.push(spans({ text: "CHECKS THE TOOL RAN", color: THEME.accent }));
+        for (const line of auditSpans(head.checks)) lines.push(spans("  ", ...line));
+        lines.push([]);
       }
       const refuted = head.review.verdicts.filter((v) => v.verdict === "refuted");
       if (refuted.length) {
-        lines.push("REFUTED CLAIMS (these go to the rewrite)");
+        lines.push(spans({ text: "REFUTED CLAIMS (these go to the rewrite)", color: THEME.danger }));
         for (const v of refuted) {
-          lines.push(`  ${v.id}  ${head.claims.verifiable.find((c) => c.id === v.id)?.text ?? ""}`);
+          lines.push(
+            spans(
+              { text: `  ${v.id}`, dim: true },
+              `  ${head.claims.verifiable.find((c) => c.id === v.id)?.text ?? ""}`,
+            ),
+          );
         }
       }
-      setPanel({
-        title: "the review at a glance",
-        lines: textLines(lines.length ? lines : ["nothing to report"]),
-      });
+      showPanel("the review at a glance", lines.length ? lines : [spans("nothing to report")]);
       return;
     }
 
     if (kind === "item") {
-      setPanel({
-        title: item ? `${item.id} — the whole text` : "the whole text",
-        lines: textLines(item ? [item.title, "", ...item.detail] : ["nothing here"]),
-      });
+      showPanel(
+        item ? `${item.id} — the whole text` : "the whole text",
+        item
+          ? [
+              spans({ text: item.title, bold: true }),
+              [],
+              ...item.detail.map((text) => spans({ text, dim: true })),
+            ]
+          : [spans("nothing here")],
+      );
       return;
     }
 
@@ -1491,34 +1572,50 @@ function App({ repo }: { repo: string }) {
 
     if (kind === "verdicts") {
       const counts = verdictCounts(head.claims, head.review);
-      const lines: string[] = [statusLine(counts), ""];
+      const lines: StyledLine[] = [statusSpans(counts), []];
+      // The colours follow "what needs attention": a refuted claim goes to the
+      // rewrite, an unverifiable one is where the human has nothing to go on.
+      // Confirmed is left alone — the file agreed, which is not a verdict on
+      // whether the sentence is worth keeping.
+      const heading = { refuted: THEME.danger, unverifiable: THEME.warn, confirmed: undefined };
       const order = ["refuted", "unverifiable", "confirmed"] as const;
       for (const verdict of order) {
         const rows = head.review.verdicts.filter((v) => v.verdict === verdict);
         if (rows.length === 0) continue;
-        lines.push(verdict.toUpperCase());
+        const colour = heading[verdict];
+        lines.push(spans({ text: verdict.toUpperCase(), ...(colour ? { color: colour } : { bold: true }) }));
         for (const v of rows) {
           const text = head.claims.verifiable.find((c) => c.id === v.id)?.text ?? "";
-          lines.push(`  ${v.id}  ${text}`);
-          if (v.verdict === "unverifiable") lines.push(`      ${v.note}`);
-          else lines.push(`      [${v.evidence}]${v.note ? ` — ${v.note}` : ""}`);
+          lines.push(spans({ text: `  ${v.id}`, dim: true }, `  ${text}`));
+          if (v.verdict === "unverifiable") {
+            lines.push(spans({ text: `      ${v.note}`, color: THEME.warn }));
+          } else {
+            lines.push(
+              spans(
+                { text: `      [${v.evidence}]`, color: THEME.code },
+                v.note ? { text: ` — ${v.note}`, dim: true } : { text: "" },
+              ),
+            );
+          }
         }
-        lines.push("");
+        lines.push([]);
       }
       for (const claim of head.claims.verifiable) {
         if (!head.review.verdicts.some((v) => v.id === claim.id)) {
-          lines.push(`NO VERDICT  ${claim.id}  ${claim.text}`);
+          lines.push(
+            spans({ text: "NO VERDICT", color: THEME.warn }, `  ${claim.id}  ${claim.text}`),
+          );
         }
       }
       if (head.review.extra_findings.length) {
-        lines.push("", "FINDINGS");
+        lines.push([], spans({ text: "FINDINGS", color: THEME.accent }));
         for (const f of head.review.extra_findings) {
-          lines.push(`  ${f.id}  ${f.text}`);
-          if (f.evidence) lines.push(`      [${f.evidence}]`);
-          else if (f.note) lines.push(`      ${f.note}`);
+          lines.push(spans({ text: `  ${f.id}`, dim: true }, `  ${f.text}`));
+          if (f.evidence) lines.push(spans({ text: `      [${f.evidence}]`, color: THEME.code }));
+          else if (f.note) lines.push(spans({ text: `      ${f.note}`, dim: true }));
         }
       }
-      setPanel({ title: "review — every verdict", lines: textLines(lines) });
+      showPanel("review — every verdict", lines);
       return;
     }
 
@@ -1529,30 +1626,43 @@ function App({ repo }: { repo: string }) {
     // accusation against a perfectly good URL. Say what it is instead.
     const ref = parseEvidence(item.evidence);
     if (ref?.kind === "url") {
-      setPanel({
-        title: `${item.id} — evidence`,
-        lines: textLines([
-          item.evidence,
-          "",
-          "this is a source URL — the tool cannot display web pages here.",
-          "open it, and judge the finding on its merits before you choose",
-        ]),
-      });
+      showPanel(`${item.id} — evidence`, [
+        spans({ text: item.evidence, color: THEME.code }),
+        [],
+        spans({ text: "this is a source URL — the tool cannot display web pages here.", dim: true }),
+        spans({ text: "open it, and judge the finding on its merits before you choose", dim: true }),
+      ]);
       return;
     }
 
     const context = await readEvidenceContext(repo, item.evidence);
     setPanel({
       title: `${item.id} — ${item.evidence}`,
-      lines: textLines(
+      lines: fitSpans(
         context
-          ? [`${context.file}${context.line ? `:${context.line}` : ""}`, "", ...context.lines]
+          ? [
+              spans({
+                text: `${context.file}${context.line ? `:${context.line}` : ""}`,
+                color: THEME.accent,
+                bold: true,
+              }),
+              [],
+              ...context.lines.map((text) => spans({ text })),
+            ]
           : [
-              item.evidence,
-              "",
-              "not a readable file in this repository — the reviewer's citation cannot be shown here.",
-              "A citation that does not resolve is itself worth questioning at this gate.",
+              spans({ text: item.evidence, color: THEME.code }),
+              [],
+              spans({
+                text: "not a readable file in this repository — the reviewer's citation cannot be shown here.",
+                dim: true,
+              }),
+              spans({
+                text: "A citation that does not resolve is itself worth questioning at this gate.",
+                dim: true,
+              }),
             ],
+        wrapWidth(),
+        0,
       ),
     });
   }
@@ -1734,7 +1844,10 @@ function App({ repo }: { repo: string }) {
         <Scroller
           title={panel.title}
           lines={panel.lines}
-          footer={`gate ${index + 1} of ${items.length} · Esc back to the question`}
+          footer={[
+            { text: `gate ${index + 1} of ${items.length}`, color: THEME.accent },
+            { text: " · Esc back to the question", dim: true },
+          ]}
           onClose={() => setPanel(null)}
         />
       );
@@ -1775,7 +1888,10 @@ function App({ repo }: { repo: string }) {
       <Scroller
         title={panel.title}
         lines={panel.lines}
-        footer="the result · Esc back"
+        footer={[
+          { text: "the result", color: THEME.accent },
+          { text: " · Esc back", dim: true },
+        ]}
         onClose={() => setPanel(null)}
       />
     ) : report ? (
@@ -1785,8 +1901,18 @@ function App({ repo }: { repo: string }) {
         notice={notice}
         escLabel="Esc quits"
         // Short on purpose: the pane's height is the terminal minus the chrome,
-        // and a footer that wraps to two lines takes a row from the text.
-        footer={`y copy answer · Y copy all · x ${showDiff ? "hide" : "show"} diff · ? keys · q quit · ${runDir}`}
+        // and a footer that wraps to two lines takes a row from the text. The
+        // rest of the keys are behind `?`.
+        footer={[
+          ...hints(
+            ["y", "copy answer"],
+            ["Y", "copy all"],
+            ["x", showDiff ? "hide diff" : "show diff"],
+            ["?", "keys"],
+            ["q", "quit"],
+          ),
+          { text: ` · ${runDir}`, dim: true },
+        ]}
         onClose={() => exit()}
         onKey={(input) => {
           if (input === "x") {
@@ -1841,7 +1967,7 @@ function App({ repo }: { repo: string }) {
     content = (
       <Box flexDirection="column">
         <Box marginBottom={1}>
-          <Text color="red" bold>
+          <Text color={THEME.danger} bold>
             error
           </Text>
         </Box>

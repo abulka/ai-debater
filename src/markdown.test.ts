@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { THEME } from "./theme.ts";
 import {
   extractCitations,
+  fitLines,
+  fitSpans,
   formatTable,
   inline,
+  lineText,
   renderMarkdownLines,
+  spans,
   textLines,
   toAnsi,
   type Span,
@@ -34,7 +39,7 @@ describe("inline", () => {
     expect(styled("**b** *i* `c` ~~s~~ [t](https://x)")).toEqual([
       "bb",
       "ii",
-      "(cyan)c",
+      `(${THEME.code})c`,
       "ss",
       "ut",
       "d (https://x)",
@@ -110,8 +115,8 @@ describe("inline", () => {
 
 describe("headings", () => {
   test("h1 is bold and underlined; deeper levels are bold", () => {
-    expect(render("# Title")).toEqual(["buTitle"]);
-    expect(render("### Deeper")).toEqual(["bDeeper"]);
+    expect(render("# Title")).toEqual([`bu(${THEME.accent})Title`]);
+    expect(render("### Deeper")).toEqual([`b(${THEME.accent})Deeper`]);
   });
 
   test("the hashes do not survive", () => {
@@ -119,7 +124,7 @@ describe("headings", () => {
   });
 
   test("a closing hash run is not part of the heading", () => {
-    expect(render("## Approach ##")).toEqual(["bApproach"]);
+    expect(render("## Approach ##")).toEqual([`b(${THEME.accent})Approach`]);
   });
 });
 
@@ -152,7 +157,7 @@ describe("code", () => {
   test("the fence never reaches the screen, and the language is kept", () => {
     const lines = render("```ts\nconst x = 1;\n```");
     expect(lines[0]).toBe("dts");
-    expect(lines[1]).toBe("d│ const x = 1;");
+    expect(lines[1]).toBe(`d│ (${THEME.code})const x = 1;`);
     expect(lines.join("\n")).not.toContain("`");
   });
 
@@ -164,7 +169,7 @@ describe("code", () => {
   });
 
   test("a code fence's info string is not read as prose", () => {
-    expect(render("```\nplain\n```")).toEqual(["d│ plain"]);
+    expect(render("```\nplain\n```")).toEqual([`d│ (${THEME.code})plain`]);
   });
 });
 
@@ -240,7 +245,13 @@ describe("layout", () => {
   });
 
   test("one block is separated from the next by one blank line", () => {
-    expect(render("# A\n\nparagraph\n\n# B")).toEqual(["buA", "", "paragraph", "", "buB"]);
+    expect(render("# A\n\nparagraph\n\n# B")).toEqual([
+      `bu(${THEME.accent})A`,
+      "",
+      "paragraph",
+      "",
+      `bu(${THEME.accent})B`,
+    ]);
   });
 
   test("a long URL is split rather than overhanging", () => {
@@ -252,6 +263,56 @@ describe("layout", () => {
 
   test("textLines gives plain lines the same shape", () => {
     expect(textLines(["a", "b"])).toEqual([[{ text: "a" }], [{ text: "b" }]]);
+  });
+});
+
+describe("spans", () => {
+  test("mixes text and styles, so a builder reads like what it draws", () => {
+    expect(spans("  V14  ", { text: "fixed", color: THEME.code }, " did it")).toEqual([
+      { text: "  V14  " },
+      { text: "fixed", color: THEME.code },
+      { text: " did it" },
+    ]);
+  });
+});
+
+describe("fitSpans", () => {
+  test("keeps a column layout exactly as written", () => {
+    expect(fitSpans([spans("  V14  fixed     the summary")], 60)).toEqual([
+      spans("  V14  fixed     the summary"),
+    ]);
+  });
+
+  test("hangs the continuation, and the style survives the break", () => {
+    const lines = fitSpans(
+      [spans("  ", { text: "diff: 1 hunk that is long enough to need wrapping here", color: THEME.danger })],
+      30,
+      2,
+    );
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines[1]!.map((s) => s.text).join("").startsWith("  ")).toBe(true);
+    // Every piece of wrapped text kept its colour across the fold.
+    for (const line of lines) {
+      for (const span of line) {
+        if (span.text.trim() !== "") expect(span.color).toBe(THEME.danger);
+      }
+      expect(lineText(line).length).toBeLessThanOrEqual(30);
+    }
+  });
+
+  test("a word longer than the line is split, not overhanging", () => {
+    const lines = fitSpans([spans("x".repeat(50))], 20);
+    for (const line of lines) expect(lineText(line).length).toBeLessThanOrEqual(20);
+    expect(lines.map(lineText).join("")).toBe("x".repeat(50));
+  });
+
+  test("a blank line stays a row", () => {
+    expect(fitSpans([[]], 40)).toEqual([[]]);
+    expect(fitSpans([spans("")], 40)).toEqual([[]]);
+  });
+
+  test("fitLines is fitSpans over plain text", () => {
+    expect(fitLines(["a b c"], 40)).toEqual(fitSpans([spans("a b c")], 40));
   });
 });
 

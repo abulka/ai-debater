@@ -10,6 +10,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { AuditRecord, Claims, Gate, Review } from "./contracts.ts";
 import { auditLines } from "./audit.ts";
+import { spans, type Span, type StyledLine } from "./markdown.ts";
+import { THEME } from "./theme.ts";
 import type { DecisionEntry } from "./orchestrator.ts";
 
 export interface GateItem {
@@ -357,17 +359,33 @@ export function verdictCounts(claims: Claims, review: Review): VerdictCounts {
  * shown once, on the first item, and then vanished exactly when the human had
  * moved on to deciding something.
  */
-export function statusLine(counts: VerdictCounts): string {
-  const parts = [
+/**
+ * The review's state as one line of spans.
+ *
+ * Only the counts that want a decision are coloured: a refuted claim has to be
+ * answered, and an unverifiable one is where the human has nothing to go on.
+ * "Confirmed" stays plain — a file agreeing with a sentence is not a verdict
+ * on whether the sentence is any good, and this tool does not decide that.
+ */
+export function statusSpans(counts: VerdictCounts): StyledLine {
+  const attention = (text: string, when: boolean): Span =>
+    when ? { text, color: THEME.warn } : { text };
+
+  return spans(
     `${counts.claims} claim${counts.claims === 1 ? "" : "s"}`,
+    " · ",
     `${counts.confirmed} confirmed`,
-    `${counts.refuted} refuted`,
-    `${counts.unverifiable} unverifiable`,
-  ];
-  if (counts.noVerdict) parts.push(`${counts.noVerdict} without a verdict`);
-  parts.push(`${counts.findings} finding${counts.findings === 1 ? "" : "s"}`);
-  return parts.join(" · ");
+    " · ",
+    attention(`${counts.refuted} refuted`, counts.refuted > 0),
+    " · ",
+    attention(`${counts.unverifiable} unverifiable`, counts.unverifiable > 0),
+    ...(counts.noVerdict ? [" · ", attention(`${counts.noVerdict} without a verdict`, true)] : []),
+    " · ",
+    `${counts.findings} finding${counts.findings === 1 ? "" : "s"}`,
+  );
 }
+
+
 
 export function gateWarnings(a: {
   missing: string[];

@@ -18,6 +18,8 @@
 import { createHash } from "node:crypto";
 import { AuditRecord as AuditRecordSchema } from "./contracts.ts";
 import type { AuditRecord, CheckProposal, Review } from "./contracts.ts";
+import { lineText, spans, type Span, type StyledLine } from "./markdown.ts";
+import { THEME } from "./theme.ts";
 
 /* ------------------------------------------------------------------ *
  * Allowlist
@@ -491,18 +493,45 @@ export function mergeAuditIntoReview(review: Review, records: AuditRecord[]): Re
   return { ...review, verdicts };
 }
 
-/** One plain line per check, for the gate and the result. */
-export function auditLines(records: AuditRecord[]): string[] {
+/**
+ * One line per check, for the gate and the result.
+ *
+ * The wording and the colour are decided together, in one pass over the record,
+ * and the plain text is the spans joined: a check that disagrees with the plan
+ * is the one that wants the eye, and it says DISAGREES whether or not the
+ * terminal can show a colour.
+ */
+export function auditSpans(records: AuditRecord[]): StyledLine[] {
   return records.map((record) => {
-    const command = record.argv.join(" ");
-    if (record.decision === "refused") return `refused: ${command} — not on the allowlist`;
-    if (record.decision === "human-rejected") return `not run: ${command} — you declined`;
+    const command = { text: record.argv.join(" "), color: THEME.code };
+    const exit =
+      record.exitCode !== undefined ? { text: ` (exit ${record.exitCode})`, dim: true } : null;
+    // The tail carries its own separator: the wording is the sentence, not a
+    // template, and the one case that ends in parentheses says so.
+    const line = (label: string, style: Omit<Span, "text">, tail: string) =>
+      spans(
+        { text: `${label}: `, ...style },
+        command,
+        { text: tail, ...style },
+        ...(exit ? [exit] : []),
+      );
+
+    if (record.decision === "refused") {
+      return line("refused", { dim: true }, " — not on the allowlist");
+    }
+    if (record.decision === "human-rejected") {
+      return line("not run", { dim: true }, " — you declined");
+    }
     if (record.outcome === "matched") {
-      return `ran: ${command} — agrees with the plan${record.exitCode !== undefined ? ` (exit ${record.exitCode})` : ""}`;
+      return line("ran", {}, " — agrees with the plan");
     }
     if (record.outcome === "mismatched") {
-      return `ran: ${command} — DISAGREES with the plan${record.exitCode !== undefined ? ` (exit ${record.exitCode})` : ""}`;
+      return line("ran", { color: THEME.warn }, " — DISAGREES with the plan");
     }
-    return `did not complete: ${command} (${record.status})`;
+    return line("did not complete", { dim: true }, ` (${record.status})`);
   });
 }
+
+/** The same lines as plain text, for a pipe. */
+export const auditLines = (records: AuditRecord[]): string[] =>
+  auditSpans(records).map(lineText);

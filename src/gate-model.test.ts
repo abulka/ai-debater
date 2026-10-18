@@ -1,4 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { lineText } from "./markdown.ts";
+import { THEME } from "./theme.ts";
+
+/** The plain form of the status line, for asserting the wording. */
+const statusLine = (counts: Parameters<typeof statusSpans>[0]) => lineText(statusSpans(counts));
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,7 +21,7 @@ import {
   parseEvidence,
   readEvidenceContext,
   selectionForCurrent,
-  statusLine,
+  statusSpans,
   verdictCounts,
 } from "./gate-model.ts";
 import type { Claims, Review } from "./contracts.ts";
@@ -292,6 +297,19 @@ describe("verdictCounts", () => {
     expect(counts.noVerdict).toBe(1);
     expect(counts.unverifiable).toBe(0);
     expect(statusLine(counts)).toContain("1 without a verdict");
+  });
+
+  test("the status line colours what wants a decision, and only that", () => {
+    const mixed = { claims: 4, confirmed: 1, refuted: 1, unverifiable: 2, noVerdict: 0, findings: 1 };
+    const spanFor = (needle: string) =>
+      statusSpans(mixed).find((span) => span.text.includes(needle))!;
+    expect(spanFor("1 refuted").color).toBe(THEME.warn);
+    expect(spanFor("2 unverifiable").color).toBe(THEME.warn);
+    // The file agreeing is not a verdict on the sentence.
+    expect(spanFor("1 confirmed").color).toBeUndefined();
+
+    const clean = { claims: 2, confirmed: 2, refuted: 0, unverifiable: 0, noVerdict: 0, findings: 0 };
+    expect(statusSpans(clean).every((span) => span.color === undefined)).toBe(true);
   });
 });
 

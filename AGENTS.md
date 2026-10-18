@@ -236,6 +236,7 @@ src/
                     a pipe, rendered Markdown for a terminal. Tested.
   markdown.ts       Markdown -> styled, pre-wrapped terminal lines. Styles only,
                     never removal; one line = one row. Tested.
+  theme.ts          the palette, as roles; ANSI codes for the CLI. Tested.
   clipboard.ts      copying the answer out: pbcopy/wl-copy, then OSC 52, then
                     the file path. Tested.
   models.ts         model list + family heuristic for the picker
@@ -316,6 +317,21 @@ spike/              M0
   from the widest id in them. It wraps at spaces and keeps the spacing as
   written — `toWords` is for Markdown, where runs of spaces mean nothing, and
   using it here collapsed the columns.
+- **Colour is a palette of roles, in `src/theme.ts`, and it never carries
+  meaning on its own.** `accent` marks structure (section rules, headings, pane
+  titles, the selected option), `code` marks literals, `warn`/`danger` mark state
+  that wants attention, `dim` is scaffolding. Every signal keeps its textual
+  marker — `!`, `DISAGREES`, `REFUTED`, the counts — so a monochrome terminal
+  loses decoration and nothing else. The tool deliberately does **not** colour a
+  confirmed claim green: a file agreeing with a sentence is not a verdict on the
+  sentence, and deciding that is the human's job. A test asserts every colour the
+  palette names has an ANSI code, because `toAnsi` silently drops the ones it
+  does not know — which would be the TUI and the CLI describing one run two ways.
+  Colour costs no width, so the row invariant above is untouched by any of it.
+- **The commentary is built as spans and printed as text.** `resultSections`
+  returns styled lines; `renderResult` joins their text for anything that is not
+  a terminal. That is why `adv run > plan.md` is unchanged by a colour change:
+  there is one layout and two deliveries, and the pipe simply drops the styles.
 - **In a pane, one element must be one row.** The result and gate panes scroll
   by line offset (`clampOffset`/`maxOffset` in `gate-model.ts`), so if a line is
   wider than the pane, Ink wraps it, the count stops matching what is on screen,

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Changelog, Claims, Gate, Review } from "./contracts.ts";
 import { renderAnswer, renderResult, renderResultLines, splitSources } from "./render.ts";
+import { THEME } from "./theme.ts";
 
 describe("splitSources", () => {
   test("separates a Sources heading and its list from the answer", () => {
@@ -161,6 +162,44 @@ describe("renderResultLines", () => {
     // Every word survives whole, wherever the break landed.
     const reflowed = lines.map((line) => line.trim()).join(" ").replace(/\s+/g, " ");
     expect(reflowed).toContain("alpha bravo charlie delta");
+  });
+
+  test("colour marks structure and state, never agreement", () => {
+    const mixed = {
+      ...base,
+      includeDiff: true,
+      patch: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
+      claims: {
+        verifiable: [
+          { id: "C1", text: "the endpoint has no limiter" },
+          { id: "C2", text: "the queue is unbounded" },
+        ],
+        judgment: [],
+      } as unknown as Claims,
+      review: {
+        verdicts: [
+          { id: "C1", verdict: "refuted", evidence: "src/a.ts:1", note: "it is bounded" },
+          { id: "C2", verdict: "confirmed", evidence: "src/b.ts:2", note: "" },
+        ],
+        extra_findings: [],
+      } as unknown as Review,
+    };
+    const lines = renderResultLines(mixed, 100);
+    const find = (needle: string) =>
+      lines.find((l) => l.map((s) => s.text).join("").includes(needle))!;
+
+    // Structure takes the accent.
+    expect(find("── the answer").every((span) => span.color === THEME.accent)).toBe(true);
+    expect(find("Title").some((span) => span.color === THEME.accent && span.bold)).toBe(true);
+    // The span, not the line: the counts share one line.
+    const spanFor = (needle: string) => find(needle).find((span) => span.text.includes(needle))!;
+    // What needs attention is marked…
+    expect(spanFor("1 refuted").color).toBe(THEME.warn);
+    // …and agreement is not: the file agreed, which is not an endorsement.
+    expect(spanFor("1 confirmed").color).toBeUndefined();
+    // A diff is read by its margins.
+    expect(find("+new").some((span) => span.color === THEME.code)).toBe(true);
+    expect(find("-old").some((span) => span.color === THEME.danger)).toBe(true);
   });
 
   test("nothing is wider than the width it was given", () => {
