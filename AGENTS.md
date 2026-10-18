@@ -161,8 +161,9 @@ supersede rule.
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
 | n | Result/Gate/Runs: back to your question — the draft, subject and models you had are kept |
-| Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `n` is a new question, `q` quits (the run stays on disk — reopen it with Ctrl+R) |
-| Ctrl+R | Past runs — open a finished or parked run, from home, the gate or a result |
+| Esc | Back where you came from: a panel closes; a result or gate opened from the past-runs list returns to that list (tags, scroll and all); one started at the desk returns to the desk. `n` is the unconditional way to the desk, `q` quits |
+| n · Esc · q | Error: the same rule — Esc back where you came from, n to the desk, q quits. This screen had no handler at all, which is how a reader got stuck on it |
+| Ctrl+R | Past runs — open a finished or parked run, from home, the gate, a result or an error |
 | space | Runs: tag the highlighted run (`●`), and move on — tag several in a row |
 | a / A | Runs: tag all listed / clear the tags |
 | d | Runs: delete the tagged runs, or the highlighted one when none are tagged |
@@ -387,6 +388,21 @@ spike/              M0
   result on purpose — quitting is `q`, never a stray Escape. The `Scroller`
   swallows Ctrl/meta combos so Ctrl+R cannot also read as `r` (revisit) or
   Ctrl+Y as `y` (copy).
+- **Every screen needs a way out, and the text on it has to name a key that
+  exists.** The error phase had no input handler: its own words said "Esc for the
+  other runs" while the only key that worked was Ctrl+C, so a reader who opened a
+  failed run from the past-runs list was stuck. When adding a phase, add its
+  handler in the same commit, and make the hint line name the keys the handler
+  answers to.
+- **Esc means "back", and back is where you came from.** `openedFrom` records
+  whether the run on screen came from the past-runs list or from the desk, and
+  `goBack()` is the only thing that reads it: the result, the gate and the error
+  screen all call it. Returning to the list does not reload it — the list is a
+  snapshot and keeps its tags and its scroll — which is why `goBack` sets the
+  phase and nothing else. `n` stays the unconditional way to the desk for when
+  "back" is not where you want to be. Note the corollary: Ctrl+R does nothing
+  while the list is already open, because it opens the list rather than
+  refreshing it; leave the list and come back to see a run created meanwhile.
 - **In a pane, one element must be one row.** The result and gate panes scroll
   by line offset (`clampOffset`/`maxOffset` in `gate-model.ts`), so if a line is
   wider than the pane, Ink wraps it, the count stops matching what is on screen,

@@ -1002,7 +1002,7 @@ function App({ repo }: { repo: string }) {
     if (
       key.ctrl &&
       input === "r" &&
-      (phase === "start" || phase === "gate" || phase === "result")
+      (phase === "start" || phase === "gate" || phase === "result" || phase === "error")
     ) {
       void openRuns();
     }
@@ -1053,6 +1053,15 @@ function App({ repo }: { repo: string }) {
   const [wasDone, setWasDone] = useState(false);
   const [runModels, setRunModels] = useState<Models | null>(null);
   const [runMode, setRunMode] = useState<Mode | null>(null);
+  /**
+   * Where the run on screen was opened from.
+   *
+   * Esc means "back", and back is not one place: a result you reached from the
+   * past-runs list belongs to that list (with its tags and its scroll where you
+   * left them), and one you started from the desk belongs to the desk. `n` is
+   * the unconditional way to the desk, for when "back" is not what you want.
+   */
+  const [openedFrom, setOpenedFrom] = useState<"start" | "runs">("start");
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [runsIndex, setRunsIndex] = useState(0);
   /**
@@ -1269,6 +1278,18 @@ function App({ repo }: { repo: string }) {
 
   /* A same-family pair is a warning, unless this repo says the result is
      evidence — then it is a stop, before any money is spent. */
+  /**
+   * Back where this run was opened from.
+   *
+   * The past-runs list keeps its tags, its scroll and its own state: it is not
+   * reloaded here, so going back does not undo a selection the reader made two
+   * screens ago.
+   */
+  function goBack() {
+    setPanel(null);
+    setPhase(openedFrom === "runs" ? "runs" : "start");
+  }
+
   function beginRun(next: Mode = mode) {
     if (!cfg) return;
     const clash = familyClash(cfg.models);
@@ -1283,6 +1304,7 @@ function App({ repo }: { repo: string }) {
     // The two things the human just chose. They belong in the log: without them
     // the history starts at "drafting" and does not say what was asked or who is
     // doing it.
+    setOpenedFrom("start");
     addLog(`${next === "answer" ? "general question" : "repository"} · ${cfg.models.drafter.ref} -> ${cfg.models.reviewer.ref}`);
     addLog(`${next === "answer" ? "question" : "task"}: ${task.trim()}`);
     if (next !== mode) {
@@ -1528,6 +1550,7 @@ function App({ repo }: { repo: string }) {
    */
   async function openRun(run: RunSummary) {
     const { name, dir } = run;
+    setOpenedFrom("runs");
     const p = runPaths(repo, dir);
     try {
       const state = await loadState(p);
@@ -1535,7 +1558,7 @@ function App({ repo }: { repo: string }) {
         const first = state.error ? state.error.split("\n")[0]! : "";
         setError(
           `that run failed${first ? ` — ${first}` : ""}.\n\n` +
-            `a failed run has no finished result to continue. Esc for the other runs, or type a new task.`,
+            `a failed run has no finished result to continue. Esc goes back, or n starts a new one.`,
         );
         setPhase("error");
         return;
@@ -1936,9 +1959,9 @@ function App({ repo }: { repo: string }) {
 
       if (key.escape) {
         // Leaving the gate never loses the run: the head is on disk, and the
-        // run is reachable again from the past-runs list.
+        // run is reachable again from where it was opened.
         addLog("leaving the gate — the run stays on disk; Ctrl+R reopens it");
-        void openRuns();
+        goBack();
         return;
       }
 
@@ -1994,6 +2017,34 @@ function App({ repo }: { repo: string }) {
       if (key.return) commit(item.values[selection] ?? item.values[0]!);
     },
     { isActive: phase === "gate" && panel === null },
+  );
+
+  /**
+   * The error screen.
+   *
+   * It had no handler at all: the only way off it was Ctrl+C, while its own text
+   * told the reader to press Esc for the other runs. A dead end that claims a
+   * key works is worse than a dead end.
+   */
+  useInput(
+    (input, key) => {
+      if (key.escape) {
+        addLog("that run is on disk but cannot be continued");
+        goBack();
+        return;
+      }
+      if (input === "n" && !key.ctrl && !key.meta) {
+        // Back to the question desk, with nothing of the failed run loaded.
+        setHead(null);
+        setTail(null);
+        setGate(null);
+        setRunTask("");
+        setPhase("start");
+        return;
+      }
+      if (input === "q") exit();
+    },
+    { isActive: phase === "error" },
   );
 
   /* Past-runs list input. */
@@ -2219,9 +2270,9 @@ function App({ repo }: { repo: string }) {
         title="done"
         lines={renderResultLines(report)}
         notice={notice}
-        escLabel="q quits"
+        escLabel={openedFrom === "runs" ? "Esc back to the list" : "Esc back"}
         escCloses={false}
-        onEsc={() => setNotice("Esc does not quit here — n for a new question, q to quit")}
+        onEsc={goBack}
         // Short on purpose: the pane's height is the terminal minus the chrome,
         // and a footer that wraps to two lines takes a row from the text. The
         // rest of the keys are behind `?`.
@@ -2318,7 +2369,15 @@ function App({ repo }: { repo: string }) {
           </Box>
         )}
         <Box marginTop={1}>
-          <Text dimColor>Ctrl+C to quit</Text>
+          <Text>
+            <Line
+              spans={hints(
+                ["n", "new question"],
+                ["Esc", openedFrom === "runs" ? "back to the list" : "back"],
+                ["q", "quit"],
+              )}
+            />
+          </Text>
         </Box>
       </Box>
     );
