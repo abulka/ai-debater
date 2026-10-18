@@ -47,11 +47,12 @@ export const DEFAULT_CONFIG: Config = {
  * repository at all — fell back to the built-in default. The human's last choice
  * should stick.
  */
-export const userConfigFile = (): string => {
+export const configDir = (): string => {
   const xdg = process.env["XDG_CONFIG_HOME"];
-  const base = xdg && xdg.trim() ? xdg : path.join(os.homedir(), ".config");
-  return path.join(base, "adv", "config.json");
+  return xdg && xdg.trim() ? xdg : path.join(os.homedir(), ".config");
 };
+
+export const userConfigFile = (): string => path.join(configDir(), "adv", "config.json");
 
 const localConfigFile = (repo: string) => path.join(repo, ".adv", "config.json");
 

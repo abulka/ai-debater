@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import { RunState } from "./contracts.ts";
+import type { ModelRef } from "./runner.ts";
 
 /** The human's own files: criteria, settled decisions, model choice. Per repo. */
 export const advDir = (repo: string) => path.join(repo, ".adv");
@@ -312,6 +313,13 @@ export interface RunSummary {
   mode: RunState["mode"];
   /** When the run was created, ISO. Filtering by age is the CLI's business. */
   createdAt: string;
+  /**
+   * The pair the run used, so callers can offer "the pair that run ran with"
+   * without reopening it. Optional because a summary must be renderable from a
+   * state that has no models at all — older records, or a hand-written one — and
+   * `recentPairs` skips those rather than failing.
+   */
+  models?: { drafter: ModelRef; reviewer: ModelRef };
 }
 
 /**
@@ -348,6 +356,7 @@ export async function listRuns(repo: string): Promise<RunSummary[]> {
         task: state.task,
         mode: state.mode,
         createdAt: state.createdAt,
+        ...(state.models ? { models: state.models } : {}),
       });
     } catch {
       /* no readable state — not a run worth listing */

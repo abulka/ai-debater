@@ -263,6 +263,8 @@ describe("listRuns", () => {
         "2026-10-17T11-00-00",
         "2026-10-17T10-00-00",
       ]);
+      // The pair comes along: every run records the two models it ran with, and
+      // the pair screen offers them without reopening anything.
       expect(list[0]).toEqual({
         name: "2026-10-17T12-03-36",
         dir: path.join(base, "2026-10-17T12-03-36"),
@@ -270,6 +272,7 @@ describe("listRuns", () => {
         task: "what is the meaning of life?",
         mode: "answer",
         createdAt: "2026-10-17T12:00:00.000Z",
+        models: pair("groq/openai/gpt-oss-120b", "groq/openai/gpt-oss-20b"),
       });
       expect(list[1]?.state).toBe("failed");
       expect(list[2]?.state).toBe("gated");

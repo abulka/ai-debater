@@ -22,8 +22,22 @@ import {
   type GateAnswer,
   type GateItem,
 } from "./gate-model.ts";
-import { familyClash, familyOf, listModels } from "./models.ts";
+import { familyClash, familyOf, listModels, orderedModels } from "./models.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
+import { readOpenCodeModels } from "./opencode-state.ts";
+import {
+  deletePair,
+  loadPairs,
+  markPairUsed,
+  nameForPair,
+  pairKey,
+  pairModels,
+  pairRows,
+  savePair,
+  type Models as PairModels,
+  type Pair,
+  type PairRow,
+} from "./pairs.ts";
 import {
   appendDecisions,
   deleteRuns,
@@ -63,7 +77,7 @@ import {
 } from "./markdown.ts";
 import { THEME } from "./theme.ts";
 import { copyMarkdown, copyNotice } from "./clipboard.ts";
-import type { Mode } from "./runner.ts";
+import type { Mode, ModelRef } from "./runner.ts";
 
 type Phase =
   | "setup"
@@ -71,6 +85,9 @@ type Phase =
   | "clarify"
   | "settings"
   | "pick"
+  | "pairs"
+  | "pairname"
+  | "pairconfirm"
   | "runs"
   | "running"
   | "gate"
@@ -516,13 +533,19 @@ function Settings({
   mode,
   selection,
   saved,
+  pair,
 }: {
   cfg: Config;
   mode: Mode;
   selection: number;
   saved: string | null;
+  /** The name of the saved pair these two models are, or null when unnamed. */
+  pair: string | null;
 }) {
   const rows: { label: string; value: string }[] = [
+    // Matched by model, not by position: a pair saved under another name is
+    // still the pair in use, and showing nothing would read as "no pair".
+    { label: "pair", value: pair ?? "—" },
     { label: "drafter", value: cfg.models.drafter.ref },
     { label: "reviewer", value: cfg.models.reviewer.ref },
     { label: "subject", value: mode === "answer" ? "general question" : "this repository" },
@@ -568,18 +591,20 @@ function Settings({
 
 function Pick({
   role,
-  models,
+  rows,
+  favourite,
   filter,
   index,
 }: {
   role: "drafter" | "reviewer";
-  models: string[];
+  /** Already filtered, deduplicated and ordered — see `orderedModels`. */
+  rows: string[];
+  favourite: Set<string>;
   filter: string;
   index: number;
 }) {
-  const shown = models.filter((m) => m.toLowerCase().includes(filter.toLowerCase())).slice(0, 500);
   const height = 12;
-  const start = Math.max(0, Math.min(index - 5, Math.max(0, shown.length - height)));
+  const start = Math.max(0, Math.min(index - 5, Math.max(0, rows.length - height)));
 
   return (
     <Box flexDirection="column">
@@ -592,11 +617,14 @@ function Pick({
         <Text inverse> </Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        {shown.slice(start, start + height).map((m, i) => {
+        {rows.slice(start, start + height).map((m, i) => {
           const absolute = start + i;
           const selected = absolute === index;
           return (
             <Box key={m}>
+              {/* A mark, not a colour: a monochrome terminal loses decoration and
+                  nothing else. The star is OpenCode's own favourite list. */}
+              <Text dimColor={!selected}>{favourite.has(m) ? "★ " : "  "}</Text>
               <Text color={selected ? THEME.accent : undefined}>{selected ? "❯ " : "  "}</Text>
               <Text color={selected ? THEME.accent : undefined} bold={selected}>
                 {m}
@@ -605,10 +633,193 @@ function Pick({
             </Box>
           );
         })}
-        {shown.length === 0 && <Text dimColor>no match</Text>}
+        {rows.length === 0 && <Text dimColor>no match</Text>}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>{shown.length} match(es) · ↑↓ choose · Enter select · Esc back</Text>
+        <Text dimColor>
+          {rows.length} match(es) · ★ your OpenCode favourites, first · ↑↓ choose · Enter select · Esc back
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * The pair list: saved pairs first, then pairs past runs used, then the row that
+ * saves the current two.
+ *
+ * Not a `Scroller`: this list is bounded and indexed, like the past-runs screen,
+ * and every row is clipped to one line so the cursor arithmetic stays honest.
+ */
+function Pairs({
+  rows,
+  index,
+  current,
+  notice,
+  loading,
+}: {
+  rows: PairRow[];
+  index: number;
+  /** The pair the settings are on, so the row it names can be marked. */
+  current: PairModels | null;
+  notice: string | null;
+  /** The file is being read; an empty list is not yet an answer. */
+  loading: boolean;
+}) {
+  const width = Math.max(40, (process.stdout.columns ?? 100) - 6);
+  const height = 14;
+  const start = Math.max(0, Math.min(index - 6, Math.max(0, rows.length - height)));
+  const at = rows[index];
+
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="pairs" />
+      </Box>
+      <Text dimColor>
+        two models at once, under a name — the pair you used last is first
+      </Text>
+      <Box marginTop={1} flexDirection="column">
+        {rows.slice(start, start + height).map((row, i) => {
+          const absolute = start + i;
+          const selected = absolute === index;
+          const models = row.kind === "saved" ? row.pair : row.kind === "recent" ? row.recent : null;
+          const inUse = models !== null && current !== null && pairKey(models) === pairKey(current);
+          // The two models are the point of the row, so they get the space and
+          // the task is clipped to what is left. One element is one row: a
+          // wrapped row moves every cursor below it, which is the scroll bug the
+          // panes are built to avoid.
+          const detail = !models
+            ? ""
+            : `  ${models.drafter.ref} -> ${models.reviewer.ref}` +
+              (row.kind === "recent" ? `  [run ${row.recent.run}]` : "") +
+              (row.kind === "saved" && row.warnings.length === 0
+                ? `  [${row.pair.lastUsedAt ? "used" : "never used"}]`
+                : "") +
+              (row.kind === "saved" && row.warnings.length ? "  !" : "");
+          const label =
+            row.kind === "saved" ? row.pair.name : row.kind === "recent" ? row.recent.task : "save current as…";
+          const room = Math.max(10, width - 4 - detail.length - 1);
+          const text = label.length > room ? `${label.slice(0, room - 1)}…` : label;
+          return (
+            <Box key={row.key}>
+              {/* Both markers in one Text: Ink drops the trailing space of a Text
+                  that butts up against the next one, which would print ●❯. */}
+              <Text color={inUse ? THEME.warn : undefined}>
+                {`${inUse ? "●" : " "} ${selected ? "❯" : " "} `}
+              </Text>
+              <Text color={selected ? THEME.accent : undefined} bold={selected} wrap="truncate">
+                {text}
+              </Text>
+              <Text dimColor wrap="truncate">
+                {detail}
+              </Text>
+            </Box>
+          );
+        })}
+        {loading && <Text dimColor>reading the pairs…</Text>}
+        {!loading && rows.length === 1 && (
+          <Text dimColor>no pairs saved, and no runs to learn one from</Text>
+        )}
+      </Box>
+      {at && at.kind === "saved" && at.warnings.length > 0 && (
+        <Box marginTop={1} flexDirection="column">
+          {at.warnings.map((w) => (
+            <Text key={w} color={THEME.warn}>{`! ${w}`}</Text>
+          ))}
+        </Box>
+      )}
+      {notice && (
+        <Box marginTop={1}>
+          <Text dimColor>{notice}</Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text>
+          <Line
+            spans={hints(
+              ["Enter", "use this pair"],
+              ["d", "delete"],
+              ["Esc", "back"],
+            )}
+          />
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+/** The name prompt. Typing is handled by the app; this draws the field. */
+function PairName({ value, known }: { value: string; known: string[] }) {
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="save this pair" />
+      </Box>
+      <Text dimColor>name it, so the next one is a keystroke away:</Text>
+      <Box marginTop={1}>
+        <Text inverse>{` ${value} `}</Text>
+      </Box>
+      {known.length > 0 && (
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>saved names:</Text>
+          {known.slice(0, 8).map((n) => (
+            <Text key={n} dimColor>{`  ${n}`}</Text>
+          ))}
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text>
+          <Line spans={hints(["Enter", "save"], ["Esc", "cancel"])} />
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * Deleting or overwriting a pair asks first.
+ *
+ * The same rule run deletion follows: nothing is removed or replaced on one
+ * keystroke, and the name is on the screen before `y` means anything.
+ */
+function ConfirmPair({
+  ask,
+  pair,
+  onAnswer,
+}: {
+  ask: "delete" | "overwrite";
+  pair: { name: string; drafter: ModelRef; reviewer: ModelRef };
+  onAnswer: (ok: boolean) => void;
+}) {
+  useInput((input, key) => {
+    if (input === "y" || input === "Y") onAnswer(true);
+    else if (input === "n" || input === "N" || key.escape || key.return) onAnswer(false);
+  });
+
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right={ask === "delete" ? "delete this pair" : "replace this pair"} />
+      </Box>
+      <Text bold color={THEME.danger}>
+        {ask === "delete" ? `delete the pair "${pair.name}"?` : `overwrite the pair "${pair.name}"?`}
+      </Text>
+      <Box marginTop={1} flexDirection="column">
+        <Text>{`  ${pair.drafter.ref}`}</Text>
+        <Text>{`  ${pair.reviewer.ref}`}</Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>
+          {ask === "delete"
+            ? "the name goes; the models are still in the list of pairs runs have used"
+            : "the two models stored under that name are replaced by the current two"}
+        </Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text>
+          <Line spans={hints(["y", ask === "delete" ? "delete" : "overwrite"], ["n", "cancel"])} />
+        </Text>
       </Box>
     </Box>
   );
@@ -1104,9 +1315,28 @@ function App({ repo }: { repo: string }) {
   const [answers, setAnswers] = useState<GateAnswer[]>([]);
   const [settingsSel, setSettingsSel] = useState(0);
   const [allModels, setAllModels] = useState<string[]>([]);
+  /**
+   * OpenCode's own favourites and recents, read on demand from its state file.
+   *
+   * A hint about which models matter, never a source of truth: `adv` does not
+   * write that file, and a machine without one simply has an unstarred picker.
+   */
+  const [openCode, setOpenCode] = useState<{ favourites: string[]; recents: string[] }>({
+    favourites: [],
+    recents: [],
+  });
   const [filter, setFilter] = useState("");
   const [pickIndex, setPickIndex] = useState(0);
   const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
+  /* Saved pairs, and the runs the recent-pair rows come from. The runs are a
+     separate list from the past-runs screen's: that one is a snapshot with its
+     own tags and scroll, and opening pairs must not disturb it. */
+  const [savedPairs, setSavedPairs] = useState<Pair[]>([]);
+  const [pairRuns, setPairRuns] = useState<RunSummary[]>([]);
+  const [pairIndex, setPairIndex] = useState(0);
+  const [pairLoading, setPairLoading] = useState(false);
+  const [pairName, setPairName] = useState("");
+  const [pairAsk, setPairAsk] = useState<{ ask: "delete" | "overwrite"; pair: Pair } | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
@@ -1252,6 +1482,7 @@ function App({ repo }: { repo: string }) {
   async function openSettings() {
     setSettingsSel(0);
     setSaved(null);
+    setNotice(null);
     setPhase("settings");
     if (allModels.length === 0) {
       try {
@@ -1260,9 +1491,75 @@ function App({ repo }: { repo: string }) {
         setAllModels([]);
       }
     }
+    // Re-read on every visit: favourites are marked in OpenCode, between
+    // sessions, and a list frozen at launch is the wrong list by the afternoon.
+    // It never throws, so this is not worth a try.
+    void readOpenCodeModels().then(setOpenCode);
   }
 
-  /* Settings: choose models, switch mode. Every change is written to .adv/. */
+  /** The rows on the pair screen, recomputed from what is loaded. */
+  const pairScreen = useMemo(
+    () => pairRows(savedPairs, pairRuns, new Set(allModels)),
+    [savedPairs, pairRuns, allModels],
+  );
+  /**
+   * The name of the saved pair the current two models are, or null.
+   *
+   * Matched by model rather than by name: a pair renamed in the file is still
+   * the pair in use, and showing nothing would read as "no pair at all".
+   */
+  const currentPairName = cfg ? nameForPair(savedPairs, cfg.models) : null;
+
+  /**
+   * The models a row names — and nothing else.
+   *
+   * A `Pair` structurally satisfies `{drafter, reviewer}` while also carrying a
+   * name and two dates, and passing one straight into `Config.models` writes
+   * those into the repository's config file. `pairModels` is the boundary.
+   */
+  function modelsOf(row: PairRow): PairModels | null {
+    const source = row.kind === "saved" ? row.pair : row.kind === "recent" ? row.recent : null;
+    return source ? pairModels(source) : null;
+  }
+
+  /** The current two models, as a pair-shaped object. */
+  function currentModels(): PairModels | null {
+    return cfg ? pairModels(cfg.models) : null;
+  }
+
+  /** Store the current two models under a name, then go back to the list. */
+  async function commitPair(name: string) {
+    const models = currentModels();
+    if (!models) return;
+    await savePair({ name, ...models });
+    const pairs = await loadPairs();
+    setSavedPairs(pairs);
+    // The cursor follows the pair you just made, not the row that happened to be
+    // under it — saving one pushes every run row down by one.
+    const rows = pairRows(pairs, pairRuns, new Set(allModels));
+    const at = rows.findIndex((row) => row.kind === "saved" && row.pair.name === name);
+    if (at >= 0) setPairIndex(at);
+    setNotice(`saved pair "${name}"`);
+    setPhase("pairs");
+  }
+
+  /**
+   * Use a pair: both models, saved the way a manual pick is saved — the
+   * repository's `.adv/config.json` as well as the user config — and marked used,
+   * which is what sorts it first next time.
+   */
+  async function usePair(models: PairModels, name?: string) {
+    if (!cfg) return;
+    await persist({ ...cfg, models }, mode);
+    addLog(`pair${name ? ` "${name}"` : " from a run"} · ${models.drafter.ref} -> ${models.reviewer.ref}`);
+    setSavedPairs(name ? await markPairUsed(name) : await loadPairs());
+    setSettingsSel(0);
+    setSaved(name ? `using pair "${name}"` : "using a pair a run used");
+    setPhase("settings");
+  }
+
+  /* Settings: choose a pair, a model, or the subject. Every change is written
+     to the repository's .adv/ and to the user config. */
   useInput(
     (_input, key) => {
       if (!cfg) return;
@@ -1275,19 +1572,23 @@ function App({ repo }: { repo: string }) {
         return;
       }
       if (key.downArrow) {
-        setSettingsSel((s) => Math.min(3, s + 1));
+        setSettingsSel((s) => Math.min(4, s + 1));
         return;
       }
       if (!key.return) return;
 
-      if (settingsSel === 0 || settingsSel === 1) {
-        setPickRole(settingsSel === 0 ? "drafter" : "reviewer");
+      if (settingsSel === 0) {
+        void openPairs();
+        return;
+      }
+      if (settingsSel === 1 || settingsSel === 2) {
+        setPickRole(settingsSel === 1 ? "drafter" : "reviewer");
         setFilter("");
         setPickIndex(0);
         setPhase("pick");
         return;
       }
-      if (settingsSel === 2) {
+      if (settingsSel === 3) {
         const nextMode: Mode = mode === "plan" ? "answer" : "plan";
         setMode(nextMode);
         void persist(cfg, nextMode).then(() => setSaved(`saved mode: ${nextMode}`));
@@ -1298,11 +1599,150 @@ function App({ repo }: { repo: string }) {
     { isActive: phase === "settings" },
   );
 
+  /**
+   * The pair list: saved pairs last-used first, then pairs runs have used.
+   *
+   * Both are read on the way in rather than kept warm, so what is on screen is
+   * what is on disk — including after another `adv`, or a hand edit.
+   */
+  async function openPairs() {
+    setPairName("");
+    setPairAsk(null);
+    setNotice(null);
+    setPhase("pairs");
+    setPairLoading(true);
+    const [pairs, runs] = await Promise.all([loadPairs(), listRuns(repo)]);
+    setPairLoading(false);
+    setSavedPairs(pairs);
+    setPairRuns(runs);
+    // The cursor opens on the pair in use, so "the last one" is where Enter
+    // lands without moving anything.
+    const current = currentPairKey();
+    const at = pairRows(pairs, runs, new Set(allModels)).findIndex((row) => {
+      const models = row.kind === "saved" ? row.pair : row.kind === "recent" ? row.recent : null;
+      return models !== null && pairKey(models) === current;
+    });
+    setPairIndex(Math.max(0, at));
+  }
+
+  const currentPairKey = () => (cfg ? pairKey(cfg.models) : "");
+
+  /* Pair list. Every key its footer names is answered here: Enter, `d`, Esc. */
+  useInput(
+    (input, key) => {
+      if (key.escape) {
+        setPhase("settings");
+        return;
+      }
+      if (key.upArrow || input === "k") {
+        setPairIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        setPairIndex((i) => Math.min(Math.max(0, pairScreen.length - 1), i + 1));
+        return;
+      }
+      const row = pairScreen[pairIndex];
+      if (key.return) {
+        if (!row) return;
+        if (row.kind === "save") {
+          setPairName("");
+          setPhase("pairname");
+          return;
+        }
+        void usePair(modelsOf(row)!, row.kind === "saved" ? row.pair.name : undefined);
+        return;
+      }
+      if (input === "d") {
+        if (row?.kind === "saved") {
+          setPairAsk({ ask: "delete", pair: row.pair });
+          setPhase("pairconfirm");
+        } else if (row?.kind === "recent")
+          setNotice("that pair belongs to a run — it is not stored here, and goes when the run does");
+        else setNotice("this is the current two models; there is nothing saved to delete");
+      }
+    },
+    { isActive: phase === "pairs" },
+  );
+
+  /**
+   * The name prompt.
+   *
+   * Esc cancels back to the list rather than carrying on to settings: this
+   * screen has its own parent one level in, and a stray Esc must not throw away
+   * the list behind it as well.
+   */
+  useInput(
+    (input, key) => {
+      if (key.escape) {
+        setPhase("pairs");
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setPairName((n) => n.slice(0, -1));
+        return;
+      }
+      if (key.return) {
+        const name = pairName.trim();
+        if (!name) {
+          setNotice("a pair needs a name — that is how you find it again");
+          return;
+        }
+        const existing = savedPairs.find((p) => p.name === name);
+        const models = currentModels();
+        if (existing) {
+          if (models) {
+            setPairAsk({ ask: "overwrite", pair: { ...existing, ...models } });
+            setPhase("pairconfirm");
+          }
+          return;
+        }
+        void commitPair(name);
+        return;
+      }
+      if (key.ctrl || key.meta) return;
+      if (input) setPairName((n) => n + input);
+    },
+    { isActive: phase === "pairname" },
+  );
+
+  /**
+   * The answer to the delete/overwrite confirmation.
+   *
+   * The screen owns its keys while it is up, like the run deletion's, so there
+   * is no handler for the phase here — two handlers on one screen is one
+   * keystroke answered twice.
+   */
+  async function answerPairAsk(ok: boolean) {
+    const ask = pairAsk;
+    setPairAsk(null);
+    setPhase("pairs");
+    if (!ask) return;
+    if (!ok) {
+      setNotice(null);
+      return;
+    }
+    if (ask.ask === "delete") {
+      const gone = await deletePair(ask.pair.name);
+      setSavedPairs(await loadPairs());
+      setNotice(gone ? `deleted pair "${ask.pair.name}"` : `no pair called "${ask.pair.name}"`);
+    } else {
+      await commitPair(ask.pair.name);
+      setNotice(`replaced pair "${ask.pair.name}"`);
+    }
+  }
+
+  /** The model picker's rows: favourites first, then recents, then the rest. */
+  const modelRows = useMemo(
+    () => orderedModels(allModels, openCode.favourites, openCode.recents, filter),
+    [allModels, openCode, filter],
+  );
+
   /* Model picker. */
   useInput(
     (input, key) => {
       if (!cfg) return;
-      const shown = allModels.filter((m) => m.toLowerCase().includes(filter.toLowerCase()));
+      const shown = modelRows.rows;
 
       if (key.escape) {
         setPhase("settings");
@@ -2256,9 +2696,33 @@ function App({ repo }: { repo: string }) {
   if (phase === "setup") {
     content = <Setup repo={repo} selection={setupSelection} />;
   } else if (phase === "settings" && cfg) {
-    content = <Settings cfg={cfg} mode={mode} selection={settingsSel} saved={saved} />;
+    content = (
+      <Settings cfg={cfg} mode={mode} selection={settingsSel} saved={saved} pair={currentPairName} />
+    );
   } else if (phase === "pick") {
-    content = <Pick role={pickRole} models={allModels} filter={filter} index={pickIndex} />;
+    content = (
+      <Pick
+        role={pickRole}
+        rows={modelRows.rows}
+        favourite={modelRows.favourite}
+        filter={filter}
+        index={pickIndex}
+      />
+    );
+  } else if (phase === "pairs") {
+    content = (
+      <Pairs
+        rows={pairScreen}
+        index={pairIndex}
+        current={cfg?.models ?? null}
+        notice={notice}
+        loading={pairLoading}
+      />
+    );
+  } else if (phase === "pairname") {
+    content = <PairName value={pairName} known={savedPairs.map((p) => p.name)} />;
+  } else if (phase === "pairconfirm" && pairAsk) {
+    content = <ConfirmPair ask={pairAsk.ask} pair={pairAsk.pair} onAnswer={(ok) => void answerPairAsk(ok)} />;
   } else if (phase === "start") {
     content = (
       <Start

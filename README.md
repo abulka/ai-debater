@@ -100,7 +100,9 @@ Bare `adv` opens the interactive TUI for the current directory (`adv --dir
 
 | Key | Action |
 | --- | --- |
-| Ctrl+P | Settings — choose drafter/reviewer, switch mode |
+| Ctrl+P | Settings — pick a saved **pair**, a drafter, a reviewer, or the subject |
+| ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
+| d | Pairs: delete the highlighted saved pair, after a confirmation that names it |
 | Tab | Switch subject: **this repository** or a **general question** |
 | Enter | Run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
@@ -128,6 +130,14 @@ Bare `adv` opens the interactive TUI for the current directory (`adv --dir
 The first-run screen appears when the directory has no `.adv/`: choose
 "Initialise .adv/ here", or "Continue without it" (models then default to the
 built-in config). Models can be changed afterwards with Ctrl+P.
+
+The pair you use most is worth a name: save it from the **pair** row and it is
+one keystroke away next time, listed last-used first. Pairs live in
+`~/.config/adv/pairs.json` and follow you between directories; the pairs past
+runs used are offered from the run records themselves, so deleting a run
+withdraws its pair from that list. The model picker marks the models you have
+favourited in OpenCode with `★` and puts them first — `adv` reads OpenCode's
+favourites and never writes them.
 
 ## How it works
 

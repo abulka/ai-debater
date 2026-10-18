@@ -141,7 +141,9 @@ supersede rule.
 
 | Key | Action |
 | --- | --- |
-| Ctrl+P | Settings — choose drafter/reviewer, switch mode |
+| Ctrl+P | Settings — pick a saved **pair**, a drafter, a reviewer, or the subject |
+| ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
+| d | Pairs: delete the highlighted saved pair, after a confirmation that names it. A pair that belongs to a run is not stored here and goes when the run does |
 | Tab | Switch subject: **this repository** or a **general question** |
 | Enter | Run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
@@ -225,6 +227,27 @@ adv run "…" --drafter groq/openai/gpt-oss-120b --drafter-family gpt \
 run — uses the last choice rather than `DEFAULT_CONFIG`, and `adv init` seeds a
 new repository from it. A repository's own file still wins, field by field.
 
+**Pairs are named pairs of models, and they are personal.** `~/.config/adv/pairs.json` holds
+`{name, drafter, reviewer, savedAt, lastUsedAt}` — its own file
+because `saveConfig` writes the whole config to both the user file *and* the
+repository's, so a pair list on `Config` would be stamped into every `.adv/` the
+moment a model was chosen. The settings screen's **pair** row names the pair the
+current two models are, matched by model rather than by name. Pairs sort by
+`lastUsedAt`, so the pair you used last is first. Pairs a past run used are
+derived from `state.json` and not stored anywhere: **deleting a run deletes its
+entry**, which is the one thing to know about that list. A saved pair is never
+dropped for being stale — a pair whose models now share a family, or that
+`opencode models` no longer lists, is shown and marked `!`.
+
+**The picker inherits OpenCode's favourites, read-only.** `adv` reads
+`~/.local/state/opencode/model.json` (`XDG_STATE_HOME`, then
+`~/.local/state/opencode`, then `~/.cache/opencode`) and marks those models `★`
+at the top of the model list, then OpenCode's recents, then everything else. It
+never writes that file: OpenCode rewrites it wholesale on any change and has
+reshaped it before (#8375 wiped favourites), so two programs writing it would
+risk losing the reader's list. A missing or broken file is an empty list, not an
+error — which is why there is no star key in `adv`.
+
 **The subject is personal.** It starts as a **general question** (no repository
 read); Tab switches to **this repository**, which reads the code and lets the task
 decide the deliverable — a plan for a change, or an answer about the code. The
@@ -272,7 +295,11 @@ src/
                     typed input or a report" test. Tested.
   clipboard.ts      copying the answer out: pbcopy/wl-copy, then OSC 52, then
                     the file path. Tested.
-  models.ts         model list + family heuristic for the picker
+  models.ts         model list, picker ordering, family heuristic for the picker
+  pairs.ts          named model pairs: the file, the order, and the rows the
+                    pair screen draws. Tested.
+  opencode-state.ts OpenCode's model.json, read for its favourites and never
+                    written. Tested.
   agents.ts         the three agent definitions (injected per call)
   init.ts           `adv init` scaffolding
 fixtures/toy-repo/  the test problem (a deliberate lie in its README)

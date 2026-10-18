@@ -22,16 +22,62 @@ export async function listModels(repo: string): Promise<string[]> {
 }
 
 /**
- * A coarse family label, used only to name a model's family in the picker and
- * to label models in the settings screen.
+ * The picker, ordered: favourites, then recent models, then everything else.
  *
- * The first token after the provider, lowercased: `opencode-go/muse-spark-1.3`
- * -> "muse", `groq/openai/gpt-oss-120b` -> "openai".
+ * There are many models and two slots to fill, so the list a human scans is the
+ * wrong one — it is the whole provider catalogue, and the models that are
+ * actually used are somewhere inside it. OpenCode already knows which ones those
+ * are (see `opencode-state.ts`), so the order follows its list rather than a
+ * second judgement made here.
  *
- * This is a guess where `familyClash` below is a statement: the explicit
- * `family` field in `.adv/config.json` is what the diversity check compares,
- * because a gateway serves many families under one provider.
+ * A favourite that `opencode models` does not list is dropped: that is a model
+ * whose provider is no longer authenticated or configured, and offering it would
+ * offer a run that cannot happen. A model goes missing from the *picker*, never
+ * from the pair list — there a stale pair is shown and marked `!`.
  */
+export function groupModels(
+  all: string[],
+  favourites: string[],
+  recents: string[],
+): { favourites: string[]; recents: string[]; rest: string[] } {
+  const listed = new Set(all);
+  const favs = favourites.filter((m) => listed.has(m));
+  const inFavourites = new Set(favs);
+  const recs = recents.filter((m) => listed.has(m) && !inFavourites.has(m));
+  const grouped = new Set([...favs, ...recs]);
+  const rest = [...all].sort().filter((m) => !grouped.has(m));
+  return { favourites: favs, recents: recs, rest };
+}
+
+/**
+ * The rows the picker draws, in that order, filtered and deduplicated.
+ *
+ * With a filter typed the groups are flattened into one list rather than three
+ * headed sections: three headings compete with a short result set, and the order
+ * still says what is what — a favourite matching the filter comes first. First
+ * occurrence wins, so a model that is both recent and in the rest is listed once.
+ */
+export function orderedModels(
+  all: string[],
+  favourites: string[],
+  recents: string[],
+  filter = "",
+  limit = 500,
+): { rows: string[]; favourite: Set<string> } {
+  const grouped = groupModels(all, favourites, recents);
+  const needle = filter.trim().toLowerCase();
+  const seen = new Set<string>();
+  const rows: string[] = [];
+  for (const ref of [...grouped.favourites, ...grouped.recents, ...grouped.rest]) {
+    if (seen.has(ref)) continue;
+    if (needle && !ref.toLowerCase().includes(needle)) continue;
+    seen.add(ref);
+    rows.push(ref);
+    if (rows.length >= limit) break;
+  }
+  return { rows, favourite: new Set(grouped.favourites) };
+}
+
 export function familyOf(ref: string): string {
   const model = ref.split("/").slice(1).join("/").toLowerCase();
   return model.split(/[-_./]/).filter(Boolean)[0] ?? model;
