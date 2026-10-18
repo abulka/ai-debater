@@ -141,8 +141,10 @@ supersede rule.
 | y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
-| Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `q` is the key that quits (the run stays on disk — reopen it with Ctrl+R) |
-| Ctrl+R | Start: past runs — open a finished or parked run |
+| n | Result/Gate/Runs: back to your question — the draft, subject and models you had are kept |
+| Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `n` is a new question, `q` quits (the run stays on disk — reopen it with Ctrl+R) |
+| Ctrl+R | Past runs — open a finished or parked run, from home, the gate or a result |
+| Ctrl+U | Start: clear the prompt |
 | ↑↓ · q | Scroll the result; `q` quits |
 
 The gate shows the review's state on every screen — counts, warnings, what was
@@ -351,6 +353,17 @@ spike/              M0
   carries over — and a pane opened after scrolling another renders past its own
   end, which is a blank pane with no error. Each screen is keyed by what is on
   it, so every pane starts at the top.
+- **There are two task states, and the TUI is not allowed to trap you in a
+  run.** `task` is the draft on the question desk: the start screen owns it, and
+  opening a past run must never touch it (it briefly did — `openRun` wrote the
+  run's task into the same state, so Ctrl+R ate the prompt you were typing).
+  `runTask` is the task of the run on screen, set from the draft by `beginRun`
+  and from the record by `openRun`; `runHead`/`runTail` and the head effect read
+  it. `n` is the way back to the question desk from a result, a gate or the runs
+  list, and Ctrl+R opens the list from any settled screen. Esc is inert on the
+  result on purpose — quitting is `q`, never a stray Escape. The `Scroller`
+  swallows Ctrl/meta combos so Ctrl+R cannot also read as `r` (revisit) or
+  Ctrl+Y as `y` (copy).
 - **In a pane, one element must be one row.** The result and gate panes scroll
   by line offset (`clampOffset`/`maxOffset` in `gate-model.ts`), so if a line is
   wider than the pane, Ink wraps it, the count stops matching what is on screen,

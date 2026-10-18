@@ -118,8 +118,10 @@ Bare `adv` opens the interactive TUI for the current directory (`adv --dir
 | y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
-| Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `q` is the key that quits (the run stays on disk — reopen it with Ctrl+R) |
-| Ctrl+R | Start: past runs — open a finished or parked run |
+| n | Result/Gate/Runs: back to your question — the draft, subject and models you had are kept |
+| Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `n` is a new question, `q` quits (the run stays on disk — reopen it with Ctrl+R) |
+| Ctrl+R | Past runs — open a finished or parked run, from home, the gate or a result |
+| Ctrl+U | Start: clear the prompt |
 | ↑↓ · q | Scroll the result; `q` quits |
 
 The first-run screen appears when the directory has no `.adv/`: choose

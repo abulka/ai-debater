@@ -97,6 +97,7 @@ const RESULT_KEYS: { key: string; what: string }[] = [
   { key: "R", what: "the reviewer's raw reply, exactly as it was written" },
   { key: "l", what: "the full run log" },
   { key: "r", what: "revisit the gate — re-ask it with the recorded answers prefilled" },
+  { key: "n", what: "back to your question — the draft you had typed is kept" },
   { key: "g / G", what: "jump to the top / the end" },
   { key: "↑↓ · space", what: "scroll" },
   { key: "q", what: "quit (the run stays on disk — reopen it with Ctrl+R on the start screen)" },
@@ -220,6 +221,10 @@ function Scroller({
   const [offset, setOffset] = useState(0);
 
   useInput((input, key) => {
+    // Ctrl/meta combos belong to the app (Ctrl+R past runs, Ctrl+C quit). A
+    // letter's control twin must not also read as the plain key — Ctrl+R is not
+    // "r" (revisit), Ctrl+Y is not "y" (copy).
+    if (key.ctrl || key.meta) return;
     if (onKey?.(input)) return;
     if (key.escape) {
       if (escCloses) onClose();
@@ -344,7 +349,6 @@ function Start({
   onRun,
   onToggleMode,
   onSettings,
-  onRuns,
 }: {
   repo: string;
   cfg: Config | null;
@@ -354,7 +358,6 @@ function Start({
   onRun: () => void;
   onToggleMode: () => void;
   onSettings: () => void;
-  onRuns: () => void;
 }) {
   useInput((input, key) => {
     if (key.tab) {
@@ -366,9 +369,10 @@ function Start({
       onSettings();
       return;
     }
-    // Ctrl+R, same reason: "r" is a letter the task needs.
-    if (key.ctrl && input === "r") {
-      onRuns();
+    // Ctrl+U clears the draft, readline-style. The prompt outlives a trip to a
+    // past run, so a deliberate wipe is what makes room for the next one.
+    if (key.ctrl && input === "u") {
+      setTask("");
       return;
     }
     if (key.return) {
@@ -444,7 +448,7 @@ function Start({
         </Box>
       )}
       <Box marginTop={1}>
-        <Text dimColor>Enter run · Tab mode · Ctrl+R past runs · Ctrl+P settings · Ctrl+C quit</Text>
+        <Text dimColor>Enter run · Tab mode · Ctrl+R past runs · Ctrl+P settings · Ctrl+U clear · Ctrl+C quit</Text>
       </Box>
       <Box>
         <Text dimColor>models, criteria and decisions live in {repo}/.adv/</Text>
@@ -597,7 +601,7 @@ function Runs({
         {runs.length === 0 && <Text dimColor>no runs recorded for this repository yet</Text>}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>↑↓ choose · Enter open · Esc back</Text>
+        <Text dimColor>↑↓ choose · Enter open · n question · Esc back</Text>
       </Box>
     </Box>
   );
@@ -836,6 +840,7 @@ function GateView({
               ...(item.evidence ? ([["e", "source"]] as [string, string][]) : []),
               ["i", "summary"],
               ["l", "log"],
+              ["n", "question"],
               ["Esc", "leave"],
             )}
           />
@@ -894,12 +899,29 @@ function App({ repo }: { repo: string }) {
   /* One handler for the whole app, in every phase, so no screen forgets it. */
   useInput((input, key) => {
     if (key.ctrl && input === "c") exit();
+    // Past runs, from any settled screen: hopping between runs should not cost
+    // a trip home first. Left off while a model call or an approval is in
+    // flight — those phases are "running"/"working", and are not in this list.
+    if (
+      key.ctrl &&
+      input === "r" &&
+      (phase === "start" || phase === "gate" || phase === "result")
+    ) {
+      void openRuns();
+    }
   });
   const [cfg, setCfg] = useState<Config | null>(null);
   const [hasCriteria, setHasCriteria] = useState(false);
   const [phase, setPhase] = useState<Phase>("start");
   const [mode, setMode] = useState<Mode>("plan");
+  /* Two tasks, not one. `task` is the prompt on the question desk: the start
+     screen owns it and nothing else writes to it, so looking at a past run and
+     coming back finds the draft still there. `runTask` is the task of the run
+     on screen — set from the draft when a run starts, from the run's own
+     record when one is opened. Overloading one state is what used to eat the
+     draft the moment you pressed Ctrl+R. */
   const [task, setTask] = useState("");
+  const [runTask, setRunTask] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const [head, setHead] = useState<Head | null>(null);
   const [tail, setTail] = useState<Tail | null>(null);
@@ -1161,11 +1183,16 @@ function App({ repo }: { repo: string }) {
     // supersede, and the config's models are the run's models.
     setRunMode(next);
     setRunModels(cfg.models);
+    setRunTask(task.trim());
     setPreviousGate(null);
     setReopened(false);
     setWasDone(false);
     setGate(null);
     setTail(null);
+    // `head` too: returning to the question desk from a finished run leaves the
+    // old head in state, and the head effect skips while one is set — so a new
+    // run would open straight onto the previous run's gate.
+    setHead(null);
     setAnswers([]);
     setIndex(0);
     setSelection(0);
@@ -1196,7 +1223,7 @@ function App({ repo }: { repo: string }) {
         };
         const result = await runHead(
           repo,
-          task,
+          runTask,
           criteria.text,
           decisions,
           cfg.models,
@@ -1216,7 +1243,7 @@ function App({ repo }: { repo: string }) {
     return () => {
       cancelled = true;
     };
-  }, [phase, head, repo, task, cfg, effectiveMode]);
+  }, [phase, head, repo, runTask, cfg, effectiveMode]);
 
   async function finishGate(all: GateAnswer[]) {
     if (!head || !cfg) return;
@@ -1276,7 +1303,7 @@ function App({ repo }: { repo: string }) {
       const result = await runTail(
         repo,
         head.paths,
-        { task },
+        { task: runTask },
         head.claims,
         head.review,
         built,
@@ -1315,6 +1342,9 @@ function App({ repo }: { repo: string }) {
   /* The past-runs list: every recorded run for this repository, newest first. */
   async function openRuns() {
     setPhase("runs");
+    // Any pane is on the screen we are leaving; it must not reappear when we
+    // come back to a gate or a result later.
+    setPanel(null);
     setRunsIndex(0);
     setRunsLoading(true);
     setRuns(await listRuns(repo));
@@ -1354,7 +1384,7 @@ function App({ repo }: { repo: string }) {
       setWasDone(state.state === "done");
       setRunModels(state.models);
       setRunMode(state.mode);
-      setTask(state.task);
+      setRunTask(state.task);
       setAnswers([]);
       setIndex(0);
       setSelection(0);
@@ -1743,6 +1773,13 @@ function App({ repo }: { repo: string }) {
         return;
       }
 
+      if (input === "n" && !key.ctrl && !key.meta) {
+        // Not what this run is about — back to the question desk. The run stays
+        // parked on disk and is reachable again with Ctrl+R.
+        setPhase("start");
+        return;
+      }
+
       if (key.upArrow) {
         setSelection((s) => Math.max(0, s - 1));
         return;
@@ -1808,6 +1845,10 @@ function App({ repo }: { repo: string }) {
       }
       if (key.escape) {
         setPhase("start");
+        return;
+      }
+      if (input === "n" && !key.ctrl && !key.meta) {
+        setPhase("start");
       }
     },
     { isActive: phase === "runs" },
@@ -1859,7 +1900,6 @@ function App({ repo }: { repo: string }) {
           if (cfg) void persist(cfg, next);
         }}
         onSettings={() => void openSettings()}
-        onRuns={() => void openRuns()}
       />
     );
   } else if (phase === "running" && approval) {
@@ -1939,7 +1979,7 @@ function App({ repo }: { repo: string }) {
         notice={notice}
         escLabel="q quits"
         escCloses={false}
-        onEsc={() => setNotice("Esc does not quit here — press q to quit")}
+        onEsc={() => setNotice("Esc does not quit here — n for a new question, q to quit")}
         // Short on purpose: the pane's height is the terminal minus the chrome,
         // and a footer that wraps to two lines takes a row from the text. The
         // rest of the keys are behind `?`.
@@ -1948,6 +1988,7 @@ function App({ repo }: { repo: string }) {
             ["y", "copy answer"],
             ["Y", "copy all"],
             ["x", "diff + why"],
+            ["n", "question"],
             ["?", "keys"],
             ["q", "quit"],
           ),
@@ -1955,6 +1996,10 @@ function App({ repo }: { repo: string }) {
         ]}
         onClose={() => exit()}
         onKey={(input) => {
+          if (input === "n") {
+            setPhase("start");
+            return true;
+          }
           if (input === "x") {
             openDiff();
             return true;
