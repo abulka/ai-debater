@@ -4,7 +4,7 @@
   "familyCheck": "warn",
   "models": {
     "drafter": {
-      "ref": "anthropic/claude-sonnet-5-5",
+      "ref": "anthropic/claude-haiku-5-5",
       "family": "claude"
     },
     "reviewer": {

@@ -63,6 +63,12 @@ export function runPaths(repo: string, dir: string) {
     diff: path.join(dir, "diff.patch"),
     audit: path.join(dir, "audit.json"),
     state: path.join(dir, "state.json"),
+    /**
+     * Written when the human copies the answer out of the TUI: the clipboard
+     * can fail (no `pbcopy`, a remote terminal), and a path is a copy that
+     * always works. Not written by a run, because a run makes no copy.
+     */
+    answer: path.join(dir, "answer.md"),
   };
 }
 

@@ -41,7 +41,7 @@ import {
 } from "./orchestrator.ts";
 import { loadArtifacts, runHead, runTail, saveGate, type Models, type Reporting } from "./pipeline.ts";
 import { familyClash } from "./models.ts";
-import { renderResult } from "./render.ts";
+import { renderResult, renderResultAnsi } from "./render.ts";
 import type { CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 import type { ApprovalRequest } from "./audit.ts";
@@ -195,20 +195,24 @@ async function finalize(
 ) {
   const state = await loadState(paths);
   const tail = await runTail(repo, paths, state, claims, review, gate, models, mode, reporting);
-  console.log(
-    `\n${renderResult({
-      plan: tail.plan,
-      changelog: tail.changelog,
-      patch: tail.patch,
-      assessment: tail.assessment,
-      gate,
-      claims,
-      review,
-      checks,
-      models,
-      includeDiff: true,
-    })}`,
-  );
+  const report = {
+    plan: tail.plan,
+    changelog: tail.changelog,
+    patch: tail.patch,
+    assessment: tail.assessment,
+    gate,
+    claims,
+    review,
+    checks,
+    models,
+    includeDiff: true,
+  };
+  // A terminal gets the rendered Markdown, a pipe gets the Markdown itself:
+  // `adv run … > plan.md` should write a plan, not a plan with its headings
+  // and emphasis scraped off. NO_COLOR is honoured because it is the setting
+  // people actually use to say "do not style this".
+  const styles = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+  console.log(`\n${styles ? renderResultAnsi(report) : renderResult(report)}`);
   console.log(`\nartifacts: ${displayPath(paths.dir)}`);
 }
 

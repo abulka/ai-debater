@@ -49,7 +49,15 @@ import {
   type Reporting,
   type Tail,
 } from "./pipeline.ts";
-import { renderResult } from "./render.ts";
+import { renderAnswer, renderResultLines } from "./render.ts";
+import {
+  renderMarkdownLines,
+  textLines,
+  wrapWidth,
+  type Span,
+  type StyledLine,
+} from "./markdown.ts";
+import { copyMarkdown, copyNotice } from "./clipboard.ts";
 import type { Mode } from "./runner.ts";
 
 type Phase =
@@ -65,7 +73,45 @@ type Phase =
   | "result"
   | "error";
 
-type Panel = { title: string; lines: string[] };
+type Panel = { title: string; lines: StyledLine[] };
+
+/**
+ * A span's styles as Ink props.
+ *
+ * The renderer's vocabulary is deliberately small and named after Markdown;
+ * this is the one place that knows what the terminal library calls those
+ * things. `strike` is `strikethrough` here, `dim` is `dimColor`.
+ */
+const inkStyle = (span: Span) => ({
+  ...(span.bold ? { bold: true } : {}),
+  ...(span.dim ? { dimColor: true } : {}),
+  ...(span.italic ? { italic: true } : {}),
+  ...(span.underline ? { underline: true } : {}),
+  ...(span.strike ? { strikethrough: true } : {}),
+  ...(span.color ? { color: span.color } : {}),
+});
+
+/**
+ * One line of styled spans: nested `Text` composes the styles.
+ *
+ * A blank line needs a space in it. An empty `<Text>` renders as no row at all,
+ * so a paragraph break would silently disappear and the pane would draw fewer
+ * rows than it counted — which is exactly the scroll bug the pre-wrapping
+ * exists to prevent.
+ */
+function Line({ spans }: { spans: StyledLine }) {
+  return (
+    <Text>
+      {spans.length === 0
+        ? " "
+        : spans.map((span, i) => (
+            <Text key={i} {...inkStyle(span)}>
+              {span.text}
+            </Text>
+          ))}
+    </Text>
+  );
+}
 
 function Header({ right }: { right: string }) {
   return (
@@ -89,12 +135,16 @@ function Scroller({
   title,
   lines,
   footer,
+  notice,
   onClose,
   onKey,
 }: {
   title: string;
-  lines: string[];
+  /** Pre-wrapped styled lines: one element is one row, so scrolling stays honest. */
+  lines: StyledLine[];
   footer: string;
+  /** A one-line answer to the last key, shown under the footer. */
+  notice?: string | null;
   onClose: () => void;
   onKey?: (input: string) => boolean;
 }) {
@@ -122,7 +172,7 @@ function Scroller({
       </Box>
       <Box flexDirection="column">
         {lines.slice(offset, offset + height).map((line, i) => (
-          <Text key={i}>{line}</Text>
+          <Line key={i} spans={line} />
         ))}
       </Box>
       <Box marginTop={1}>
@@ -134,6 +184,11 @@ function Scroller({
       <Box>
         <Text dimColor>{footer}</Text>
       </Box>
+      {notice && (
+        <Box>
+          <Text color="green">{notice}</Text>
+        </Box>
+      )}
     </Box>
   );
 }
@@ -773,6 +828,7 @@ function App({ repo }: { repo: string }) {
   const [panel, setPanel] = useState<Panel | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [showDiff, setShowDiff] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [clarifySel, setClarifySel] = useState(0);
   const approvalResolver = useRef<((ok: boolean) => void) | null>(null);
 
@@ -1259,6 +1315,27 @@ function App({ repo }: { repo: string }) {
     setPhase("gate");
   }
 
+  /* The copy notice is an answer to a keystroke, not part of the result: it
+     goes away on its own so the footer is not permanently shouting. */
+  useEffect(() => {
+    if (notice === null) return;
+    const timer = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  /**
+   * Copy the answer as Markdown.
+   *
+   * `tail.plan` is the writer's own text, the same bytes as `plan.v2.md`: no
+   * wrapping, no terminal cleanup, no sources moved around. The pane renders
+   * that text; this hands it over.
+   */
+  async function copyOut() {
+    if (!tail || !head) return;
+    const result = await copyMarkdown(tail.plan, head.paths.answer);
+    setNotice(copyNotice(result, tail.plan.length, path.basename(head.paths.answer)));
+  }
+
   /* Panels: the text the calls are about, every verdict, the cited source, the log. */
   async function openPanel(kind: "text" | "verdicts" | "evidence" | "log" | "info" | "item") {
     if (!head) return;
@@ -1266,7 +1343,10 @@ function App({ repo }: { repo: string }) {
     const thing = effectiveMode === "answer" ? "answer" : "plan";
 
     if (kind === "log") {
-      setPanel({ title: "run log", lines: log.length ? log : ["(nothing logged yet)"] });
+      setPanel({
+        title: "run log",
+        lines: textLines(log.length ? log : ["(nothing logged yet)"]),
+      });
       return;
     }
 
@@ -1283,22 +1363,32 @@ function App({ repo }: { repo: string }) {
           lines.push(`  ${v.id}  ${head.claims.verifiable.find((c) => c.id === v.id)?.text ?? ""}`);
         }
       }
-      setPanel({ title: "the review at a glance", lines: lines.length ? lines : ["nothing to report"] });
+      setPanel({
+        title: "the review at a glance",
+        lines: textLines(lines.length ? lines : ["nothing to report"]),
+      });
       return;
     }
 
     if (kind === "item") {
       setPanel({
         title: item ? `${item.id} — the whole text` : "the whole text",
-        lines: item ? [item.title, "", ...item.detail] : ["nothing here"],
+        lines: textLines(item ? [item.title, "", ...item.detail] : ["nothing here"]),
       });
       return;
     }
 
     if (kind === "text") {
+      // The plan or answer as the model wrote it: real Markdown, rendered.
+      // This pane used to show the raw source, which read like a file dump,
+      // and it is the pane the human reads before every judgment call.
+      const answer = renderAnswer(head.plan);
+      const markdown = answer.sources
+        ? `${answer.body}\n\n### Sources\n\n${answer.sources}`
+        : answer.body;
       setPanel({
         title: `the ${thing} so far`,
-        lines: head.plan.split("\n"),
+        lines: renderMarkdownLines(markdown, wrapWidth()),
       });
       return;
     }
@@ -1332,7 +1422,7 @@ function App({ repo }: { repo: string }) {
           else if (f.note) lines.push(`      ${f.note}`);
         }
       }
-      setPanel({ title: "review — every verdict", lines });
+      setPanel({ title: "review — every verdict", lines: textLines(lines) });
       return;
     }
 
@@ -1345,12 +1435,12 @@ function App({ repo }: { repo: string }) {
     if (ref?.kind === "url") {
       setPanel({
         title: `${item.id} — evidence`,
-        lines: [
+        lines: textLines([
           item.evidence,
           "",
           "this is a source URL — the tool cannot display web pages here.",
           "open it, and judge the finding on its merits before you choose",
-        ],
+        ]),
       });
       return;
     }
@@ -1358,14 +1448,16 @@ function App({ repo }: { repo: string }) {
     const context = await readEvidenceContext(repo, item.evidence);
     setPanel({
       title: `${item.id} — ${item.evidence}`,
-      lines: context
-        ? [`${context.file}${context.line ? `:${context.line}` : ""}`, "", ...context.lines]
-        : [
-            item.evidence,
-            "",
-            "not a readable file in this repository — the reviewer's citation cannot be shown here.",
-            "A citation that does not resolve is itself worth questioning at this gate.",
-          ],
+      lines: textLines(
+        context
+          ? [`${context.file}${context.line ? `:${context.line}` : ""}`, "", ...context.lines]
+          : [
+              item.evidence,
+              "",
+              "not a readable file in this repository — the reviewer's citation cannot be shown here.",
+              "A citation that does not resolve is itself worth questioning at this gate.",
+            ],
+      ),
     });
   }
 
@@ -1579,7 +1671,7 @@ function App({ repo }: { repo: string }) {
       );
     }
   } else if (phase === "result" && tail && head) {
-    const text = renderResult({
+    const lines = renderResultLines({
       plan: tail.plan,
       changelog: tail.changelog,
       patch: tail.patch,
@@ -1594,12 +1686,17 @@ function App({ repo }: { repo: string }) {
     content = (
       <Scroller
         title="done"
-        lines={text.split("\n")}
-        footer={`x ${showDiff ? "hide" : "show"} exact changes · r revisit the gate · ↑↓ scroll · q quit · ${runDir}`}
+        lines={lines}
+        notice={notice}
+        footer={`y copy the answer as markdown · x ${showDiff ? "hide" : "show"} exact changes · r revisit the gate · ↑↓ scroll · q quit · ${runDir}`}
         onClose={() => exit()}
         onKey={(input) => {
           if (input === "x") {
             setShowDiff((v) => !v);
+            return true;
+          }
+          if (input === "y") {
+            void copyOut();
             return true;
           }
           if (input === "r") {

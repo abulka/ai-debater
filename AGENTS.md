@@ -106,7 +106,11 @@ and `adv init` is only needed if you want criteria and settled decisions.
 
 Run artifacts go to `~/.local/share/adv/runs/<repo-name>-<hash>/<timestamp>/`,
 for both modes. `adv decide`/`run --resume`/`revise`/`status` take a bare run
-name.
+name. The answer is `plan.v2.md`; `answer.md` appears when the TUI copies it out.
+
+The CLI's final report is rendered Markdown on a terminal and plain Markdown in a
+pipe, so `adv run "…" > plan.md` writes a plan rather than a plan with its
+headings and emphasis scraped off. `NO_COLOR` turns the styling off.
 
 `adv revise` is the door back into a finished run: it re-asks the gate with the
 recorded answers (Enter keeps one), and if anything moved it re-runs only the
@@ -124,13 +128,14 @@ supersede rule.
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
 | s | Skip the current question (finding: untriaged; judgment: open) |
 | o | Gate: leave a judgment call open |
-| d | Gate: open the answer/plan text these questions are about |
+| d | Gate: open the answer/plan text these questions are about, rendered |
 | v | Gate: every verdict, with its evidence |
 | e | Gate: the cited source — the file around the line, or the URL |
 | w | Gate: the current item's whole text, unclipped |
 | i | Gate: the review summary — warnings, checks, refuted claims |
 | l | Gate: the full run log |
 | x | Result: show or hide the exact text diff |
+| y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
 | Esc | Close a panel and return to the same question; at the gate, leave the run (it stays on disk — reopen it with Ctrl+R) |
 | Ctrl+R | Start: past runs — open a finished or parked run |
@@ -222,7 +227,12 @@ src/
   orchestrator.ts   run dirs, state machine, decisions.md
   gate.ts           the CLI gate (interactive or piped)
   diff.ts           unified diff + changelog cross-check (a heuristic)
-  render.ts         plan + changelog + diff + open decisions
+  render.ts         the result as sections, each drawn one way: plain text for
+                    a pipe, rendered Markdown for a terminal. Tested.
+  markdown.ts       Markdown -> styled, pre-wrapped terminal lines. Styles only,
+                    never removal; one line = one row. Tested.
+  clipboard.ts      copying the answer out: pbcopy/wl-copy, then OSC 52, then
+                    the file path. Tested.
   models.ts         model list + family heuristic for the picker
   agents.ts         the three agent definitions (injected per call)
   init.ts           `adv init` scaffolding
@@ -277,6 +287,20 @@ spike/              M0
   The prompt says argv only, no shell; the executor has no shell, so a pipeline
   can never run. If a check cannot be expressed as one command, the claim stays
   `unverifiable` — and the reviewer is told to say so.
+- **Nothing removes Markdown any more.** The answer is shown because it *is*
+  Markdown: `src/markdown.ts` turns the syntax into styles and keeps the text.
+  The old path stripped `#`, `*`, backticks and reformatted tables before the
+  human saw it, which both read worse and quietly destroyed the text they were
+  trying to copy. The one rewrite left is `【url】` → `[n]` plus a source list,
+  because that is a citation syntax no terminal can show and the URL has to
+  survive. A pipe gets the Markdown itself; a terminal gets it rendered.
+- **In a pane, one element must be one row.** The result and gate panes scroll
+  by line offset (`clampOffset`/`maxOffset` in `gate-model.ts`), so if a line is
+  wider than the pane, Ink wraps it, the count stops matching what is on screen,
+  and the scroll jumps. That is why `renderMarkdownLines` pre-wraps, why a long
+  URL or code line is split rather than allowed to overflow, and why the section
+  headers are re-fitted to the width. Any new line put into a pane has to go
+  through the renderer or `fitLines`.
 - The diff check is a **heuristic** (hunk count vs changelog entries). It flags
   possible out-of-scope edits; it cannot prove one, and a legitimately unclaimed
   consequence of a decision will be flagged as readily as a real edit.
