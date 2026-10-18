@@ -69,6 +69,8 @@ export function runPaths(repo: string, dir: string) {
      * always works. Not written by a run, because a run makes no copy.
      */
     answer: path.join(dir, "answer.md"),
+    /** The same, with the run's commentary: what happened, what changed. */
+    result: path.join(dir, "result.md"),
   };
 }
 

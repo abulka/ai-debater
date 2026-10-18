@@ -69,6 +69,12 @@ interface Section {
   header: string;
   /** The body is model-written Markdown and is rendered, never stripped. */
   markdown?: boolean;
+  /**
+   * Where a wrapped line continues, as a column. The changelog is a row of
+   * columns — `V14  fixed  …` — and wrapping its summary back to the margin
+   * reads as a new entry rather than as the rest of this one.
+   */
+  hang?: number;
   body: string;
 }
 
@@ -130,14 +136,21 @@ export function resultSections(a: {
     const disagreed = checks.filter((c) => c.outcome === "mismatched").length;
     happened.push(`  ${ran} check(s) run, ${disagreed} disagreed`);
   }
-  sections.push({ header: `── what happened ${rule(47)}`, body: happened.join("\n") });
+  sections.push({ header: `── what happened ${rule(47)}`, body: happened.join("\n"), hang: 2 });
 
+  // The two columns size themselves to what is in them, so a wrapped summary
+  // lines up under the summary column of every entry.
+  const changes = a.changelog.changes;
+  const itemWidth = Math.max(4, ...changes.map((c) => c.item.length));
+  const dispositionWidth = Math.max(9, ...changes.map((c) => c.disposition.length));
   const changed: string[] = [];
-  if (a.changelog.changes.length === 0) {
+  if (changes.length === 0) {
     changed.push("  nothing — the answer is unchanged");
   } else {
-    for (const c of a.changelog.changes) {
-      changed.push(`  ${c.item.padEnd(4)} ${c.disposition.padEnd(9)} ${c.summary}`);
+    for (const c of changes) {
+      changed.push(
+        `  ${c.item.padEnd(itemWidth)} ${c.disposition.padEnd(dispositionWidth)} ${c.summary}`,
+      );
     }
   }
   changed.push(
@@ -150,29 +163,43 @@ export function resultSections(a: {
   } else if (a.assessment.unexplained > 0) {
     changed.push(`  !  ${a.assessment.unexplained} hunk(s) not accounted for in the changelog`);
   }
-  sections.push({ header: `── what changed ${rule(48)}`, body: changed.join("\n") });
+  sections.push({
+    header: `── what changed ${rule(48)}`,
+    body: changed.join("\n"),
+    // Under the summary column when there are entries, under the indent when
+    // there are not: the warnings must not wrap under a column they are not in.
+    hang: changes.length ? 2 + itemWidth + 1 + dispositionWidth + 1 : 2,
+  });
 
   if (a.includeDiff && a.patch) {
     sections.push({
       header: `── exact changes ${rule(46)}`,
       body: a.patch.split("\n").map((line) => `  ${line}`).join("\n"),
+      hang: 2,
     });
   }
 
   if (untriaged.length) {
+    const idWidth = Math.max(2, ...untriaged.map((f) => f.id.length));
     sections.push({
       header: `── findings left for later ${rule(34)}`,
-      body: untriaged.map((f) => `  ${f.id}  ${f.text}`).join("\n"),
+      body: untriaged.map((f) => `  ${f.id.padEnd(idWidth)}  ${f.text}`).join("\n"),
+      hang: 2 + idWidth + 2,
     });
   }
 
+  const idWidth = Math.max(2, ...open.map((d) => d.id.length));
   sections.push({
     header: `── decisions still open ${rule(40)}`,
     body: open.length
       ? open
-          .map((d) => `  ${d.id}  ${a.claims.judgment.find((j) => j.id === d.id)?.text ?? ""}`)
+          .map(
+            (d) =>
+              `  ${d.id.padEnd(idWidth)}  ${a.claims.judgment.find((j) => j.id === d.id)?.text ?? ""}`,
+          )
           .join("\n")
       : "  none",
+    hang: 2 + idWidth + 2,
   });
 
   return sections;
@@ -210,7 +237,7 @@ export function renderResultLines(
     out.push(
       ...(section.markdown
         ? renderMarkdownLines(section.body, width)
-        : fitLines(section.body.split("\n"), width)),
+        : fitLines(section.body.split("\n"), width, section.hang)),
     );
   }
   return out;

@@ -76,40 +76,6 @@ export function extractCitations(text: string): { text: string; sources: string[
  * Tables
  * ------------------------------------------------------------------ */
 
-/**
- * Word-wrap for a table cell; a terminal is not a browser.
- *
- * A word that cannot fit the column is split, not allowed to overflow: a table
- * cell is usually a path or a URL, which has no spaces to wrap at, and a cell
- * that overflows its column sets a row wider than the pane.
- */
-function wrapWords(text: string, width: number): string[] {
-  const usable = Math.max(1, width);
-  const words = text.split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [""];
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    if (word.length > usable) {
-      if (line) {
-        lines.push(line);
-        line = "";
-      }
-      for (let i = 0; i < word.length; i += usable) lines.push(word.slice(i, i + usable));
-      continue;
-    }
-    const next = line ? `${line} ${word}` : word;
-    if (next.length > usable && line) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = next;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
-}
-
 const cellsOf = (line: string): string[] =>
   line
     .trim()
@@ -162,18 +128,42 @@ function tableRows(block: string[]): string[][] {
   return block.map((line) => trimRow(cellsOf(line))).filter((row) => row.length > 0);
 }
 
+const textOf = (spans: Span[]): string => spans.map((s) => s.text).join("");
+
+/** Drop the padding spaces at the end of an assembled row. */
+function trimEnd(line: StyledLine): StyledLine {
+  const out = [...line];
+  while (out.length) {
+    const last = out[out.length - 1]!;
+    const trimmed = last.text.replace(/\s+$/, "");
+    if (trimmed === last.text) break;
+    if (trimmed) {
+      out[out.length - 1] = { ...last, text: trimmed };
+      break;
+    }
+    out.pop();
+  }
+  return out;
+}
+
 /**
  * Render a table to fit the terminal: columns shrink until the row fits, and
  * cells wrap inside their column instead of being cut off. Four 34-character
  * columns on a 100-column terminal is unreadable however well aligned.
+ *
+ * Cells are parsed as inline Markdown before they are measured, so the column
+ * widths come from the text rather than its markers — otherwise `**hits**`
+ * would be four characters wider than it looks, and a cell would be padded to
+ * the wrong width. The header is bold and the separator dim, because the
+ * separator has to read as a rule and not as a row of dashes.
  */
-export function formatTable(block: string[], width: number): string[] {
-  const rows = tableRows(block);
+export function formatTable(block: string[], width: number): StyledLine[] {
+  const rows = tableRows(block).map((cells) => cells.map((cell) => inline(cell)));
   if (rows.length === 0) return [];
 
   const columns = Math.max(...rows.map((cells) => cells.length));
   const natural = Array.from({ length: columns }, (_, i) =>
-    Math.max(1, ...rows.map((cells) => (cells[i] ?? "").length)),
+    Math.max(1, ...rows.map((cells) => textOf(cells[i] ?? []).length)),
   );
   const widths = [...natural];
   const MIN_COLUMN = 8;
@@ -185,38 +175,72 @@ export function formatTable(block: string[], width: number): string[] {
     widths[widths.indexOf(widest)] = widest - 1;
   }
 
-  const renderedRows = rows.map((cells) => {
-    const wrapped = cells.map((cell, i) => wrapWords(cell, widths[i] ?? 1));
+  const padTo = (spans: Span[], w: number): Span[] => {
+    const used = textOf(spans).length;
+    return used >= w ? spans : [...spans, { text: " ".repeat(w - used) }];
+  };
+
+  const renderedRows = rows.map((cells) =>
+    Array.from({ length: columns }, (_, i) =>
+      wrapSpans(toWords(cells[i] ?? []), widths[i] ?? 1),
+    ),
+  );
+
+  return renderedRows.flatMap((wrapped, row) => {
     const height = Math.max(...wrapped.map((lines) => lines.length));
-    const lines: string[] = [];
+    const out: StyledLine[] = [];
     for (let h = 0; h < height; h += 1) {
-      lines.push(
-        wrapped
-          .map((cellLines, i) => (cellLines[h] ?? "").padEnd(widths[i] ?? 1))
-          .join("  ")
-          .trimEnd(),
-      );
+      const line: Span[] = [];
+      for (let c = 0; c < columns; c += 1) {
+        if (c > 0) line.push({ text: "  " });
+        line.push(...padTo(wrapped[c]![h] ?? [], widths[c] ?? 1));
+      }
+      // The header row carries its styles through; nothing is invented here.
+      out.push(trimEnd(row === 0 ? line.map((s) => ({ ...s, bold: true })) : line));
     }
-    return lines;
+    if (row === 0) out.push([{ text: widths.map((w) => "─".repeat(w)).join("  "), dim: true }]);
+    return out;
   });
-
-  const header = renderedRows[0] ?? [];
-  const body = renderedRows.slice(1).flat();
-  return [
-    ...header,
-    widths.map((w) => "─".repeat(w)).join("  "),
-    ...body,
-  ];
 }
-
-/** The separator row `formatTable` writes: all rules and spaces, nothing else. */
-const isRuleRow = (line: string): boolean => line.length > 0 && /^[─\s]+$/.test(line);
 
 /* ------------------------------------------------------------------ *
  * Inline spans
  * ------------------------------------------------------------------ */
 
 const spanLength = (spans: Span[]): number => spans.reduce((n, s) => n + s.text.length, 0);
+
+/** `_` opens emphasis only at a word boundary — never inside `run_audit_now`. */
+const atWordStart = (text: string, i: number): boolean => i === 0 || !/\w/.test(text[i - 1]!);
+
+/** `_x_` and `__x__` must close before a non-word character, as CommonMark says. */
+const CLOSES = "(?=\\s|$|[.,;:)])";
+
+/**
+ * The emphasis rules: a delimiter, content, the same delimiter.
+ *
+ * Content must begin and end on a non-space, so `2 * 3 * 4` is arithmetic
+ * rather than a run of italics. The bold patterns deliberately allow `*`
+ * inside, because models nest: `**Original *Law & Order* ranks first**` is one
+ * bold sentence with three italic titles in it. A pattern that refused the
+ * inner `*` did not merely miss the bold — it fell through to the single-star
+ * rule, which matched across the middle of the sentence and left a stray `*`
+ * on screen at each end.
+ *
+ * Emphasis content is parsed again, so the nested styles compose instead of
+ * being flattened into one.
+ */
+const EMPHASIS: { re: RegExp; style: Omit<Span, "text">; underscore?: boolean }[] = [
+  { re: /^\*\*(\S(?:[\s\S]*?\S)?)\*\*/, style: { bold: true } },
+  { re: /^\*([^*\s](?:[^*]|\*\*)*?[^*\s]?)\*(?!\*)/, style: { italic: true } },
+  { re: /^~~([^~\s](?:[\s\S]*?[^~\s])?)~~/, style: { strike: true } },
+  { re: new RegExp(`^__([^_\\s](?:[\\s\\S]*?[^_\\s])?)__${CLOSES}`), style: { bold: true }, underscore: true },
+  { re: new RegExp(`^_(\\S[^_]*?\\S)_${CLOSES}`), style: { italic: true }, underscore: true },
+];
+
+/** Parse `text`, then apply one more style to everything it produced. */
+function styled(text: string, style: Omit<Span, "text">): Span[] {
+  return inline(text).map((span) => ({ ...span, ...style }));
+}
 
 /**
  * Parse inline Markdown into styled spans.
@@ -227,31 +251,25 @@ const spanLength = (spans: Span[]): number => spans.reduce((n, s) => n + s.text.
  * character that could start something, which also guarantees the loop
  * advances.
  */
-/** `_` opens emphasis only at a word boundary — never inside `run_audit_now`. */
-const atWordStart = (text: string, i: number): boolean => i === 0 || !/\w/.test(text[i - 1]!);
-
-/** `_x_` and `__x__` must close before a non-word character, as CommonMark says. */
-const CLOSES = "(?=\\s|$|[.,;:)])";
-
 export function inline(text: string): Span[] {
   const spans: Span[] = [];
   const push = (t: string, style: Omit<Span, "text"> = {}) => {
     if (t) spans.push({ ...style, text: t });
   };
 
-  const rules: { re: RegExp; style: Omit<Span, "text">; underscore?: boolean }[] = [
-    { re: /^`([^`]+)`/, style: { color: "cyan" } },
-    { re: /^\*\*([^*]+)\*\*/, style: { bold: true } },
-    { re: new RegExp(`^__([^_]+)__${CLOSES}`), style: { bold: true }, underscore: true },
-    { re: /^~~([^~]+)~~/, style: { strike: true } },
-    { re: /^\*([^*\s][^*]*?)\*/, style: { italic: true } },
-    { re: new RegExp(`^_([^_\\s][^_]*?)_${CLOSES}`), style: { italic: true }, underscore: true },
-  ];
-
   let i = 0;
   while (i < text.length) {
     const rest = text.slice(i);
     let matched = false;
+
+    if (rest.startsWith("`")) {
+      const code = rest.match(/^`([^`]+)`/);
+      if (code) {
+        push(code[1]!, { color: "cyan" });
+        i += code[0].length;
+        continue;
+      }
+    }
 
     // Links come first: a URL can contain every other delimiter.
     const image = rest.match(/^!\[([^\]]*)\]\(([^)\s]+)\)/);
@@ -271,16 +289,26 @@ export function inline(text: string): Span[] {
       continue;
     }
 
-    for (const rule of rules) {
+    for (const rule of EMPHASIS) {
       if (rule.underscore && !atWordStart(text, i)) continue;
       const m = rest.match(rule.re);
       if (!m) continue;
-      push(m[1]!, rule.style);
+      for (const span of styled(m[1]!, rule.style)) spans.push(span);
       i += m[0].length;
       matched = true;
       break;
     }
     if (matched) continue;
+
+    // A run of markers that opened nothing is text. Taking the run whole keeps
+    // an unmatched `**` out of the plain-text path, where it would be split
+    // across two spans and read as two stray stars.
+    const run = rest.match(/^(?:[*_~`])+/);
+    if (run && run[0].length > 0) {
+      push(run[0]!);
+      i += run[0].length;
+      continue;
+    }
 
     // Nothing applies here: emit plain text up to the next character that could
     // start something. Progress is guaranteed — the search starts at i + 1.
@@ -394,16 +422,51 @@ export function wrapSpans(words: Span[][], width: number, firstIndent = "", rest
 }
 
 /**
- * Plain lines, hard-broken to the width.
+ * Wrap text that is already laid out, keeping the spacing exactly as written.
+ *
+ * Not `toWords`: that is for Markdown, where runs of spaces mean nothing. These
+ * lines are columns — `  V14  fixed     the sentence` — and collapsing the
+ * spaces would move the sentence out from under its heading. Breaks are at
+ * spaces so a summary is not cut mid-word; a word too long for the line is
+ * split rather than overhanging, because the pane scrolls by row count.
+ */
+function wrapLoose(text: string, width: number, hang: number): string[] {
+  const lines: string[] = [];
+  let rest = text;
+  let indent = "";
+
+  for (;;) {
+    const limit = Math.max(8, width - indent.length);
+    if (rest.length <= limit) {
+      lines.push(indent + rest);
+      return lines;
+    }
+    const lead = /^ */.exec(rest)![0].length;
+    let cut = rest.lastIndexOf(" ", limit);
+    // No usable space: a word longer than the line, or only the indent itself.
+    if (cut <= lead) cut = limit;
+    lines.push(indent + rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).replace(/^ +/, "");
+    indent = " ".repeat(Math.max(0, hang));
+    if (!rest) return lines;
+  }
+}
+
+/**
+ * Plain lines, wrapped to the width.
  *
  * The same invariant as the Markdown renderer, for text that is not Markdown:
  * the pane's scroll arithmetic counts array elements, so one element has to be
  * one row. A patch line, a changelog summary and a header rule all pass through
  * here.
+ *
+ * `hang` is where a continuation line starts: a changelog entry is a row of
+ * columns, and its wrapped summary belongs under the summary, not under the
+ * item id.
  */
-export function fitLines(lines: string[], width = wrapWidth()): StyledLine[] {
+export function fitLines(lines: string[], width = wrapWidth(), hang = 0): StyledLine[] {
   const room = Math.max(8, width);
-  return lines.flatMap((line) => chunkWord([{ text: line }], room));
+  return lines.flatMap((line) => wrapLoose(line, room, hang).map((text) => [{ text }]));
 }
 
 /**
@@ -435,12 +498,37 @@ const FENCE = /^(\s*)(```+|~~~+)\s*(.*)$/;
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
 const QUOTE = /^\s{0,3}>\s?(.*)$/;
-const TABLE = /^\s*\|.*\|\s*$/;
+/** Tolerant of a `<br>` a model left inside a cell: that row is still one row. */
+const TABLE = /^\s*\|[\s\S]*\|\s*$/;
 const ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+
+/**
+ * A `<br>` outside a fence is a line break, which is what the model meant.
+ *
+ * It appears mid-sentence (`e.g.:<br>```markdown`) and between bullets inside a
+ * table cell, where leaving it renders as four literal characters in the middle
+ * of the text. Inside a fence it is left alone: that is code, and a plan about
+ * HTML is allowed to contain a `<br>` that means `<br>`.
+ */
+function softBreaks(lines: string[]): string[] {
+  let fence: string | null = null;
+  return lines.map((line) => {
+    if (fence) {
+      if (line.trim().startsWith(fence)) fence = null;
+      return line;
+    }
+    const m = line.match(FENCE);
+    if (m) {
+      fence = m[2]!;
+      return line;
+    }
+    return line.replace(/<br\s*\/?>/gi, "\n");
+  });
+}
 
 /** Split Markdown into blocks. Paragraphs are joined lines, not one per line. */
 function blocks(md: string): Block[] {
-  const lines = md.replace(/\r\n?/g, "\n").split("\n");
+  const lines = softBreaks(md.replace(/\r\n?/g, "\n").split("\n"));
   const out: Block[] = [];
   let i = 0;
 
@@ -608,20 +696,11 @@ export function renderMarkdownLines(md: string, width = wrapWidth()): StyledLine
     }
 
     if (block.kind === "table") {
-      const rendered = formatTable(block.lines, width);
-      let headerDone = false;
-      for (const line of rendered) {
-        let style: Span = { text: line };
-        if (isRuleRow(line)) {
-          headerDone = true;
-          style = { text: line, dim: true };
-        } else if (!headerDone) {
-          style = { text: line, bold: true };
-        }
-        // Too many columns to shrink into the pane is the one way a table can
-        // still outgrow it. The row is broken rather than drawn wide, because a
-        // wide line is a line the pane cannot scroll to.
-        pushAll(chunkWord([style], Math.max(8, width)));
+      // Too many columns to shrink into the pane is the one way a table can
+      // still outgrow it. A row is broken rather than drawn wide, because a
+      // wide line is a line the pane cannot scroll to.
+      for (const line of formatTable(block.lines, width)) {
+        pushAll(spanLength(line) > width ? chunkWord(line, Math.max(8, width)) : [line]);
       }
       continue;
     }

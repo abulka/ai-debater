@@ -68,9 +68,43 @@ describe("inline", () => {
     expect(lineOf(inline("2 * 3 * 4"))).toBe("2 * 3 * 4");
   });
 
-  test("an asterisk closes at the first partner, as CommonMark says", () => {
-    // `*b and c**d` is emphasis plus a literal star, not a failed bold run.
-    expect(styled("a *b and c**d")).toEqual(["ib and c"]);
+  test("bold containing italic — a real line from a run — renders as both", () => {
+    // From 2026-10-18T01-46-53: the reviewer never saw this, the human did.
+    // Refusing the inner star did not just miss the bold: the single-star rule
+    // then matched across the sentence and left a stray `*` at each end.
+    const line =
+      "**Original *Law & Order* ranks first, *Law & Order: SVU* second, and " +
+      "*Criminal Intent* third.** The ordering reflects peak ratings first.";
+    expect(plain(inline(line))).toBe(
+      "Original Law & Order ranks first, Law & Order: SVU second, and " +
+        "Criminal Intent third. The ordering reflects peak ratings first.",
+    );
+    expect(styled(line)).toEqual([
+      "bOriginal ",
+      "biLaw & Order",
+      "b ranks first, ",
+      "biLaw & Order: SVU",
+      "b second, and ",
+      "biCriminal Intent",
+      "b third.",
+    ]);
+  });
+
+  test("italic containing bold, the other way round, also composes", () => {
+    // The middle carries both styles, which is what nested emphasis means.
+    expect(styled("*a **b** c*")).toEqual(["ia ", "bib", "i c"]);
+  });
+
+  test("a marker run that opens nothing stays whole", () => {
+    expect(lineOf(inline("trailing stars **"))).toBe("trailing stars **");
+    expect(lineOf(inline("a **b and c"))).toBe("a **b and c");
+  });
+
+  test("a single star closes on a single star", () => {
+    // `*b and c**d` is ambiguous — CommonMark reads emphasis here, at the cost
+    // of a stray star. Leaving the markers as written beats guessing and
+    // putting a star on screen that the model never wrote at that position.
+    expect(lineOf(inline("a *b and c**d"))).toBe("a *b and c**d");
   });
 });
 
@@ -172,11 +206,12 @@ describe("quotes, rules and tables", () => {
   });
 
   test("tables align, the header is bold and the pipes are gone", () => {
-    const lines = render("| Song | Why |\n| --- | --- |\n| Cabaret | title |", 80);
-    expect(lines[0]).toMatch(/^bSong\s+Why/);
-    expect(lines[1]).toMatch(/^d─+\s+─+/);
-    expect(lines[2]).toMatch(/^Cabaret\s+title/);
-    expect(lines.join("\n")).not.toContain("|");
+    const lines = renderMarkdownLines("| Song | Why |\n| --- | --- |\n| Cabaret | title |", 80);
+    expect(plain(lines[0]!)).toMatch(/^Song\s+Why/);
+    expect(lines[0]!.every((span) => span.bold)).toBe(true);
+    expect(lineOf(lines[1]!)).toMatch(/^d─+\s+─+/);
+    expect(plain(lines[2]!)).toMatch(/^Cabaret\s+title/);
+    expect(lines.map(plain).join("\n")).not.toContain("|");
   });
 });
 
@@ -232,8 +267,18 @@ describe("formatTable", () => {
   test("a wide table is shrunk to fit", () => {
     const cell = "a fairly long cell that must wrap ".repeat(3).trim();
     const lines = formatTable(["| One | Two |", "|-----|-----|", `| ${cell} | ${cell} |`], 60);
-    for (const line of lines) expect(line.length).toBeLessThanOrEqual(60);
-    expect(lines.join(" ")).toContain("wrap");
+    for (const line of lines) expect(widthOf(line)).toBeLessThanOrEqual(60);
+    expect(lines.map(plain).join(" ")).toContain("wrap");
+  });
+
+  test("a cell's emphasis is rendered, and its markers are not measured", () => {
+    const lines = formatTable(["| A | B |", "| --- | --- |", "| **bold** | plain |"], 60);
+    const header = plain(lines[0]!);
+    const body = plain(lines[2]!);
+    expect(body).toContain("bold");
+    expect(body).not.toContain("**");
+    // A column is as wide as its text, not as wide as its markers.
+    expect(header.indexOf("B")).toBe(body.indexOf("plain"));
   });
 });
 

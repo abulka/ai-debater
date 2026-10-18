@@ -130,6 +130,39 @@ describe("renderResultLines", () => {
     expect(text).toContain("D1  which capacity?");
   });
 
+  test("a wrapped changelog entry continues under the summary column", () => {
+    const long =
+      "Replaced the claim that the show moved to USA Network for its final season " +
+      "and said what actually happened instead";
+    const lines = renderResultLines(
+      { ...base, changelog: { changes: [{ item: "V14", disposition: "fixed", summary: long }] } as never },
+      60,
+    ).map((line) => line.map((span) => span.text).join(""));
+
+    const start = lines.findIndex((line) => line.startsWith("  V14  fixed"));
+    expect(start).toBeGreaterThan(-1);
+    const entry = lines.slice(start, start + 4).filter((line) => line.length > 0);
+    // The first line is the columns; every continuation starts under the summary.
+    expect(entry[0]).toContain("Replaced");
+    expect(entry[1]!.startsWith(" ".repeat(17))).toBe(true);
+    for (const line of entry) expect(line.length).toBeLessThanOrEqual(60);
+  });
+
+  test("a wrapped entry is not cut mid-word", () => {
+    const lines = renderResultLines(
+      {
+        ...base,
+        changelog: {
+          changes: [{ item: "V14", disposition: "fixed", summary: "alpha bravo charlie delta" }],
+        } as never,
+      },
+      40,
+    ).map((line) => line.map((span) => span.text).join(""));
+    // Every word survives whole, wherever the break landed.
+    const reflowed = lines.map((line) => line.trim()).join(" ").replace(/\s+/g, " ");
+    expect(reflowed).toContain("alpha bravo charlie delta");
+  });
+
   test("nothing is wider than the width it was given", () => {
     const wide = `# Title\n\n${"a rather long paragraph that must be wrapped ".repeat(4)}`;
     const lines = renderResultLines({ ...base, plan: wide }, 60);

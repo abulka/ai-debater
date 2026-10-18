@@ -49,7 +49,7 @@ import {
   type Reporting,
   type Tail,
 } from "./pipeline.ts";
-import { renderAnswer, renderResultLines } from "./render.ts";
+import { renderAnswer, renderResult, renderResultLines } from "./render.ts";
 import {
   renderMarkdownLines,
   textLines,
@@ -74,6 +74,31 @@ type Phase =
   | "error";
 
 type Panel = { title: string; lines: StyledLine[] };
+
+/**
+ * Every key the result screen answers to.
+ *
+ * A list, not a paragraph in the footer: the footer has room for four or five
+ * of them, and the ones a reader needs once — the draft the review saw, the
+ * claims as recorded — are exactly the ones that would not fit. `?` shows this,
+ * and it is the same list the key handler is written against, so a new key that
+ * is not here is a key nobody can find.
+ */
+const RESULT_KEYS: { key: string; what: string }[] = [
+  { key: "y", what: "copy the answer as Markdown (also answer.md in the run directory)" },
+  { key: "Y", what: "copy the whole result as Markdown, commentary included (also result.md)" },
+  { key: "x", what: "show or hide the exact text diff" },
+  { key: "d", what: "the draft the review saw, before the gate" },
+  { key: "v", what: "every verdict, with its evidence" },
+  { key: "i", what: "the review at a glance — warnings, checks, refuted claims" },
+  { key: "c", what: "the claims the drafter declared" },
+  { key: "R", what: "the reviewer's raw reply, exactly as it was written" },
+  { key: "l", what: "the full run log" },
+  { key: "r", what: "revisit the gate — re-ask it with the recorded answers prefilled" },
+  { key: "g / G", what: "jump to the top / the end" },
+  { key: "↑↓ · space", what: "scroll" },
+  { key: "q · Esc", what: "quit (the run stays on disk — reopen it with Ctrl+R on the start screen)" },
+];
 
 /**
  * A span's styles as Ink props.
@@ -136,6 +161,7 @@ function Scroller({
   lines,
   footer,
   notice,
+  escLabel = "Esc back",
   onClose,
   onKey,
 }: {
@@ -145,6 +171,12 @@ function Scroller({
   footer: string;
   /** A one-line answer to the last key, shown under the footer. */
   notice?: string | null;
+  /**
+   * What Esc does here. A panel closes and returns to the gate; the result
+   * screen leaves the tool. A hint that says "back" on the screen where there
+   * is nothing to go back to is a hint that teaches the wrong key.
+   */
+  escLabel?: string;
   onClose: () => void;
   onKey?: (input: string) => boolean;
 }) {
@@ -178,7 +210,7 @@ function Scroller({
       <Box marginTop={1}>
         <Text dimColor>
           {lines.length === 0 ? "empty" : `${offset + 1}–${Math.min(lines.length, offset + height)} of ${lines.length}`}
-          {" · ↑↓ scroll · Esc back"}
+          {` · ↑↓ scroll · ${escLabel}`}
         </Text>
       </Box>
       <Box>
@@ -1323,17 +1355,77 @@ function App({ repo }: { repo: string }) {
     return () => clearTimeout(timer);
   }, [notice]);
 
+  /** The result as the renderer wants it: what the screen is drawn from. */
+  function resultReport() {
+    if (!tail || !head) return null;
+    return {
+      plan: tail.plan,
+      changelog: tail.changelog,
+      patch: tail.patch,
+      assessment: tail.assessment,
+      gate: gate ?? { decisions: [], findings: [] },
+      claims: head.claims,
+      review: head.review,
+      checks: head.checks,
+      ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
+      includeDiff: showDiff,
+    };
+  }
+
   /**
-   * Copy the answer as Markdown.
+   * Copy the answer as Markdown — `y`, or the whole result with `Y`.
    *
-   * `tail.plan` is the writer's own text, the same bytes as `plan.v2.md`: no
-   * wrapping, no terminal cleanup, no sources moved around. The pane renders
-   * that text; this hands it over.
+   * `y` is `tail.plan`: the writer's own text, the same bytes as `plan.v2.md`,
+   * with no wrapping, no terminal cleanup and no sources moved around. `Y` is
+   * the result as the screen shows it, in Markdown, so the commentary travels
+   * with the answer when the answer is going somewhere to be discussed.
    */
-  async function copyOut() {
+  async function copyOut(whole = false) {
     if (!tail || !head) return;
-    const result = await copyMarkdown(tail.plan, head.paths.answer);
-    setNotice(copyNotice(result, tail.plan.length, path.basename(head.paths.answer)));
+    const report = resultReport();
+    if (!report) return;
+    const text = whole ? renderResult(report) : tail.plan;
+    const file = whole ? head.paths.result : head.paths.answer;
+    const result = await copyMarkdown(text, file);
+    setNotice(copyNotice(result, text.length, path.basename(file)));
+  }
+
+  /** A panel with a title and plain lines. */
+  function showPanel(title: string, lines: string[]) {
+    setPanel({ title, lines: textLines(lines) });
+  }
+
+  /** Keys, the draft, the claims, the raw review reply: curiosity and debugging. */
+  function openResultPanel(kind: "keys" | "claims" | "raw") {
+    if (!head) return;
+    if (kind === "keys") {
+      showPanel(
+        "keys on this screen",
+        RESULT_KEYS.map((k) => `  ${k.key.padEnd(12)} ${k.what}`),
+      );
+      return;
+    }
+    if (kind === "claims") {
+      const lines: string[] = ["VERIFIABLE — the reviewer must return a verdict on each", ""];
+      for (const c of head.claims.verifiable) lines.push(`  ${c.id}  ${c.text}`);
+      lines.push("", "JUDGMENT CALLS — the human decides these, not a model", "");
+      for (const j of head.claims.judgment) {
+        lines.push(`  ${j.id}  ${j.text}`);
+        for (const option of j.options) lines.push(`      · ${option}`);
+      }
+      if (head.missing.length) {
+        lines.push("", "NO VERDICT RETURNED", ...head.missing.map((id) => `  ${id}`));
+      }
+      showPanel("the claims the drafter declared", lines);
+      return;
+    }
+    // The reviewer's own words, before the tool merged a check result into
+    // them: the difference between review.json and what the gate showed is
+    // exactly what the audit changed.
+    showPanel(
+      "the reviewer's raw reply",
+      JSON.stringify(head.review, null, 2).split("\n"),
+    );
   }
 
   /* Panels: the text the calls are about, every verdict, the cited source, the log. */
@@ -1387,7 +1479,11 @@ function App({ repo }: { repo: string }) {
         ? `${answer.body}\n\n### Sources\n\n${answer.sources}`
         : answer.body;
       setPanel({
-        title: `the ${thing} so far`,
+        // At the gate this is the text the questions are about, still in play.
+        // On the result screen the run is over, and what this is showing is the
+        // first draft the review saw — worth naming, because the answer above it
+        // has since changed.
+        title: phase === "result" ? "the original draft, as the review saw it" : `the ${thing} so far`,
         lines: renderMarkdownLines(markdown, wrapWidth()),
       });
       return;
@@ -1671,24 +1767,26 @@ function App({ repo }: { repo: string }) {
       );
     }
   } else if (phase === "result" && tail && head) {
-    const lines = renderResultLines({
-      plan: tail.plan,
-      changelog: tail.changelog,
-      patch: tail.patch,
-      assessment: tail.assessment,
-      gate: gate ?? { decisions: [], findings: [] },
-      claims: head.claims,
-      review: head.review,
-      checks: head.checks,
-      ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
-      includeDiff: showDiff,
-    });
-    content = (
+    const report = resultReport();
+    // A panel opens over the result and Esc puts it away. The result screen is
+    // where a finished run is read, and reading it means being able to look up
+    // the draft, the claims and the reviewer's own words without leaving.
+    content = panel ? (
+      <Scroller
+        title={panel.title}
+        lines={panel.lines}
+        footer="the result · Esc back"
+        onClose={() => setPanel(null)}
+      />
+    ) : report ? (
       <Scroller
         title="done"
-        lines={lines}
+        lines={renderResultLines(report)}
         notice={notice}
-        footer={`y copy the answer as markdown · x ${showDiff ? "hide" : "show"} exact changes · r revisit the gate · ↑↓ scroll · q quit · ${runDir}`}
+        escLabel="Esc quits"
+        // Short on purpose: the pane's height is the terminal minus the chrome,
+        // and a footer that wraps to two lines takes a row from the text.
+        footer={`y copy answer · Y copy all · x ${showDiff ? "hide" : "show"} diff · ? keys · q quit · ${runDir}`}
         onClose={() => exit()}
         onKey={(input) => {
           if (input === "x") {
@@ -1699,14 +1797,46 @@ function App({ repo }: { repo: string }) {
             void copyOut();
             return true;
           }
+          if (input === "Y") {
+            void copyOut(true);
+            return true;
+          }
           if (input === "r") {
             startRevisit();
+            return true;
+          }
+          if (input === "?") {
+            openResultPanel("keys");
+            return true;
+          }
+          if (input === "d") {
+            void openPanel("text");
+            return true;
+          }
+          if (input === "v") {
+            void openPanel("verdicts");
+            return true;
+          }
+          if (input === "i") {
+            void openPanel("info");
+            return true;
+          }
+          if (input === "l") {
+            void openPanel("log");
+            return true;
+          }
+          if (input === "c") {
+            openResultPanel("claims");
+            return true;
+          }
+          if (input === "R") {
+            openResultPanel("raw");
             return true;
           }
           return false;
         }}
       />
-    );
+    ) : null;
   } else if (phase === "error") {
     content = (
       <Box flexDirection="column">
