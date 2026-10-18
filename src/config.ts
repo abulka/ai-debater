@@ -24,8 +24,8 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   models: {
     // The trial pair: two families, two providers, both verified live, both fast
-    // enough to use in anger. This costs real money — pass the groq pair
-    // explicitly for free test runs.
+    // enough to use in anger. This costs real money per run — for cheap test
+    // runs pass the haiku pair explicitly (see AGENTS.md, rule 3).
     drafter: { ref: "anthropic/claude-sonnet-5-5", family: "anthropic" },
     // Gateway, not the direct OpenAI account: that account has no credit.
     reviewer: { ref: "opencode-go/gpt-6-luna", family: "openai" },

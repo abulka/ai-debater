@@ -19,9 +19,10 @@ waits, and the person you are working with has said plainly: **do not block me.*
    net, not a target.
 
 3. **Use the fast test pair** unless the task is specifically about model
-   quality: `groq/openai/gpt-oss-120b` (drafter) + `groq/openai/gpt-oss-20b`
-   (reviewer). The whole pipeline runs in **~16s**. The toy repo
-   (`fixtures/toy-repo/.adv/config.json`) is already configured this way.
+   quality: `anthropic/claude-haiku-5-5` (drafter) + `openrouter/openai/gpt-6-luna`
+   (reviewer). The toy repo (`fixtures/toy-repo/.adv/config.json`) is configured
+   this way. Groq's pair is faster still but **more expensive and less smart** —
+   18 Oct correction: it is *not* free. Use it only when speed is the point.
 
 4. **Clean up after yourself.** Never leave a stray `src/cli.ts`, browser, or
    `CANARY*` file behind. Check with:
@@ -149,7 +150,8 @@ The first-run screen appears when the directory has no `.adv/`. Choose
 
 | Model | Verdict |
 | --- | --- |
-| `groq/openai/gpt-oss-120b` + `-20b` | **use for testing** — whole pipeline in ~16s |
+| `groq/openai/gpt-oss-120b` + `-20b` | fast but **more expensive and less smart** — not free; speed-only use |
+| `anthropic/claude-haiku-5-5` + `openrouter/openai/gpt-6-luna` | **use for testing** — fast, cross-family, cheaper than sonnet; the toy repo is configured this way |
 | `anthropic/claude-sonnet-5-5` | works, instant plain reply — **trial drafter** |
 | `opencode-go/gpt-6-luna` | works, fast — **trial reviewer** (family openai) |
 | `opencode-go/deepseek-v4.1-flash` | works, ~86s per agent step |
