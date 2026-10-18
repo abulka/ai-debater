@@ -48,9 +48,8 @@ adversarially verifies, the human decides the taste calls at a gate, and a scope
 rebuttal applies the decisions. It returns a revised plan plus a changelog and a
 diff. Models verify; the human decides.
 
-The technique is specified in
-`Adversarial LLM Review Problem, Technique and Script Spec.md`; the design and
-decisions are in `PLAN.md`; M0's findings are in `spike/README.md`.
+The technique and the problem it solves are summarised in `README.md`; the
+design and decisions are in `PLAN.md`; M0's findings are in `spike/README.md`.
 
 **Non-goals.** Not a debate engine, not a multi-agent framework, not a
 replacement for tests. The models never resolve judgment calls.

@@ -5,9 +5,10 @@
 This is the build plan for a tool that runs a task through two different LLM
 families, has one adversarially verify the other's plan, and **aims to** return
 a better plan than a single pass would. That claim is a hypothesis, not a
-premise — §12 defines how it gets tested. The technique is defined in
-`Adversarial LLM Review Problem, Technique and Script Spec.md`; this document is
-the implementation plan. Where the two disagree, the locked decisions below win.
+premise — §12 defines how it gets tested. The technique — two model families,
+one drafts, the other adversarially verifies, the human settles the taste calls —
+is summarised in `README.md`; this document is the implementation plan. Where the
+two disagree, the locked decisions below win.
 
 ---
 
@@ -390,7 +391,7 @@ human gate, scoped rewrite — applied to a plan or to an opinion.
 adv/                            # new project in this directory
   package.json                  # bun
   AGENTS.md                     # working rules for whoever (or whatever) is here
-  NEXT-SESSION.md               # handover prompt
+  README.md                     # the problem, the technique, how to run it
   src/
     cli.ts                      # arg parsing + commands, incl. the TUI entry
     tui.tsx                     # Ink/React TUI: setup, start, settings, pick,

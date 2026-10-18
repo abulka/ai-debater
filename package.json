@@ -1,6 +1,7 @@
 {
   "name": "adv",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "bin": {
     "adv": "./src/cli.ts"
