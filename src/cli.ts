@@ -14,7 +14,6 @@
  */
 
 import { writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "./config.ts";
 import type { FamilyCheck } from "./config.ts";
@@ -34,7 +33,7 @@ import {
   readJson,
   rotateGate,
   runPaths,
-  runsDir,
+  findRunDir,
   resumedModels,
   type Paths,
   saveState,
@@ -78,11 +77,14 @@ function repoOf(flags: Map<string, string | true>): string {
   return path.resolve(typeof dir === "string" ? dir : process.cwd());
 }
 
-/** A bare run name resolves against this repository's run store. */
+/**
+ * A bare run name resolves against this repository's runs, then the questions.
+ * An explicit path is taken as given.
+ */
 const resolveRun = (repo: string, dirArg: string) => {
   if (path.isAbsolute(dirArg)) return runPaths(repo, dirArg);
-  const named = path.join(runsDir(repo), dirArg);
-  if (existsSync(named)) return runPaths(repo, named);
+  const found = findRunDir(repo, dirArg);
+  if (found) return runPaths(repo, found);
   return runPaths(repo, path.resolve(repo, dirArg));
 };
 

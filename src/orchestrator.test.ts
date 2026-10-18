@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  answersDir,
   appendDecisions,
+  createRun,
+  findRunDir,
+  latestRun,
   listRuns,
   loadState,
   markFailed,
@@ -218,22 +222,24 @@ describe("rotateGate", () => {
   });
 });
 
+/** A readable run state, for the store tests below. */
+const runState = (over: Record<string, unknown> = {}) => ({
+  state: "done",
+  createdAt: "2026-10-17T12:00:00.000Z",
+  task: "what is the meaning of life?",
+  mode: "answer",
+  models: pair("groq/openai/gpt-oss-120b", "groq/openai/gpt-oss-20b"),
+  ...over,
+});
+
+/** Put a run with this name in this bucket, without going through a model. */
+const writeRun = async (bucket: string, name: string, s: object) => {
+  const run = path.join(bucket, name);
+  await mkdir(run, { recursive: true });
+  await writeFile(path.join(run, "state.json"), JSON.stringify(s));
+};
+
 describe("listRuns", () => {
-  const state = (over: Record<string, unknown> = {}) => ({
-    state: "done",
-    createdAt: "2026-10-17T12:00:00.000Z",
-    task: "what is the meaning of life?",
-    mode: "answer",
-    models: pair("groq/openai/gpt-oss-120b", "groq/openai/gpt-oss-20b"),
-    ...over,
-  });
-
-  const writeRun = async (dir: string, name: string, s: object) => {
-    const run = path.join(dir, name);
-    await mkdir(run, { recursive: true });
-    await writeFile(path.join(run, "state.json"), JSON.stringify(s));
-  };
-
   test("lists every recorded run, newest first, with its state and task", async () => {
     const xdg = await mkdtemp(path.join(os.tmpdir(), "adv-listruns-"));
     const saved = process.env["XDG_DATA_HOME"];
@@ -242,9 +248,9 @@ describe("listRuns", () => {
     process.env["XDG_DATA_HOME"] = xdg;
     try {
       const base = runsDir(repo);
-      await writeRun(base, "2026-10-17T10-00-00", state({ state: "gated", task: "earlier" }));
-      await writeRun(base, "2026-10-17T12-03-36", state());
-      await writeRun(base, "2026-10-17T11-00-00", state({ state: "failed", task: "middle" }));
+      await writeRun(base, "2026-10-17T10-00-00", runState({ state: "gated", task: "earlier" }));
+      await writeRun(base, "2026-10-17T12-03-36", runState());
+      await writeRun(base, "2026-10-17T11-00-00", runState({ state: "failed", task: "middle" }));
 
       const list = await listRuns(repo);
       expect(list.map((r) => r.name)).toEqual([
@@ -254,6 +260,7 @@ describe("listRuns", () => {
       ]);
       expect(list[0]).toEqual({
         name: "2026-10-17T12-03-36",
+        dir: path.join(base, "2026-10-17T12-03-36"),
         state: "done",
         task: "what is the meaning of life?",
         mode: "answer",
@@ -276,10 +283,39 @@ describe("listRuns", () => {
     try {
       const base = runsDir(repo);
       await writeRun(base, "2026-10-17T10-00-00", { not: "a state" });
-      await writeRun(base, "2026-10-17T11-00-00", state());
+      await writeRun(base, "2026-10-17T11-00-00", runState());
 
       const list = await listRuns(repo);
       expect(list.map((r) => r.name)).toEqual(["2026-10-17T11-00-00"]);
+    } finally {
+      if (saved === undefined) delete process.env["XDG_DATA_HOME"];
+      else process.env["XDG_DATA_HOME"] = saved;
+      await rm(xdg, { recursive: true, force: true });
+    }
+  });
+
+  test("a question is visible from a repository it was never asked in", async () => {
+    const xdg = await mkdtemp(path.join(os.tmpdir(), "adv-listruns-"));
+    const saved = process.env["XDG_DATA_HOME"];
+    const mine = path.join(xdg, "mine");
+    const other = path.join(xdg, "other");
+    await mkdir(mine, { recursive: true });
+    await mkdir(other, { recursive: true });
+    process.env["XDG_DATA_HOME"] = xdg;
+    try {
+      // Asked in a different directory: it belongs to no repository.
+      await writeRun(answersDir(), "2026-10-17T12-00-00", runState());
+      await writeRun(runsDir(mine), "2026-10-17T11-00-00", runState({ mode: "plan", task: "my task" }));
+
+      const list = await listRuns(mine);
+      expect(list.map((r) => r.name)).toEqual(["2026-10-17T12-00-00", "2026-10-17T11-00-00"]);
+      expect(list.map((r) => r.mode)).toEqual(["answer", "plan"]);
+      // Each row carries its own directory, so opening one cannot open the other.
+      expect(list[0]?.dir).toBe(path.join(answersDir(), "2026-10-17T12-00-00"));
+      expect(list[1]?.dir).toBe(path.join(runsDir(mine), "2026-10-17T11-00-00"));
+
+      // …and another repository sees the question but not my task.
+      expect((await listRuns(other)).map((r) => r.name)).toEqual(["2026-10-17T12-00-00"]);
     } finally {
       if (saved === undefined) delete process.env["XDG_DATA_HOME"];
       else process.env["XDG_DATA_HOME"] = saved;
@@ -300,5 +336,73 @@ describe("listRuns", () => {
       else process.env["XDG_DATA_HOME"] = saved;
       await rm(xdg, { recursive: true, force: true });
     }
+  });
+});
+
+describe("where a run is filed", () => {
+  const withStore = async (run: (repo: string) => Promise<void>) => {
+    const xdg = await mkdtemp(path.join(os.tmpdir(), "adv-store-"));
+    const saved = process.env["XDG_DATA_HOME"];
+    const repo = path.join(xdg, "repo");
+    await mkdir(repo, { recursive: true });
+    process.env["XDG_DATA_HOME"] = xdg;
+    try {
+      await run(repo);
+    } finally {
+      if (saved === undefined) delete process.env["XDG_DATA_HOME"];
+      else process.env["XDG_DATA_HOME"] = saved;
+      await rm(xdg, { recursive: true, force: true });
+    }
+  };
+
+  test("a question is filed under the questions, a task under the repository", async () => {
+    await withStore(async (repo) => {
+      const question = await createRun(
+        repo,
+        "what is the meaning of life?",
+        pair("groq/openai/gpt-oss-120b", "groq/openai/gpt-oss-20b"),
+        "answer",
+      );
+      // The directory it was asked in must not appear anywhere in the path.
+      expect(question.dir.startsWith(answersDir())).toBe(true);
+      expect(question.dir).not.toContain(repoKey(repo));
+
+      const task = await createRun(
+        repo,
+        "add a limiter",
+        pair("groq/openai/gpt-oss-120b", "groq/openai/gpt-oss-20b"),
+        "plan",
+      );
+      expect(task.dir.startsWith(runsDir(repo))).toBe(true);
+    });
+  });
+
+  test("the latest run is the latest across both", async () => {
+    await withStore(async (repo) => {
+      await writeRun(runsDir(repo), "2026-10-17T11-00-00", runState({ mode: "plan" }));
+      await writeRun(answersDir(), "2026-10-17T12-00-00", runState());
+      expect(await latestRun(repo)).toBe(path.join(answersDir(), "2026-10-17T12-00-00"));
+
+      await writeRun(runsDir(repo), "2026-10-17T13-00-00", runState({ mode: "plan" }));
+      expect(await latestRun(repo)).toBe(path.join(runsDir(repo), "2026-10-17T13-00-00"));
+    });
+  });
+
+  test("a bare name finds a question, and prefers the repository's own run", async () => {
+    await withStore(async (repo) => {
+      expect(findRunDir(repo, "2026-10-17T12-00-00")).toBeNull();
+
+      await writeRun(answersDir(), "2026-10-17T12-00-00", runState());
+      expect(findRunDir(repo, "2026-10-17T12-00-00")).toBe(
+        path.join(answersDir(), "2026-10-17T12-00-00"),
+      );
+
+      // Only the same second in both buckets is ambiguous, and then the
+      // repository's own run is the one meant.
+      await writeRun(runsDir(repo), "2026-10-17T12-00-00", runState({ mode: "plan" }));
+      expect(findRunDir(repo, "2026-10-17T12-00-00")).toBe(
+        path.join(runsDir(repo), "2026-10-17T12-00-00"),
+      );
+    });
   });
 });

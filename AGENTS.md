@@ -103,10 +103,19 @@ repository assumed, facts checked against URLs. Nothing is installed and nothing
 is written into the directory you started in — answer mode works immediately,
 and `adv init` is only needed if you want criteria and settled decisions.
 
-Run artifacts go to `~/.local/share/adv/runs/<repo-name>-<hash>/<timestamp>/`,
-for both modes. `adv decide`/`run --resume`/`revise`/`status` take a bare run
-name. The answer is `plan.v2.md`; `answer.md` (the answer) and `result.md` (the
-answer plus the commentary) appear when the TUI copies them out.
+Run artifacts go to `~/.local/share/adv/runs/`: a repository's runs under
+`<repo-name>-<hash>/<timestamp>/`, and every general question under
+`answers/<timestamp>/` — a question belongs to no repository, so it is filed
+where it can be found from anywhere. The past-runs list shows both, each labelled
+`task` or `question`, and a run carries its own directory, so opening a row
+cannot open a same-stamped run from the other bucket. `adv decide`/`run
+--resume`/`revise`/`status` take a bare run name and search both buckets (a
+repository's own run wins the only ambiguous case: the same second in both).
+Runs recorded before this stay where they were; they are records, and they are
+still found by name. `adv run --resume` with no name takes the newest of either.
+
+The answer is `plan.v2.md`; `answer.md` (the answer) and `result.md` (the answer
+plus the commentary) appear when the TUI copies them out.
 
 The CLI's final report is rendered Markdown on a terminal and plain Markdown in a
 pipe, so `adv run "…" > plan.md` writes a plan rather than a plan with its

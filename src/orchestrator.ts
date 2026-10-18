@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,7 +13,11 @@ export const advDir = (repo: string) => path.join(repo, ".adv");
  * started in. Plan mode has a repository to write to, but answer mode does not —
  * and "no repository assumed" has to mean no repository written, or every
  * question drops a directory into wherever the human happened to be standing.
- * One rule for both modes is also one thing to remember.
+ *
+ * The store has two kinds of bucket: one per repository, and one for questions
+ * (`answersDir`). An earlier version filed both modes under the repository,
+ * "one rule for both modes" — which cost a question its identity (its directory
+ * named a repository it never read) and hid it from every other directory.
  */
 export const runsRoot = (): string => {
   const xdg = process.env["XDG_DATA_HOME"];
@@ -32,6 +37,25 @@ export const repoKey = (repo: string): string => {
 
 /** Where this repository's runs are kept. */
 export const runsDir = (repo: string) => path.join(runsRoot(), repoKey(repo));
+
+/**
+ * Questions live in one bucket, not under a repository.
+ *
+ * Plan mode has a repository to file under; a general question does not. Filing
+ * it under whichever directory the human happened to start `adv` in cost two
+ * things: the run directory named a repository the question never read, and the
+ * run was then invisible from anywhere else — not in the past-runs list, not by
+ * name — because both resolution and listing looked only in that one bucket.
+ * One bucket for questions, wherever they were asked from.
+ *
+ * It cannot collide with a repository's bucket: those always end in `-<hash>`
+ * (`api-1f0c2a3b`), this one never does.
+ */
+export const answersDir = () => path.join(runsRoot(), "answers");
+
+/** Where a run of this mode is filed. */
+export const runBucket = (repo: string, mode: RunState["mode"]) =>
+  mode === "answer" ? answersDir() : runsDir(repo);
 
 /** Absolute run paths, with `~` for anything under the home directory. */
 export const displayPath = (p: string): string => {
@@ -82,7 +106,7 @@ export async function createRun(
   models: RunState["models"],
   mode: RunState["mode"],
 ): Promise<Paths> {
-  const dir = path.join(runsDir(repo), runStamp());
+  const dir = path.join(runBucket(repo, mode), runStamp());
   await mkdir(dir, { recursive: true });
   const p = runPaths(repo, dir);
   await writeFile(p.task, `${task}\n`);
@@ -156,48 +180,74 @@ export function resumedModels(
   return { models, overrides };
 }
 
-/** The most recent run for this repository, if any. */
+/**
+ * The most recent run this repository can see — its own, or a question asked
+ * from anywhere. Returns the run's directory, which callers pass to `runPaths`.
+ */
 export async function latestRun(repo: string): Promise<string | null> {
-  try {
-    const entries = await readdir(runsDir(repo), { withFileTypes: true });
-    const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
-    return dirs.length ? path.join(runsDir(repo), dirs[dirs.length - 1]!) : null;
-  } catch {
-    return null;
+  const runs = await listRuns(repo);
+  return runs[0]?.dir ?? null;
+}
+
+/**
+ * The directory of a run named by its timestamp.
+ *
+ * This repository's own runs first, then the questions: a bare name can only
+ * exist in both if a task and a question were recorded in the same second, and
+ * then the repository's own run is the one meant. The TUI's picker does not go
+ * through here — each row carries its own directory, so there is nothing to
+ * disambiguate — and neither does `adv run --resume` with no argument, which
+ * asks `latestRun`.
+ */
+export function findRunDir(repo: string, name: string): string | null {
+  for (const bucket of [runsDir(repo), answersDir()]) {
+    const dir = path.join(bucket, name);
+    if (existsSync(dir)) return dir;
   }
+  return null;
 }
 
 export interface RunSummary {
   /** The run directory's name: its timestamp stamp. */
   name: string;
+  /**
+   * The run's own directory. Carried so a caller opens the run it was shown
+   * rather than one that happens to share its timestamp in another bucket.
+   */
+  dir: string;
   state: RunState["state"];
   task: string;
   mode: RunState["mode"];
 }
 
 /**
- * Every recorded run for this repository, newest first — the list the TUI's
- * past-runs screen renders. Directories without a readable `state.json`
+ * Every run this repository can see, newest first — the list the TUI's
+ * past-runs screen renders. That is its own runs plus every question, because a
+ * question belongs to no repository and would otherwise be reachable only from
+ * the directory it was asked in. Directories without a readable `state.json`
  * (a half-written one) are skipped rather than shown as broken rows.
  */
 export async function listRuns(repo: string): Promise<RunSummary[]> {
-  let entries;
-  try {
-    entries = await readdir(runsDir(repo), { withFileTypes: true });
-  } catch {
-    return [];
+  const found: { name: string; dir: string }[] = [];
+  for (const bucket of [runsDir(repo), answersDir()]) {
+    let entries;
+    try {
+      entries = await readdir(bucket, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) found.push({ name: entry.name, dir: path.join(bucket, entry.name) });
+    }
   }
-  const names = entries
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)
-    .sort()
-    .reverse();
+  // Timestamps sort as names: newest first, across both buckets.
+  found.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
 
   const out: RunSummary[] = [];
-  for (const name of names) {
+  for (const { name, dir } of found) {
     try {
-      const state = await loadState(runPaths(repo, path.join(runsDir(repo), name)));
-      out.push({ name, state: state.state, task: state.task, mode: state.mode });
+      const state = await loadState(runPaths(repo, dir));
+      out.push({ name, dir, state: state.state, task: state.task, mode: state.mode });
     } catch {
       /* no readable state — not a run worth listing */
     }

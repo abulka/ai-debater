@@ -33,7 +33,6 @@ import {
   readDecisions,
   rotateGate,
   runPaths,
-  runsDir,
   saveState,
   type RunSummary,
 } from "./orchestrator.ts";
@@ -1339,7 +1338,7 @@ function App({ repo }: { repo: string }) {
     }
   }
 
-  /* The past-runs list: every recorded run for this repository, newest first. */
+  /* Past runs: this repository's, plus every question, newest first. */
   async function openRuns() {
     setPhase("runs");
     // Any pane is on the screen we are leaving; it must not reappear when we
@@ -1357,8 +1356,8 @@ function App({ repo }: { repo: string }) {
    * the repository it was not asked about, and the tail must be written by the
    * drafter that wrote the plan, not whatever the config says today.
    */
-  async function openRun(name: string) {
-    const dir = path.join(runsDir(repo), name);
+  async function openRun(run: RunSummary) {
+    const { name, dir } = run;
     const p = runPaths(repo, dir);
     try {
       const state = await loadState(p);
@@ -1840,7 +1839,9 @@ function App({ repo }: { repo: string }) {
       }
       if (key.return) {
         const chosen = runs[runsIndex];
-        if (chosen) void openRun(chosen.name);
+        // The row carries its own directory: a question and a task recorded in
+        // the same second share a name, and only the row knows which is which.
+        if (chosen) void openRun(chosen);
         return;
       }
       if (key.escape) {

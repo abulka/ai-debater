@@ -152,11 +152,15 @@ drafted -> reviewed -> validated -> gated -> rebutted -> done
 6. **Diff and output** — `plan.v1 -> plan.v2`, cross-referenced against the
    changelog so every hunk maps to an item.
 
-Run artifacts live in one user-level store, for both modes:
+Run artifacts live in one user-level store, in two kinds of bucket:
 
 ```
-~/.local/share/adv/runs/<repo-name>-<hash>/<timestamp>/
+~/.local/share/adv/runs/<repo-name>-<hash>/<timestamp>/   # a repository's runs
+~/.local/share/adv/runs/answers/<timestamp>/              # every general question
 ```
+
+A question belongs to no repository, so it is not filed under one: you can open
+it from anywhere, and its directory never names a repository it did not read.
 
 The two modes are the repository and a general question. In repository mode the
 draft reads the code and the task decides whether the deliverable is a plan for a
