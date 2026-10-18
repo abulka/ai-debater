@@ -49,7 +49,7 @@ import {
   type Reporting,
   type Tail,
 } from "./pipeline.ts";
-import { renderAnswer, renderResult, renderResultLines } from "./render.ts";
+import { diffPane, renderAnswer, renderResult, renderResultLines } from "./render.ts";
 import {
   fitSpans,
   renderMarkdownLines,
@@ -89,7 +89,7 @@ type Panel = { title: string; lines: StyledLine[] };
 const RESULT_KEYS: { key: string; what: string }[] = [
   { key: "y", what: "copy the answer as Markdown (also answer.md in the run directory)" },
   { key: "Y", what: "copy the whole result as Markdown, commentary included (also result.md)" },
-  { key: "x", what: "show or hide the exact text diff" },
+  { key: "x", what: "the exact text diff, and what each change was for (Esc back)" },
   { key: "d", what: "the draft the review saw, before the gate" },
   { key: "v", what: "every verdict, with its evidence" },
   { key: "i", what: "the review at a glance — warnings, checks, refuted claims" },
@@ -99,7 +99,7 @@ const RESULT_KEYS: { key: string; what: string }[] = [
   { key: "r", what: "revisit the gate — re-ask it with the recorded answers prefilled" },
   { key: "g / G", what: "jump to the top / the end" },
   { key: "↑↓ · space", what: "scroll" },
-  { key: "q · Esc", what: "quit (the run stays on disk — reopen it with Ctrl+R on the start screen)" },
+  { key: "q", what: "quit (the run stays on disk — reopen it with Ctrl+R on the start screen)" },
 ];
 
 /**
@@ -188,7 +188,9 @@ function Scroller({
   footer,
   notice,
   escLabel = "Esc back",
+  escCloses = true,
   onClose,
+  onEsc,
   onKey,
 }: {
   title: string;
@@ -198,11 +200,19 @@ function Scroller({
   /** A one-line answer to the last key, shown under the footer. */
   notice?: string | null;
   /**
-   * What Esc does here. A panel closes and returns to the gate; the result
-   * screen leaves the tool. A hint that says "back" on the screen where there
-   * is nothing to go back to is a hint that teaches the wrong key.
+   * What Esc does here, shown in the scroll hint. A panel says "Esc back"; the
+   * result says "q quits" because Esc there is inert. A hint that names the
+   * wrong key is worse than no hint.
    */
   escLabel?: string;
+  /**
+   * Whether Esc closes this screen. False on the result, the top level: `q`
+   * quits and a stray Esc only shows a hint. Quitting the tool is not
+   * something a mis-typed keystroke should do.
+   */
+  escCloses?: boolean;
+  /** Called when Esc is pressed and `escCloses` is false. */
+  onEsc?: () => void;
   onClose: () => void;
   onKey?: (input: string) => boolean;
 }) {
@@ -211,7 +221,12 @@ function Scroller({
 
   useInput((input, key) => {
     if (onKey?.(input)) return;
-    if (key.escape || input === "q") {
+    if (key.escape) {
+      if (escCloses) onClose();
+      else onEsc?.();
+      return;
+    }
+    if (input === "q") {
       onClose();
       return;
     }
@@ -902,7 +917,6 @@ function App({ repo }: { repo: string }) {
   const [saved, setSaved] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
-  const [showDiff, setShowDiff] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [clarifySel, setClarifySel] = useState(0);
   const approvalResolver = useRef<((ok: boolean) => void) | null>(null);
@@ -1156,7 +1170,6 @@ function App({ repo }: { repo: string }) {
     setIndex(0);
     setSelection(0);
     setPanel(null);
-    setShowDiff(false);
     setPhase("running");
   }
 
@@ -1346,7 +1359,6 @@ function App({ repo }: { repo: string }) {
       setIndex(0);
       setSelection(0);
       setPanel(null);
-      setShowDiff(false);
       if (state.state === "done") {
         setTail(await loadTail(p));
         setPhase("result");
@@ -1398,8 +1410,15 @@ function App({ repo }: { repo: string }) {
     return () => clearTimeout(timer);
   }, [notice]);
 
-  /** The result as the renderer wants it: what the screen is drawn from. */
-  function resultReport() {
+  /**
+   * The result as the renderer wants it: what the screen is drawn from.
+   *
+   * The screen never inlines the diff. It is 30 rows of the 60, so it used to
+   * sit below the fold, and toggling it changed the row count and nothing a
+   * reader could see — which is why it is a panel now (`x`). The copies ask for
+   * it: `Y` is "the whole result", and the diff is part of it.
+   */
+  function resultReport(includeDiff = false) {
     if (!tail || !head) return null;
     return {
       plan: tail.plan,
@@ -1411,7 +1430,7 @@ function App({ repo }: { repo: string }) {
       review: head.review,
       checks: head.checks,
       ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
-      includeDiff: showDiff,
+      includeDiff,
     };
   }
 
@@ -1420,17 +1439,33 @@ function App({ repo }: { repo: string }) {
    *
    * `y` is `tail.plan`: the writer's own text, the same bytes as `plan.v2.md`,
    * with no wrapping, no terminal cleanup and no sources moved around. `Y` is
-   * the result as the screen shows it, in Markdown, so the commentary travels
-   * with the answer when the answer is going somewhere to be discussed.
+   * the result in Markdown, commentary and diff included, so it travels whole
+   * when the answer is going somewhere to be discussed.
    */
   async function copyOut(whole = false) {
     if (!tail || !head) return;
-    const report = resultReport();
-    if (!report) return;
-    const text = whole ? renderResult(report) : tail.plan;
+    const text = whole ? renderResult(resultReport(true)!) : tail.plan;
     const file = whole ? head.paths.result : head.paths.answer;
     const result = await copyMarkdown(text, file);
     setNotice(copyNotice(result, text.length, path.basename(file)));
+  }
+
+  /**
+   * The exact changes, and what each change was for — full pane.
+   *
+   * Opened by `x` rather than toggled into the result: the answer to "which
+   * lines changed" is a thing to read, not a section to scroll past.
+   */
+  function openDiff() {
+    const report = resultReport(true);
+    if (!report) return;
+    const lines = diffPane(report);
+    setPanel({
+      title: "the exact changes, and why",
+      lines: lines.length
+        ? lines
+        : [spans({ text: "no diff — the text is unchanged", dim: true })],
+    });
   }
 
   /**
@@ -1842,6 +1877,7 @@ function App({ repo }: { repo: string }) {
     if (panel) {
       content = (
         <Scroller
+          key={`panel:${panel.title}`}
           title={panel.title}
           lines={panel.lines}
           footer={[
@@ -1886,6 +1922,7 @@ function App({ repo }: { repo: string }) {
     // the draft, the claims and the reviewer's own words without leaving.
     content = panel ? (
       <Scroller
+        key={`panel:${panel.title}`}
         title={panel.title}
         lines={panel.lines}
         footer={[
@@ -1896,10 +1933,13 @@ function App({ repo }: { repo: string }) {
       />
     ) : report ? (
       <Scroller
+        key="result"
         title="done"
         lines={renderResultLines(report)}
         notice={notice}
-        escLabel="Esc quits"
+        escLabel="q quits"
+        escCloses={false}
+        onEsc={() => setNotice("Esc does not quit here — press q to quit")}
         // Short on purpose: the pane's height is the terminal minus the chrome,
         // and a footer that wraps to two lines takes a row from the text. The
         // rest of the keys are behind `?`.
@@ -1907,7 +1947,7 @@ function App({ repo }: { repo: string }) {
           ...hints(
             ["y", "copy answer"],
             ["Y", "copy all"],
-            ["x", showDiff ? "hide diff" : "show diff"],
+            ["x", "diff + why"],
             ["?", "keys"],
             ["q", "quit"],
           ),
@@ -1916,7 +1956,7 @@ function App({ repo }: { repo: string }) {
         onClose={() => exit()}
         onKey={(input) => {
           if (input === "x") {
-            setShowDiff((v) => !v);
+            openDiff();
             return true;
           }
           if (input === "y") {

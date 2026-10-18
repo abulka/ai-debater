@@ -114,11 +114,11 @@ Bare `adv` opens the interactive TUI for the current directory (`adv --dir
 | c | Result: the claims the drafter declared, and the options each judgment call offered |
 | R | Result: the reviewer's raw reply, before the tool merged a check result into it |
 | ? | Result: the keys that work on this screen |
-| x | Result: show or hide the exact text diff |
+| x | Result: the exact text diff, and what each change was for (Esc back) |
 | y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
-| Esc | Close a panel and return to the same question. At the gate, leave the run; on the result screen there is nothing to go back to, so it quits (the run stays on disk — reopen it with Ctrl+R) |
+| Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `q` is the key that quits (the run stays on disk — reopen it with Ctrl+R) |
 | Ctrl+R | Start: past runs — open a finished or parked run |
 | ↑↓ · q | Scroll the result; `q` quits |
 

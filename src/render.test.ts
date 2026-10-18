@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { Changelog, Claims, Gate, Review } from "./contracts.ts";
-import { renderAnswer, renderResult, renderResultLines, splitSources } from "./render.ts";
+import {
+  changeReasons,
+  diffPane,
+  renderAnswer,
+  renderDiffLines,
+  renderResult,
+  renderResultLines,
+  splitSources,
+} from "./render.ts";
 import { THEME } from "./theme.ts";
 
 describe("splitSources", () => {
@@ -200,6 +208,132 @@ describe("renderResultLines", () => {
     // A diff is read by its margins.
     expect(find("+new").some((span) => span.color === THEME.code)).toBe(true);
     expect(find("-old").some((span) => span.color === THEME.danger)).toBe(true);
+  });
+
+  test("the diff pane asks for the diff and colours its margins", () => {
+    const withPatch = {
+      ...base,
+      patch: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
+    };
+    const lines = renderDiffLines(withPatch, 80);
+    const text = lines.map((line) => line.map((s) => s.text).join(""));
+    expect(text[0]).toContain("exact changes");
+    expect(lines[0]!.every((s) => s.color === THEME.accent)).toBe(true);
+    const spanFor = (needle: string) =>
+      lines.find((l) => l.map((s) => s.text).join("").includes(needle))!
+        .find((s) => s.text.includes(needle))!;
+    expect(spanFor("+new").color).toBe(THEME.code);
+    expect(spanFor("-old").color).toBe(THEME.danger);
+    for (const line of lines) {
+      expect(line.reduce((n, s) => n + s.text.length, 0)).toBeLessThanOrEqual(80);
+    }
+  });
+
+  test("the diff pane is empty when there is no diff to show", () => {
+    expect(renderDiffLines({ ...base, patch: "" }, 80)).toEqual([]);
+  });
+
+  test("each change is shown with what it was for", () => {
+    const report = {
+      ...base,
+      patch: "--- a/draft\n+++ b/final\n@@ -1 +1 @@\n-old\n+new\n",
+      includeDiff: true,
+      claims: {
+        verifiable: [{ id: "V14", text: "the show moved to USA Network" }],
+        judgment: [{ id: "J1", text: "add the caveat?", options: ["yes", "no"] }],
+      } as unknown as Claims,
+      review: {
+        verdicts: [
+          { id: "V14", verdict: "refuted", evidence: "src/sources.md:12", note: "NBC, then USA" },
+        ],
+        extra_findings: [{ id: "E7", text: "the caveat is missing", evidence: "src/s.md:3" }],
+      } as unknown as Review,
+      gate: {
+        decisions: [{ id: "J1", choice: "yes" }],
+        findings: [{ id: "E7", disposition: "accepted" }],
+      } as unknown as Gate,
+      changelog: {
+        changes: [
+          { item: "V14", disposition: "fixed", summary: "said which seasons aired where", evidence: "plan.v2.md" },
+          { item: "J1", disposition: "applied", summary: "added the caveat" },
+          { item: "E7", disposition: "applied", summary: "added the caveat" },
+          { item: "V9", disposition: "fixed", summary: "edited something nobody authorised" },
+        ],
+      } as unknown as Changelog,
+    };
+    const lines = diffPane(report, 100);
+    const text = lines.map((line) => line.map((s) => s.text).join("")).join("\n");
+    const spanFor = (needle: string) =>
+      lines.find((l) => l.map((s) => s.text).join("").includes(needle))!
+        .find((s) => s.text.includes(needle))!;
+
+    expect(text).toContain("what it was changed for");
+    // The reviewer's words, with the evidence they cited.
+    expect(text).toContain("the show moved to USA Network");
+    expect(text).toContain("src/sources.md:12 — NBC, then USA");
+    expect(spanFor("refuted").color).toBe(THEME.warn);
+    // A finding you accepted.
+    expect(text).toContain("the caveat is missing");
+    // Your own call at the gate, and the option you picked.
+    expect(text).toContain("you chose");
+    expect(text).toContain("yes");
+    // The writer's own citation, which nothing else showed.
+    expect(text).toContain("the writer cited");
+    expect(spanFor("plan.v2.md").color).toBe(THEME.code);
+    // A change nobody asked for is called out…
+    expect(text).toContain("not in the authorised scope");
+    expect(spanFor("not in the authorised scope").color).toBe(THEME.danger);
+  });
+
+  test("an authorised item the changelog says nothing about is called out", () => {
+    const report = {
+      ...base,
+      patch: "",
+      includeDiff: false,
+      claims: { verifiable: [{ id: "V11", text: "the rule holds" }], judgment: [] } as unknown as Claims,
+      review: {
+        verdicts: [{ id: "V11", verdict: "refuted", evidence: "src/a.ts:1", note: "" }],
+        extra_findings: [],
+      } as unknown as Review,
+      gate: { decisions: [], findings: [] } as unknown as Gate,
+      changelog: { changes: [] } as unknown as Changelog,
+    };
+    const text = diffPane(report, 100)
+      .map((line) => line.map((s) => s.text).join(""))
+      .join("\n");
+    expect(text).toContain("authorised");
+    expect(text).toContain("the changelog says nothing");
+  });
+
+  test("the reasons pane never exceeds the width, whatever the summary", () => {
+    const report = {
+      ...base,
+      patch: "",
+      claims: { verifiable: [{ id: "V1", text: "a claim" }], judgment: [] } as unknown as Claims,
+      review: { verdicts: [], extra_findings: [] } as unknown as Review,
+      gate: { decisions: [], findings: [] } as unknown as Gate,
+      changelog: {
+        changes: [
+          { item: "V1", disposition: "fixed", summary: "a summary long enough to wrap more than once at this width, twice over" },
+        ],
+      } as unknown as Changelog,
+    };
+    for (const width of [40, 60, 100]) {
+      for (const line of changeReasons(report, width)) {
+        expect(line.reduce((n, s) => n + s.text.length, 0)).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  test("the screen's own result never carries the diff, panel or not", () => {
+    const text = renderResultLines({ ...base, patch: "--- a/x\n+++ b/x\n" }, 80)
+      .map((line) => line.map((s) => s.text).join(""))
+      .join("\n");
+    expect(text).not.toContain("exact changes");
+    // …but the copy of the whole result does.
+    expect(renderResult({ ...base, patch: "--- a/x\n+++ b/x\n", includeDiff: true })).toContain(
+      "exact changes",
+    );
   });
 
   test("nothing is wider than the width it was given", () => {

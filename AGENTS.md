@@ -137,11 +137,11 @@ supersede rule.
 | c | Result: the claims the drafter declared, and the options each judgment call offered |
 | R | Result: the reviewer's raw reply, before the tool merged a check result into it |
 | ? | Result: the keys that work on this screen |
-| x | Result: show or hide the exact text diff |
+| x | Result: the exact text diff and what each change was for, as a pane — neither fits below the fold |
 | y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
-| Esc | Close a panel and return to the same question. At the gate, leave the run; on the result screen there is nothing to go back to, so it quits (the run stays on disk — reopen it with Ctrl+R) |
+| Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `q` is the key that quits (the run stays on disk — reopen it with Ctrl+R) |
 | Ctrl+R | Start: past runs — open a finished or parked run |
 | ↑↓ · q | Scroll the result; `q` quits |
 
@@ -331,6 +331,26 @@ spike/              M0
   returns styled lines; `renderResult` joins their text for anything that is not
   a terminal. That is why `adv run > plan.md` is unchanged by a colour change:
   there is one layout and two deliveries, and the pipe simply drops the styles.
+- **The diff names its two sides `draft` and `final`, and only a header may be
+  rewritten.** `git diff --no-index` labels files with the paths it is handed,
+  which here are the absolute paths of `plan.v1.md` and `plan.v2.md` inside the
+  run directory — so a question asked in answer mode read as a change to
+  whatever repository the session happened to start in. `relabelDraftToFinal`
+  rewrites the header **before the first hunk only**: a removed line whose text
+  begins with `--` also renders as `--- something`, and rewriting that corrupts
+  the patch. Runs recorded before this keep their old labels — `diff.patch` is a
+  record and the pane shows what is in it.
+- **The "what it was changed for" pane joins by item id, never by hunk.**
+  `assessDiff` counts hunks against changelog entries and cannot map one to the
+  other, so the pane says which items were authorised, what the writer reported
+  doing about each, and shows two absences that matter: a change to an item that
+  was never authorised, and an authorised item the changelog says nothing about.
+  Do not "improve" it into a hunk-to-item mapping: there is no such mapping.
+- **A pane and the screen it opens over are the same component.** React reuses
+  the `Scroller` instance when only the panel toggles, so its scroll offset
+  carries over — and a pane opened after scrolling another renders past its own
+  end, which is a blank pane with no error. Each screen is keyed by what is on
+  it, so every pane starts at the top.
 - **In a pane, one element must be one row.** The result and gate panes scroll
   by line offset (`clampOffset`/`maxOffset` in `gate-model.ts`), so if a line is
   wider than the pane, Ink wraps it, the count stops matching what is on screen,
