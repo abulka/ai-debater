@@ -23,6 +23,7 @@ import {
   type GateItem,
 } from "./gate-model.ts";
 import { familyClash, familyOf, listModels } from "./models.ts";
+import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
 import {
   appendDecisions,
   deleteRuns,
@@ -100,8 +101,11 @@ const RESULT_KEYS: { key: string; what: string }[] = [
   { key: "l", what: "the full run log" },
   { key: "r", what: "revisit the gate — re-ask it with the recorded answers prefilled" },
   { key: "n", what: "back to your question — the draft you had typed is kept" },
+  { key: "↑↓ · j / k", what: "scroll a line" },
+  { key: "space · f", what: "page down" },
+  { key: "b · u", what: "page up · half a page up" },
+  { key: "Ctrl+D · Ctrl+U", what: "half a page down · half a page up" },
   { key: "g / G", what: "jump to the top / the end" },
-  { key: "↑↓ · space", what: "scroll" },
   { key: "q", what: "quit (the run stays on disk — reopen it with Ctrl+R on the start screen)" },
 ];
 
@@ -129,9 +133,9 @@ const inkStyle = (span: Span) => ({
  * rows than it counted — which is exactly the scroll bug the pre-wrapping
  * exists to prevent.
  */
-function Line({ spans }: { spans: StyledLine }) {
+function Line({ spans, wrap }: { spans: StyledLine; wrap?: "truncate" }) {
   return (
-    <Text>
+    <Text wrap={wrap}>
       {spans.length === 0
         ? " "
         : spans.map((span, i) => (
@@ -174,6 +178,31 @@ function hints(...pairs: [string, string][]): StyledLine {
           { text: ` ${what}` },
         ],
   );
+}
+
+/**
+ * Subscribe to wheel reports while this screen is the one on the stack.
+ *
+ * Only one scrollable screen is mounted at a time, so a plain subscription is
+ * unambiguous: whichever screen is up does the scrolling. The callback is held
+ * in a ref because it closes over state that changes every render, and
+ * re-subscribing on every render would drop reports arriving in between.
+ */
+function useWheelScroll(onScroll: (rows: number) => void, active = true) {
+  const latest = useRef(onScroll);
+  latest.current = onScroll;
+  useEffect(() => {
+    if (!active) return;
+    const onData = (chunk: Buffer | string) => {
+      if (!mouseAccepting()) return;
+      const rows = wheelRows(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+      if (rows) latest.current(rows);
+    };
+    process.stdin.on("data", onData);
+    return () => {
+      process.stdin.off("data", onData);
+    };
+  }, [active]);
 }
 
 /** Terminal height for a scrollable pane, leaving room for the chrome. */
@@ -219,10 +248,26 @@ function Scroller({
   onClose: () => void;
   onKey?: (input: string) => boolean;
 }) {
-  const height = paneHeight(7);
+  const height = paneHeight(8);
   const [offset, setOffset] = useState(0);
 
+  useWheelScroll((rows) => by(rows));
+
+  /** Move by rows, clamped, so the pane cannot be scrolled past either end. */
+  const by = (rows: number) => setOffset((o) => clampOffset(o + rows, lines.length, height));
+  const half = Math.max(1, Math.ceil(height / 2));
+
   useInput((input, key) => {
+    // The control pairs first: Ctrl+D and Ctrl+U are how a Mac pages a document,
+    // and the swallow below would otherwise eat them.
+    if (key.ctrl && input === "d") {
+      by(half);
+      return;
+    }
+    if (key.ctrl && input === "u") {
+      by(-half);
+      return;
+    }
     // Ctrl/meta combos belong to the app (Ctrl+R past runs, Ctrl+C quit). A
     // letter's control twin must not also read as the plain key — Ctrl+R is not
     // "r" (revisit), Ctrl+Y is not "y" (copy).
@@ -237,10 +282,15 @@ function Scroller({
       onClose();
       return;
     }
-    if (key.downArrow || input === "j") setOffset((o) => clampOffset(o + 1, lines.length, height));
-    else if (key.upArrow || input === "k") setOffset((o) => clampOffset(o - 1, lines.length, height));
-    else if (key.pageDown || input === " ") setOffset((o) => clampOffset(o + height, lines.length, height));
-    else if (key.pageUp) setOffset((o) => clampOffset(o - height, lines.length, height));
+    // `j`/`k` a line, `space`/`f` a page, `b`/`u` back a page and half a page,
+    // `g`/`G` the ends. Apple Terminal keeps PageUp and PageDown for its own
+    // scrollback — they never reach the app — so the paging keys have to be
+    // letters. `pageUp`/`pageDown` still work where a terminal does send them.
+    if (key.downArrow || input === "j") by(1);
+    else if (key.upArrow || input === "k") by(-1);
+    else if (key.pageDown || input === " " || input === "f") by(height);
+    else if (key.pageUp || input === "b") by(-height);
+    else if (input === "u") by(-half);
     else if (input === "g") setOffset(0);
     else if (input === "G") setOffset(maxOffset(lines.length, height));
   });
@@ -258,11 +308,11 @@ function Scroller({
       <Box marginTop={1}>
         <Text dimColor>
           {lines.length === 0 ? "empty" : `${offset + 1}–${Math.min(lines.length, offset + height)} of ${lines.length}`}
-          {` · ↑↓ scroll · ${escLabel}`}
+          {` · ↑↓ line · space/b page · ${escLabel}`}
         </Text>
       </Box>
       <Box>
-        <Line spans={footer} />
+        <Line spans={footer} wrap="truncate" />
       </Box>
       {notice && (
         <Box>
@@ -386,6 +436,8 @@ function Start({
       return;
     }
     if (key.ctrl || key.meta) return;
+    // Mouse reports arrive as input too. A wheel notch must scroll the screen,
+    // not type `[<64;10;5M` into the question.
     if (input) setTask(task + input);
   });
 
@@ -759,7 +811,7 @@ function Approve({
  * The live line is the spinner, labelled with what is happening. It is part of
  * the frame, so it disappears with the phase — only settled lines are permanent.
  */
-function Log({ log, label }: { log: string[]; label: string | null }) {
+function Log({ lines, label }: { lines: StyledLine[]; label: string | null }) {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
     if (label === null) return;
@@ -770,12 +822,11 @@ function Log({ log, label }: { log: string[]; label: string | null }) {
 
   return (
     <>
-      <Static items={log}>
-        {(line, i) => (
-          <Text key={i} dimColor={line.startsWith("!")} color={line.startsWith("!") ? "yellow" : undefined}>
-            {line}
-          </Text>
-        )}
+      {/* Already wrapped to the width: one element is one row on screen, which
+          is what makes the pane's position below it a number rather than a
+          guess. Ink wrapping a long log line would shift everything under it. */}
+      <Static items={lines}>
+        {(line, i) => <Line key={i} spans={line} />}
       </Static>
       {label !== null && (
         <Box>
@@ -996,6 +1047,29 @@ function App({ repo }: { repo: string }) {
   /* One handler for the whole app, in every phase, so no screen forgets it. */
   useInput((input, key) => {
     if (key.ctrl && input === "c") exit();
+    // Hand the mouse to the terminal, so plain click-drag selects text and the
+    // wheel moves the scrollback. A control key, not a letter: a letter would
+    // also be typed into the prompt or the model filter.
+    if (key.ctrl && input === "t") {
+      const next = !mouseReporting;
+      process.stdout.write(next ? MOUSE_ON : MOUSE_OFF);
+      setMouseAccepting(next);
+      setMouseReporting(next);
+      // The log is the channel that exists on every screen; the notice is the
+      // one next to the pane. A toggle with no feedback is a toggle you press
+      // twice to find out what it did.
+      addLog(
+        next
+          ? "mouse: the pane scrolls with the wheel again"
+          : "mouse: the terminal has it — drag to select, wheel to scroll back; Ctrl+T takes it back",
+      );
+      setNotice(
+        next
+          ? "the mouse scrolls the pane again"
+          : "the mouse is the terminal's — drag to select; Ctrl+T takes it back",
+      );
+      return;
+    }
     // Past runs, from any settled screen: hopping between runs should not cost
     // a trip home first. Left off while a model call or an approval is in
     // flight — those phases are "running"/"working", and are not in this list.
@@ -1037,6 +1111,16 @@ function App({ repo }: { repo: string }) {
   const [panel, setPanel] = useState<Panel | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * Whether the app owns the mouse.
+   *
+   * The terminal gives the wheel to the app only if the app asks for it, and
+   * while it has it the terminal will not drag-select text — the press that
+   * starts a selection is the event the app asked for. So the app can hold the
+   * mouse or hand it back, not both at once; `startTui` asks for it on the way
+   * in, and Ctrl+T hands it over and takes it back.
+   */
+  const [mouseReporting, setMouseReporting] = useState(true);
   const [clarifySel, setClarifySel] = useState(0);
   const approvalResolver = useRef<((ok: boolean) => void) | null>(null);
 
@@ -1250,6 +1334,7 @@ function App({ repo }: { repo: string }) {
         return;
       }
       if (key.ctrl || key.meta) return;
+      // Mouse reports arrive as input; the filter is text, so it refuses them.
       if (input) {
         setFilter(filter + input);
         setPickIndex(0);
@@ -1476,7 +1561,14 @@ function App({ repo }: { repo: string }) {
    * same arithmetic the panes use, because an index that can walk past the
    * visible rows is a row you cannot see you are about to delete.
    */
-  const runsHeight = paneHeight(10);
+  const runsHeight = paneHeight(11);
+
+  // Only while the list is the screen: otherwise a wheel notch on a result
+  // would move a cursor nobody can see.
+  useWheelScroll(
+    (rows) => moveRuns(runsCursor.current + Math.sign(rows)),
+    phase === "runs",
+  );
 
   function moveRuns(next: number) {
     const index = Math.max(0, Math.min(runs.length - 1, next));
@@ -2058,11 +2150,11 @@ function App({ repo }: { repo: string }) {
         moveRuns(runsCursor.current + 1);
         return;
       }
-      if (key.pageDown) {
+      if (key.pageDown || input === "f") {
         moveRuns(runsCursor.current + runsHeight);
         return;
       }
-      if (key.pageUp) {
+      if (key.pageUp || input === "b") {
         moveRuns(runsCursor.current - runsHeight);
         return;
       }
@@ -2144,6 +2236,20 @@ function App({ repo }: { repo: string }) {
      <Static>: settled lines are written once and stay on screen, so a phase
      change rewrites the screen below the history instead of erasing it. */
   const logLabel = approval ? null : workingLabel(log, phase, effectiveMode);
+  /* The log as rows: `!` lines keep their colour, and every line is wrapped here
+     rather than by Ink — a wrapped log line would occupy two rows and shift
+     everything below it, which is exactly what the pointer mapping must not
+     have to guess about. */
+  const logRows = useMemo(
+    () =>
+      fitSpans(
+        log.map((line) =>
+          spans(line.startsWith("!") ? { text: line, color: THEME.warn } : { text: line }),
+        ),
+        wrapWidth(),
+      ),
+    [log],
+  );
 
   let content: ReactNode;
 
@@ -2213,6 +2319,7 @@ function App({ repo }: { repo: string }) {
           key={`panel:${panel.title}`}
           title={panel.title}
           lines={panel.lines}
+        notice={notice}
           footer={[
             { text: `gate ${index + 1} of ${items.length}`, color: THEME.accent },
             { text: " · Esc back to the question", dim: true },
@@ -2258,6 +2365,7 @@ function App({ repo }: { repo: string }) {
         key={`panel:${panel.title}`}
         title={panel.title}
         lines={panel.lines}
+        notice={notice}
         footer={[
           { text: "the result", color: THEME.accent },
           { text: " · Esc back", dim: true },
@@ -2387,13 +2495,49 @@ function App({ repo }: { repo: string }) {
 
   return (
     <Box flexDirection="column">
-      <Log log={log} label={logLabel} />
+      <Log lines={logRows} label={logLabel} />
       {content}
+      {/* Which mode the mouse is in, on every screen: the two modes do
+          different things with a drag, and a reader who cannot see which one
+          they are in has a mouse that seems to work at random. Truncated rather
+          than wrapped, so it is always exactly one row. */}
+      <Box>
+        {mouseReporting ? (
+          <Line
+            wrap="truncate"
+            spans={[
+              { text: "◌ mouse: the pane", dim: true },
+              { text: " — the wheel scrolls it · Ctrl+T for text selection", dim: true },
+            ]}
+          />
+        ) : (
+          <Line
+            wrap="truncate"
+            spans={[
+              { text: "◉ mouse: the terminal's", color: THEME.warn, bold: true },
+              { text: " — drag to select text, wheel scrolls back · Ctrl+T takes it back", dim: true },
+            ]}
+          />
+        )}
+      </Box>
     </Box>
   );
 }
 
 export async function startTui(opts: { repo: string }): Promise<void> {
-  const app = render(<App repo={opts.repo} />);
-  await app.waitUntilExit();
+  // Without this the wheel scrolls the terminal's scrollback instead of the
+  // pane, and there is no way to ask for it later: the terminal has to be told
+  // before it stops handling the wheel itself.
+  process.stdout.write(MOUSE_ON);
+  // Written unconditionally: taking reporting away from a terminal that already
+  // gave it up costs nothing, and this is the path that must not be missed.
+  const handBack = () => process.stdout.write(MOUSE_OFF);
+  process.once("exit", handBack);
+  try {
+    const app = render(<App repo={opts.repo} />);
+    await app.waitUntilExit();
+  } finally {
+    handBack();
+    process.removeListener("exit", handBack);
+  }
 }

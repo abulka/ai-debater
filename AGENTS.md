@@ -169,6 +169,12 @@ supersede rule.
 | d | Runs: delete the tagged runs, or the highlighted one when none are tagged |
 | D | Runs: delete every run listed, questions included — the confirmation states the split |
 | Ctrl+U | Start: clear the prompt |
+| ↑↓ · j/k | Scroll a line |
+| space · f | Page down (both do the same; `space` is what a reader tries first) |
+| b · u · Ctrl+D · Ctrl+U | Page up · half up · half down · half up |
+| g / G | Top / end of the pane |
+| wheel | Scrolls the pane (the app asks the terminal for mouse reports) |
+| Ctrl+T | Mouse: hand it to the terminal to select text, and take it back. The mode is on the bottom line of every screen |
 | ↑↓ · q | Scroll the result; `q` quits |
 
 The gate shows the review's state on every screen — counts, warnings, what was
@@ -262,6 +268,8 @@ src/
   markdown.ts       Markdown -> styled, pre-wrapped terminal lines. Styles only,
                     never removal; one line = one row. Tested.
   theme.ts          the palette, as roles; ANSI codes for the CLI. Tested.
+  mouse.ts          wheel reports: enable/disable, decode, and the "is this
+                    typed input or a report" test. Tested.
   clipboard.ts      copying the answer out: pbcopy/wl-copy, then OSC 52, then
                     the file path. Tested.
   models.ts         model list + family heuristic for the picker
@@ -403,6 +411,34 @@ spike/              M0
   "back" is not where you want to be. Note the corollary: Ctrl+R does nothing
   while the list is already open, because it opens the list rather than
   refreshing it; leave the list and come back to see a run created meanwhile.
+- **A Mac terminal keeps PageUp and PageDown for its own scrollback.** They
+  never reach the app, so `space`/`f`/`b`/`u` are the paging keys that work, with
+  `pageUp`/`pageDown` still handled for terminals that do send them.
+- **The mouse is the platform's boundary, not an Ink feature, and it has two
+  modes.** Ink 8 exports no mouse API: `useCursor` only *sets* the cursor (for
+  IMEs), and the only mouse-aware thing in Ink is that `App.js` refuses mouse
+  reports as printable input — which is why no field here has to guard its text,
+  and why a harness check pins that behaviour rather than a guard of our own.
+  What Ink *does* offer is the hand-off its `measureElement` docs describe, and
+  the defaults it does not change are the right ones: **the wheel is asked for**
+  (`1000h` + `1006h`, decoded in `src/mouse.ts`), and **motion is not** (`1002`),
+  because motion is what would take text selection away from the terminal.
+  - **The two modes are the point.** With the mouse reported, the wheel scrolls
+    the pane but the terminal will not drag-select; without it, drag-selection is
+    native and precise but the wheel scrolls the scrollback. `Ctrl+T` swaps them,
+    and the mode is printed on the bottom line of *every* screen (`◌ mouse: the
+    pane` / `◉ mouse: the terminal's`) — a mode you cannot see is a mouse that
+    works at random. That line is truncated, not wrapped, so it is always exactly
+    one row.
+  - An earlier version implemented drag-selection *in the app* (1002 + hit-testing
+    + copy on release). It was removed: it needed the app to know its own screen
+    origin — which is not row 1, because the shell's prompt is above it — and it
+    fought the wheel while dragging. The terminal does selection better than we
+    did. Do not rebuild it without solving the origin first.
+  - `startTui` turns reporting off again on the way out (`finally` plus
+    `process.once("exit")`), or the reader's shell is left sending reports. There
+    is no package to borrow: `ink-mouse` and `ink-mouse-events` do not exist, and
+    `ink-scroll-box` is a scroll container with no events.
 - **In a pane, one element must be one row.** The result and gate panes scroll
   by line offset (`clampOffset`/`maxOffset` in `gate-model.ts`), so if a line is
   wider than the pane, Ink wraps it, the count stops matching what is on screen,
