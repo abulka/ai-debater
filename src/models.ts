@@ -170,18 +170,23 @@ export interface ModelList {
  * cursor could walk past the end of what was drawn and leave a blank screen. The
  * list is already in memory and the window already scrolls, so there was nothing
  * to buy.
+ *
+ * `providerLock` narrows the pool before anything else — favourites, recents,
+ * filter and scores all apply inside it, so it composes with every other layer
+ * instead of replacing one.
  */
 export function orderedModels(
   all: string[],
   favourites: string[],
   recents: string[],
   filter = "",
-  opts: { hideUnscored?: boolean; scoreOf?: (ref: string) => ModelScore } = {},
+  opts: { hideUnscored?: boolean; scoreOf?: (ref: string) => ModelScore; providerLock?: string } = {},
 ): ModelList {
+  const pool = opts.providerLock ? all.filter((m) => providerOf(m) === opts.providerLock) : all;
   const grouped =
     opts.hideUnscored && opts.scoreOf
-      ? hideUnscoredRows(groupModels(all, favourites, recents), opts.scoreOf)
-      : groupModels(all, favourites, recents);
+      ? hideUnscoredRows(groupModels(pool, favourites, recents), opts.scoreOf)
+      : groupModels(pool, favourites, recents);
   const needle = filter.trim().toLowerCase();
 
   const rows: ModelRow[] = [];
@@ -250,6 +255,8 @@ export interface RankOptions {
   /** Output $/M ceiling for the value view. `prefs.ts` owns the default. */
   ceiling?: number;
   favourites?: string[];
+  /** Show only this provider. Composes with the filter, the ceiling and the views. */
+  providerLock?: string;
   scoreOf: (ref: string) => ModelScore;
   /** Output $/M, `undefined` when the catalogue is silent. Not "free": free is 0. */
   outputOf: (ref: string) => number | undefined;
@@ -308,10 +315,12 @@ export function rankModels(
     hideUnscored = false,
     ceiling = 0.8,
     favourites = [],
+    providerLock,
     scoreOf,
     outputOf,
   } = opts;
-  const visible = visibleRefs(refs, filter, hideUnscored, scoreOf);
+  const pool = providerLock ? refs.filter((ref) => providerOf(ref) === providerLock) : refs;
+  const visible = visibleRefs(pool, filter, hideUnscored, scoreOf);
   const inView =
     view === "value"
       ? visible.filter((ref) => {

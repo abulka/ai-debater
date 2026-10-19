@@ -9,6 +9,7 @@ import { advState, initRepo } from "./init.ts";
 import {
   answersToGate,
   buildItems,
+  clampIndex,
   clampOffset,
   decisionEntries,
   describeGateChange,
@@ -617,7 +618,7 @@ function Settings({
     { label: "subject", value: mode === "answer" ? "general question" : "this repository" },
     {
       label: "benchmarks",
-      value: aaKey ? "artificialanalysis.ai · key set" : "artificialanalysis.ai · no key — OpenRouter relay",
+      value: aaKey ? "artificialanalysis.ai · key set" : "artificialanalysis.ai · no key — OpenRouter benchmarks",
     },
     { label: "back", value: "" },
   ];
@@ -659,8 +660,8 @@ function Settings({
   );
 }
 
-/** Above this a sweep is refused by name rather than silently costing 100 calls. */
-const SWEEP_MAX = 40;
+/** Above this a ping-all is refused by name rather than silently costing 100 calls. */
+const PING_MAX = 40;
 
 /** Fixed badge columns, so every row's price and status line up. */
 const COST_W = 14;
@@ -708,6 +709,8 @@ function Pick({
   keyed,
   subject,
   notice,
+  providerLock,
+  aaKey,
 }: {
   role: "drafter" | "reviewer";
   list: ReturnType<typeof orderedModels>;
@@ -725,6 +728,10 @@ function Pick({
   keyed: Set<string>;
   subject: Mode;
   notice: string | null;
+  /** The provider the list is locked to, or null for every provider. */
+  providerLock: string | null;
+  /** Whether an Artificial Analysis key is stored — without one the scores are OpenRouter-only. */
+  aaKey: boolean;
 }) {
   const { rows, items, favourite } = list;
   const cursor = items[index]?.row ?? 0;
@@ -768,7 +775,7 @@ function Pick({
   const marked = items.length === 0;
   // Counted over the view's own items, so the number stays true when the
   // filter, the view, or H narrows what is on screen. Split by source when
-  // AA is in the merge, so a screen mixing two sources says so.
+  // Artificial Analysis is in the merge, so a screen mixing two sources says so.
   const split = countScoredBySource(
     items.map((i) => i.ref),
     catalogue,
@@ -858,25 +865,42 @@ function Pick({
         {rows.length === 0 && <Text dimColor>no match</Text>}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>
+        {/* Truncated, not wrapped: these lines are the content's chrome, counted
+            as one row each by the viewport budget, and a wrap would take a row
+            from the list. */}
+        <Text dimColor wrap="truncate">
           {marked
             ? "nothing to choose"
-            : `${items.length} model(s) · ${split.total} scored` +
-              `${split.aa > 0 ? ` (${split.aa} AA + ${split.openrouter} relay)` : ""}` +
+            : `${items.length} model(s) · ${index + 1} of ${items.length}` +
+              ` · ${split.total} scored` +
+              `${split.aa > 0 ? ` (${split.aa} Artificial Analysis + ${split.openrouter} OpenRouter)` : ""}` +
               ` · view: ${view}` +
+              `${providerLock ? ` · locked to: ${providerLock}` : ""}` +
               `${view === "value" ? ` ≤ $${ceiling.toFixed(2)}` : ""}` +
-              `${hideUnscored ? " · hiding unscored" : ""}`}
+              `${hideUnscored ? " · hiding unscored" : ""}` +
+              `${!aaKey ? " · OpenRouter scores only — key: settings → benchmarks" : ""}`}
+        </Text>
+      </Box>
+      {/* Two hint lines, not one: the picker answers to fourteen keys and one
+          line fits eight. Both truncate — the budget counts two rows. */}
+      <Box>
+        <Text dimColor wrap="truncate">
+          {`↑↓ choose · Enter select · ^F/^B page · ^D/^U half · Esc back`}
         </Text>
       </Box>
       <Box>
-        <Text dimColor>
-          {`↑↓ choose · Enter select · V view · H hide unscored · B refresh · ^F/^B page · Esc back` +
-            `${view === "value" ? " · < > ceiling" : ""}`}
+        <Text dimColor wrap="truncate">
+          {`V view · H hide unscored · L ${providerLock ? `unlock (locked to: ${providerLock})` : "lock to selected provider"} · B refresh benchmarks · A ping visible · P ping · T tools ping · ? providers` +
+            `${view === "value" ? " · < > value ceiling" : ""}`}
         </Text>
       </Box>
       {notice && (
         <Box marginTop={1}>
-          <Text color={THEME.warn}>{notice}</Text>
+          {/* One row, like the count and hints: the budget counts it as one, and
+              an armed ping-all names its models, which does not fit everywhere. */}
+          <Text color={THEME.warn} wrap="truncate">
+            {notice}
+          </Text>
         </Box>
       )}
     </Box>
@@ -936,6 +960,8 @@ function providerLines(
   const lines: StyledLine[] = [
     [{ text: "each provider, what it bills to, and whether a key is present.", dim: true }],
     [{ text: "counts are free / priced / unknown · n without tools cannot be a repo agent", dim: true }],
+    [{ text: "★ OpenCode favourite · ❯ cursor · ✓ reachable (T: reached for a tool) · ✗ failed", dim: true }],
+    [{ text: "P to test a model · T to test with a tool · A pings every model shown", dim: true }],
     [{ text: "" }],
   ];
 
@@ -984,7 +1010,7 @@ function providerLines(
     },
   ]);
   if (tested === 0) {
-    lines.push([{ text: "no model has been pinged yet — press P on one, or A to sweep", dim: true }]);
+    lines.push([{ text: "no model has been pinged yet — press P on one, or A to ping every model shown", dim: true }]);
   } else {
     lines.push([
       {
@@ -1162,7 +1188,19 @@ function Pairs({
 }
 
 /** The Artificial Analysis key prompt. Typing is handled by the app; this draws the field. */
-function AAKey({ value, busy, notice }: { value: string; busy: boolean; notice: string | null }) {
+function AAKey({
+  value,
+  busy,
+  notice,
+  hasKey,
+}: {
+  value: string;
+  busy: boolean;
+  notice: string | null;
+  /** Whether a key is already stored — the field always starts empty, so without
+     this the screen cannot say so. */
+  hasKey: boolean;
+}) {
   // Masked but confirmable: a paste you cannot check is a paste you redo.
   const shown = value
     ? `${"•".repeat(Math.max(0, value.length - 4))}${value.slice(-4)}`
@@ -1173,9 +1211,16 @@ function AAKey({ value, busy, notice }: { value: string; busy: boolean; notice: 
         <Header right="benchmarks key" />
       </Box>
       <Text dimColor>
-        an artificialanalysis.ai key, so the picker reads scores direct instead of the OpenRouter relay.
+        an artificialanalysis.ai key, so the picker reads scores direct instead of the OpenRouter benchmarks.
       </Text>
       <Text dimColor>one verification request, then only a few per weekly refresh — inside the free 100/day.</Text>
+      {/* Stored state in green, not dim: the field always opens empty, so this
+          line is the only thing that says a key is already here. */}
+      {hasKey ? (
+        <Text color={THEME.ok}>a key is already stored — saving replaces it.</Text>
+      ) : (
+        <Text dimColor>no key stored — scores come from OpenRouter until one is saved.</Text>
+      )}
       <Box marginTop={1}>
         <Text inverse>{` ${shown} `}</Text>
         {busy && <Text dimColor> verifying…</Text>}
@@ -1802,6 +1847,10 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [view, setView] = useState<PickerView>("provider");
   /** Drop models with no benchmark from every view. Off: they sort last. */
   const [hideUnscored, setHideUnscored] = useState(false);
+  /** The provider the picker is locked to, or null for every provider. `L`
+     locks the highlighted model's provider; the view, the filter and `H` all
+     still apply inside it. */
+  const [providerLock, setProviderLock] = useState<string | null>(null);
   /** Output $/M ceiling for the value view. Personal, in `prefs.ts`. */
   const [ceiling, setCeiling] = useState(DEFAULT_CEILING);
   /**
@@ -1824,8 +1873,9 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [authed, setAuthed] = useState<Map<string, "env" | "stored">>(new Map());
   /** Refs with a call in flight, so a row can say `…` instead of pretending. */
   const [pinging, setPinging] = useState<Set<string>>(new Set());
-  /** How many models a sweep is armed for, so the count survives a re-render. */
-  const [sweepArmed, setSweepArmed] = useState<number | null>(null);
+  /** The exact refs a ping-all is armed for, so `y` pings what `A` named — a
+     count alone would fire on a different list of the same length. */
+  const [pingArmed, setPingArmed] = useState<string[] | null>(null);
   /* Saved pairs, and the runs the recent-pair rows come from. The runs are a
      separate list from the past-runs screen's: that one is a snapshot with its
      own tags and scroll, and opening pairs must not disturb it. */
@@ -1836,7 +1886,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [pairName, setPairName] = useState("");
   const [pairAsk, setPairAsk] = useState<{ ask: "delete" | "overwrite"; pair: Pair } | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
-  /** An AA key is stored: the picker reads scores direct, the relay fills gaps. */
+  /** An Artificial Analysis key is stored: the picker reads scores direct, OpenRouter fills gaps. */
   const [aaKeySet, setAAKeySet] = useState(false);
   /** The key being typed. Masked on screen, never logged, verified before saving. */
   const [aaKeyInput, setAAKeyInput] = useState("");
@@ -2025,8 +2075,9 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   }
 
   /**
-   * Refresh the benchmark cache: the relay plus AA direct when a key is
-   * stored, then the rows re-render merged, AA first.
+   * Refresh the benchmark cache: OpenRouter plus Artificial Analysis direct
+   * when a key is stored, then the rows re-render merged, Artificial Analysis
+   * first.
    *
    * Silent when automatic (a stale cache on opening settings): the old scores
    * stay until the new ones land, and a failed fetch keeps them with nothing
@@ -2043,12 +2094,12 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       const total = r.aaCount + r.orCount;
       const scope =
         r.aaOk && r.orOk
-          ? `${total} scored (${r.aaCount} AA + ${r.orCount} relay)`
+          ? `${total} scored (${r.aaCount} Artificial Analysis + ${r.orCount} OpenRouter)`
           : r.aaOk
-            ? `${total} scored (AA only — relay unreachable)`
+            ? `${total} scored (Artificial Analysis only — OpenRouter unreachable)`
             : r.aaKey
-              ? `${total} scored (relay only — AA unreachable)`
-              : `${total} scored (relay only — no AA key)`;
+              ? `${total} scored (OpenRouter only — Artificial Analysis unreachable)`
+              : `${total} scored (OpenRouter only — no key stored)`;
       const parts = [
         scope,
         ...(r.indexVersion ? [`AA Intelligence Index v${r.indexVersion}`] : []),
@@ -2201,7 +2252,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           ? ` · quota ${v.quota.remaining}/${v.quota.limit ?? "?"}`
           : "";
       const version = v.version ? ` · AA Intelligence Index v${v.version}` : "";
-      setSaved(`benchmarks key saved · AA ${v.tier ?? "free"}${version}${quota}`);
+      setSaved(`benchmarks key saved · Artificial Analysis ${v.tier ?? "free"}${version}${quota}`);
       setPhase("settings");
       // A fresh key means fresh scores: the relay-only cache is now the fallback.
       void refreshBenchmarks(true);
@@ -2291,11 +2342,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         return;
       }
       if (key.upArrow || input === "k") {
-        setPairIndex((i) => Math.max(0, i - 1));
+        setPairIndex((i) => clampIndex(i - 1, pairScreen.length));
         return;
       }
       if (key.downArrow || input === "j") {
-        setPairIndex((i) => Math.min(Math.max(0, pairScreen.length - 1), i + 1));
+        setPairIndex((i) => clampIndex(i + 1, pairScreen.length));
         return;
       }
       const row = pairScreen[pairIndex];
@@ -2409,6 +2460,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     if (view === "provider") {
       return orderedModels(allModels, openCode.favourites, openCode.recents, filter, {
         ...(hideUnscored ? { hideUnscored: true as const, scoreOf } : {}),
+        ...(providerLock ? { providerLock } : {}),
       });
     }
     return rankModels(allModels, view, {
@@ -2416,10 +2468,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       hideUnscored,
       ceiling,
       favourites: openCode.favourites,
+      ...(providerLock ? { providerLock } : {}),
       scoreOf,
       outputOf,
     });
-  }, [allModels, openCode, filter, view, hideUnscored, ceiling, scoreOf, outputOf]);
+  }, [allModels, openCode, filter, view, hideUnscored, ceiling, scoreOf, outputOf, providerLock]);
 
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
@@ -2458,35 +2511,26 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   }
 
   /**
-   * `A` — ping the models a reader would actually pick.
+   * `A` — ping every model shown.
    *
-   * With a filter typed, that is every match. Without one, it is the set this
-   * whole feature exists for: OpenCode's favourites, its recents, and the two
-   * models currently configured. Around thirty models rather than 651, which is
-   * the difference between a sweep you run and one you do not.
+   * The list on screen, after the filter, the lock, the view and `H` — which is
+   * why narrowing is how a big catalogue gets pinged: filter to `gpt`, or lock
+   * to a provider, and `A` covers what is left. Refused above `PING_MAX` with
+   * the number named, because a bare list of 651 would spend a hundred calls
+   * on a gesture.
    *
-   * **Two presses, on purpose.** Up to `SWEEP_MAX` calls is real money, and a
-   * single keypress cannot tell a deliberate `A` from a slipped Shift — `P` and
-   * `A` are the only way to spend calls at all, so a mis-typed one is exactly
-   * what this feature promises it will not do. One call is cheap enough not to
-   * ask twice; forty is not.
-   *
-   * Refused above `SWEEP_MAX` with the number named, because a filter of `-`
-   * would otherwise spend a hundred calls on a gesture.
+   * Arming is explicit and cancelling is free: the first press names the spend
+   * — how many models, how many calls, which models — and only `y` spends it.
+   * `n`, `Esc` and every other key disarm without spending. There is no clock:
+   * an arm is a state on screen, and the notice says what it will do until it
+   * is cancelled or spent.
    */
-  async function sweep() {
-    const filtered = filter.trim().length > 0;
-    const all = filtered
-      ? modelRows.items.map((i) => i.ref)
-      : [...new Set([
-          ...openCode.favourites.filter((m) => modelRows.items.some((i) => i.ref === m)),
-          ...openCode.recents.filter((m) => modelRows.items.some((i) => i.ref === m)),
-          ...(cfg ? [cfg.models.drafter.ref, cfg.models.reviewer.ref] : []),
-        ])];
+  async function pingVisible() {
+    const all = modelRows.items.map((i) => i.ref);
     // Skip any provider with no credential, rather than keeping a list of the
     // ones that are slow or switched off. `opencode models` offers splash and
     // bionic because they are local endpoints, not because anything is listening
-    // — sweeping them costs a timeout each and teaches nothing. Derived from
+    // — pinging them costs a timeout each and teaches nothing. Derived from
     // `opencode auth list`, so there is nothing here to maintain.
     const reachable = all.filter((ref) => authed.has(providerOf(ref)));
     const skipped = all.length - reachable.length;
@@ -2494,24 +2538,40 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       setNotice(all.length === 0 ? "nothing to ping — the list is empty" : "nothing to ping — no provider here has a key");
       return;
     }
-    if (reachable.length > SWEEP_MAX) {
+    if (reachable.length > PING_MAX) {
       setNotice(
-        `${reachable.length} match "${filter}" — narrow it to ${SWEEP_MAX} or fewer, or A with no filter`,
+        `${reachable.length} shown — narrow to ${PING_MAX} or fewer with the filter, L, or a view, then A again`,
       );
       return;
     }
-    if (sweepArmed === reachable.length) {
-      setSweepArmed(null);
+    if (
+      pingArmed !== null &&
+      pingArmed.length === reachable.length &&
+      pingArmed.every((ref, i) => ref === reachable[i])
+    ) {
+      setPingArmed(null);
       setNotice(null);
       await runPing(reachable, "cheap");
       return;
     }
-    setSweepArmed(reachable.length);
+    setPingArmed(reachable);
+    // The notice is the warning prompt: what will run, what it costs, how to
+    // proceed, and what cancels. Names first, so a short list reads whole.
+    const names =
+      reachable.slice(0, 4).join(", ") + (reachable.length > 4 ? ` +${reachable.length - 4} more` : "");
+    const scope = [
+      filter.trim() ? `matching "${filter.trim()}"` : "",
+      providerLock ? `locked to ${providerLock}` : "",
+      view !== "provider" ? `${view} view` : "",
+      hideUnscored ? "hiding unscored" : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
     setNotice(
-      `${reachable.length} models — press A again to ping them all` +
-        `${filtered ? ` (matching "${filter}")` : " (favourites, recents, current pair)"}` +
+      `ping ${reachable.length} shown (${reachable.length} calls): ${names}` +
+        `${scope ? ` — ${scope}` : ""}` +
         `${skipped ? ` · ${skipped} skipped, no key for their provider` : ""}` +
-        `. Any other key cancels.`,
+        ` — press y to proceed, n or Esc to cancel`,
     );
   }
 
@@ -2526,18 +2586,24 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       const chosen = items[pickIndex]?.ref;
 
       if (key.escape) {
-        setSweepArmed(null);
+        // Armed first: Esc stands down the ping-all and stays, so `n`/`Esc`
+        // both mean no. Unarmed, Esc leaves for settings as before.
+        if (pingArmed !== null) {
+          setPingArmed(null);
+          setNotice(null);
+          return;
+        }
         setPhase("settings");
         return;
       }
       if (key.upArrow) {
-        setSweepArmed(null);
-        setPickIndex((i) => Math.max(0, i - 1));
+        setPingArmed(null);
+        setPickIndex((i) => clampIndex(i - 1, items.length));
         return;
       }
       if (key.downArrow) {
-        setSweepArmed(null);
-        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + 1));
+        setPingArmed(null);
+        setPickIndex((i) => clampIndex(i + 1, items.length));
         return;
       }
       if (key.return) {
@@ -2548,13 +2614,13 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           };
           void persist(next, mode).then(() => setSaved(`saved ${pickRole}: ${chosen}`));
         }
-        setSweepArmed(null);
+        setPingArmed(null);
         setPhase("settings");
         return;
       }
       // `?` before the text handling below: it is a key, not a character to filter.
       if (input === "?") {
-        setSweepArmed(null);
+        setPingArmed(null);
         setPhase("providers");
         return;
       }
@@ -2562,46 +2628,72 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // untypeable in the filter, and every one of the 651 refs is lowercase —
       // so the command keys take the case nothing needs.
       if (input === "P") {
-        setSweepArmed(null);
+        setPingArmed(null);
         if (chosen) void runPing([chosen], "cheap");
         return;
       }
       if (input === "T") {
-        setSweepArmed(null);
+        setPingArmed(null);
         if (chosen) void runPing([chosen], "full");
         return;
       }
       if (input === "A") {
-        void sweep();
+        void pingVisible();
         return;
       }
-      // `B` refreshes the benchmark cache: the relay plus AA direct when a
-      // key is stored, merged AA-first. Unlike `P`/`T`/`A` it asks nothing
-      // twice — a few requests against a weekly cache. Uppercase like the
-      // rest, so lowercase keeps typing into the filter.
+      // `y` proceeds with an armed ping-all, `n` stands it down — the explicit
+      // yes and no to the notice's warning. Checked before the filter text
+      // below: while armed, neither types. Anything else disarms (every branch
+      // above already does) and behaves normally.
+      if (input === "y" && pingArmed !== null) {
+        void pingVisible();
+        return;
+      }
+      if (input === "n" && pingArmed !== null) {
+        setPingArmed(null);
+        setNotice(null);
+        return;
+      }
+      // `B` refreshes the benchmark cache: OpenRouter plus Artificial Analysis
+      // direct when a key is stored, merged Artificial-Analysis-first. Unlike
+      // `P`/`T`/`A` it asks nothing twice — a few requests against a weekly
+      // cache. Uppercase like the rest, so lowercase keeps typing into the
+      // filter.
       if (input === "B") {
-        setSweepArmed(null);
+        setPingArmed(null);
         void refreshBenchmarks(false);
         return;
       }
       // `V` cycles the view, `H` hides the unscored. Uppercase like the rest;
       // the cursor resets because each view is a different list.
       if (input === "V") {
-        setSweepArmed(null);
+        setPingArmed(null);
         setView((v) => (v === "provider" ? "intelligence" : v === "intelligence" ? "value" : "provider"));
         setPickIndex(0);
         return;
       }
       if (input === "H") {
-        setSweepArmed(null);
+        setPingArmed(null);
         setHideUnscored((h) => !h);
+        setPickIndex(0);
+        return;
+      }
+      // `L` locks the list to the highlighted model's provider — pick an
+      // opencode-go model, lock, and the list is opencode-go. The view, the
+      // filter and `H` all still apply inside the lock, and so does the
+      // ping-all: `A` pings only what is shown. Press again to clear. Uppercase
+      // like the rest, so lowercase keeps typing into the filter; the cursor
+      // resets because a locked list is a different list.
+      if (input === "L") {
+        setPingArmed(null);
+        setProviderLock((lock) => (lock ? null : chosen ? providerOf(chosen) : null));
         setPickIndex(0);
         return;
       }
       // `<`/`>` move the value ceiling, in the value view only. No ref
       // contains either, so nothing is lost to the filter anywhere else.
       if ((input === "<" || input === ">") && view === "value") {
-        setSweepArmed(null);
+        setPingArmed(null);
         const next = roundCeiling(Math.max(0, ceiling + (input === ">" ? CEILING_STEP : -CEILING_STEP)));
         setCeiling(next);
         void saveCeiling(next);
@@ -2613,27 +2705,27 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // control combos here and letters there. The page is the visible list,
       // from the viewport budget — not a constant.
       if (key.ctrl && input === "f") {
-        setSweepArmed(null);
-        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + pickH));
+        setPingArmed(null);
+        setPickIndex((i) => clampIndex(i + pickH, items.length));
         return;
       }
       if (key.ctrl && input === "b") {
-        setSweepArmed(null);
-        setPickIndex((i) => Math.max(0, i - pickH));
+        setPingArmed(null);
+        setPickIndex((i) => clampIndex(i - pickH, items.length));
         return;
       }
       if (key.ctrl && input === "d") {
-        setSweepArmed(null);
-        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + Math.ceil(pickH / 2)));
+        setPingArmed(null);
+        setPickIndex((i) => clampIndex(i + Math.ceil(pickH / 2), items.length));
         return;
       }
       if (key.ctrl && input === "u") {
-        setSweepArmed(null);
-        setPickIndex((i) => Math.max(0, i - Math.ceil(pickH / 2)));
+        setPingArmed(null);
+        setPickIndex((i) => clampIndex(i - Math.ceil(pickH / 2), items.length));
         return;
       }
       if (key.backspace || key.delete) {
-        setSweepArmed(null);
+        setPingArmed(null);
         setNotice(null);
         setFilter(filter.slice(0, -1));
         setPickIndex(0);
@@ -2642,7 +2734,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (key.ctrl || key.meta) return;
       // Mouse reports arrive as input; the filter is text, so it refuses them.
       if (input) {
-        setSweepArmed(null);
+        setPingArmed(null);
         setNotice(null);
         setFilter(filter + input);
         setPickIndex(0);
@@ -2876,6 +2968,23 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   useWheelScroll(
     (rows) => moveRuns(runsCursor.current + Math.sign(rows)),
     phase === "runs",
+  );
+
+  // The picker and the pair list scroll under the wheel like every other pane:
+  // the status line promises it on all screens. The picker moves by rows (a
+  // notch is three, matching the scroller's step); the pair list moves one row
+  // a notch. Both disarm a ping-all, like every other cursor key does.
+  useWheelScroll(
+    (rows) => {
+      setPingArmed(null);
+      setPickIndex((i) => clampIndex(i + rows, modelRows.items.length));
+    },
+    phase === "pick",
+  );
+  useWheelScroll(
+    (rows) =>
+      setPairIndex((i) => clampIndex(i + Math.sign(rows), pairScreen.length)),
+    phase === "pairs",
   );
 
   function moveRuns(next: number) {
@@ -3606,7 +3715,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       />
     );
   } else if (phase === "aakey") {
-    content = <AAKey value={aaKeyInput} busy={aaKeyBusy} notice={notice} />;
+    content = <AAKey value={aaKeyInput} busy={aaKeyBusy} notice={notice} hasKey={aaKeySet} />;
   } else if (phase === "pick") {
     content = (
       <Pick
@@ -3625,6 +3734,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         keyed={new Set(authed.keys())}
         subject={mode}
         notice={notice}
+        providerLock={providerLock}
+        aaKey={aaKeySet}
       />
     );
   } else if (phase === "providers") {

@@ -225,6 +225,18 @@ describe("orderedModels", () => {
     );
     expect(kept.items).toHaveLength(2);
   });
+
+  test("providerLock narrows the pool before grouping, and composes with the filter", () => {
+    const pool = ["opencode-go/a", "opencode-go/b", "openrouter/c"];
+    const locked = orderedModels(pool, ["opencode-go/a"], [], "", { providerLock: "opencode-go" });
+    // Favourites still group first, but only from the locked provider.
+    expect(models(locked.rows)).toEqual(["opencode-go/a", "opencode-go/b"]);
+    // The filter applies inside the lock, not instead of it.
+    const filtered = orderedModels(pool, [], [], "b", { providerLock: "opencode-go" });
+    expect(models(filtered.rows)).toEqual(["opencode-go/b"]);
+    // An unknown provider is an empty list, not an error.
+    expect(orderedModels(pool, [], [], "", { providerLock: "nope" }).items).toHaveLength(0);
+  });
 });
 
 describe("providerRank", () => {
@@ -301,5 +313,30 @@ describe("rankModels", () => {
     expect(
       models(rankModels(["p/b-good", "p/a-good"], "intelligence", opts)),
     ).toEqual(["p/a-good", "p/b-good"]);
+  });
+
+  test("providerLock composes with the ceiling and the filter in the flat views", () => {
+    const locked = ["q/cheap-best", "q/cheap-good", "q/pricey-good", "p/cheap-good"];
+    const qOutput = (ref: string) => {
+      if (ref.includes("cheap")) return 0.5;
+      if (ref.includes("pricey")) return 5;
+      return undefined;
+    };
+    const qOpts = { ...opts, outputOf: qOutput };
+    expect(models(rankModels(locked, "intelligence", { ...qOpts, providerLock: "q" }))).toEqual([
+      "q/cheap-best",
+      "q/cheap-good",
+      "q/pricey-good",
+    ]);
+    // The ceiling still applies inside the lock: pricey is over 0.8.
+    expect(models(rankModels(locked, "value", { ...qOpts, providerLock: "q", ceiling: 0.8 }))).toEqual([
+      "q/cheap-best",
+      "q/cheap-good",
+    ]);
+    // So does the filter — and an unknown provider is an empty list.
+    expect(models(rankModels(locked, "intelligence", { ...qOpts, providerLock: "q", filter: "pricey" }))).toEqual([
+      "q/pricey-good",
+    ]);
+    expect(models(rankModels(locked, "intelligence", { ...qOpts, providerLock: "nope" }))).toEqual([]);
   });
 });

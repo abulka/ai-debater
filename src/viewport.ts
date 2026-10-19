@@ -74,10 +74,10 @@ export function scrollerHeight(contentH: number, notice: boolean): number {
 
 /**
  * Picker chrome: header (2) + filter (1) + list margin (1) + count (2) +
- * hints (1). The notice takes two rows (margin + line).
+ * hints (2). The notice takes two rows (margin + line).
  */
 export function pickListHeight(contentH: number, notice: boolean): number {
-  return Math.max(1, contentH - 7 - (notice ? 2 : 0));
+  return Math.max(1, contentH - 8 - (notice ? 2 : 0));
 }
 
 /**

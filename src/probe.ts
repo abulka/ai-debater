@@ -191,8 +191,8 @@ const AGENTS = { cheap: "adv-writer", full: "adv-drafter" } as const;
  * Ping one model and record the result.
  *
  * A run of the ping is a real model call and costs tokens. Nothing here fires
- * without a keypress: the TUI's `p`/`P`, `adv ping`, and the sweep's `P` on a
- * filtered list are the only callers.
+ * without a keypress: the TUI's `P`/`T`, `adv ping`, and the ping-all's `y` on
+ * an armed list are the only callers.
  */
 export async function pingModel(ref: string, opts: PingOptions): Promise<Verdict> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;

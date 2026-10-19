@@ -420,6 +420,16 @@ export const maxOffset = (total: number, height: number): number =>
 export const clampOffset = (offset: number, total: number, height: number): number =>
   Math.max(0, Math.min(offset, maxOffset(total, height)));
 
+/**
+ * Clamp a cursor, not a window: `0` to `length - 1`. The shape
+ * `Math.min(Math.max(0, length - 1), i + delta)` reads like a clamp but is
+ * not one — when the delta is negative the `min` keeps the negative, and a
+ * wheel scrolled upward once parked the picker at index -185 with the window
+ * still showing the top. Floor first, then ceiling.
+ */
+export const clampIndex = (index: number, length: number): number =>
+  Math.max(0, Math.min(index, length - 1));
+
 /* ------------------------------------------------------------------ *
  * Evidence. A reviewer can cite a path, so the gate should be able to
  * show it — but the path came from a model, and it must never be able to

@@ -10,6 +10,7 @@ import path from "node:path";
 import {
   answersToGate,
   buildItems,
+  clampIndex,
   clampOffset,
   decisionEntries,
   describeGateChange,
@@ -319,6 +320,16 @@ describe("scrolling", () => {
     expect(clampOffset(99, 10, 4)).toBe(6);
     expect(clampOffset(-5, 10, 4)).toBe(0);
     expect(clampOffset(2, 3, 10)).toBe(0);
+  });
+
+  test("a cursor clamps both ways — a negative wheel delta must not park it below zero", () => {
+    // The shape `min(max(0, length - 1), i + delta)` reads like a clamp but
+    // keeps negatives: a wheel scrolled upward once parked the picker at -185
+    // with the window still showing the top, and every key looked dead.
+    expect(clampIndex(99, 10)).toBe(9);
+    expect(clampIndex(-185, 174)).toBe(0);
+    expect(clampIndex(5, 10)).toBe(5);
+    expect(clampIndex(0, 0)).toBe(0);
   });
 });
 
