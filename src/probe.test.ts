@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ago, classify, failedProbes, isFresh, loadProbes, probeBadge, recordProbe, SHORT, tail, type VerdictKind } from "./probe.ts";
+import { ago, classify, failedProbes, isFresh, loadProbes, probeBadge, probeCoverage, recordProbe, SHORT, tail, type VerdictKind } from "./probe.ts";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -44,6 +44,17 @@ describe("classify", () => {
     expect(classify("model_coming_soon").kind).toBe("not-yet");
   });
 
+  test("the OpenCode free tier refusing a terminal is its own verdict, not a failure", () => {
+    // Observed live: works in the OpenCode app, refused by `opencode run`. The
+    // remedy is opposite to `blocked` — nothing about the model or the account
+    // is wrong, so it must not read as one.
+    const v = classify(
+      '{"type":"error","error":{"type":"provider.auth","message":"OpenCode\'s free tier can only be used from within OpenCode.","status":403,"response":{"body":"{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"FreeTierError\\"}}"}}}',
+    );
+    expect(v.kind).toBe("app-only");
+    expect(v.detail).toContain("OpenCode app");
+  });
+
   test("the contributor privacy opt-in is blocked, not failed", () => {
     expect(classify("This workspace requires a privacy opt-in; models train on request data").kind).toBe("blocked");
   });
@@ -64,9 +75,18 @@ describe("classify", () => {
     expect(classify("opencode run timed out after 30000ms").kind).toBe("timeout");
   });
 
-  test("a reply is ok, and carries the duration it was given", () => {
-    const v = classify("ok", 3200);
-    expect(v).toEqual({ kind: "ok", detail: "replied", ms: 3200 });
+  test("a completed call is ok, because the caller says it completed", () => {
+    expect(classify("anything at all", 3200)).toEqual({ kind: "ok", detail: "replied", ms: 3200 });
+  });
+
+  test("success is never guessed from the model's prose", () => {
+    // The first version sniffed for the literal word "ok". A full ping that
+    // really had read README.md and answered "# adv — adversarial two-model
+    // plan review" was reported as FAILED, quoting its own good output as the
+    // reason. Prose is not a status field.
+    const goodReply = `Here is what I found:\n\`\`\`json\n{"claims":[{"claim":"README.md exists and its first heading is '# adv'"}]}\n\`\`\``;
+    expect(classify(goodReply).kind).not.toBe("ok");
+    expect(classify(goodReply, 4200).kind).toBe("ok");
   });
 
   test("an unrecognised failure keeps its own words rather than losing them", () => {
@@ -85,12 +105,46 @@ describe("tail", () => {
     expect(tail("a\nb\nc\nd\ne\nf")).toBe("c d e f");
   });
 
-  test("truncates rather than overflowing a row", () => {
+  test("truncates from the FRONT, because the reason is at the end", () => {
+    // `opencode run --format json` is one long line: the error arrives last.
+    // Slicing from the front reported `opencode run exited 1 {"type":"step_start"…`
+    // for a model that had answered with a precise FreeTierError.
+    const stream = `{"type":"step_start","timestamp":1792374830778,"sessionID":"ses_eae22f"}  {"type":"error","error":{"message":"FreeTierError here"}}`;
+    const got = tail(stream, 60);
+    expect(got).toContain("FreeTierError here");
+    expect(got.startsWith("…")).toBe(true);
+  });
+
+  test("never overflows the width it was given", () => {
     expect(tail("x".repeat(500), 40).length).toBeLessThanOrEqual(40);
   });
 
   test("nothing at all says so", () => {
     expect(tail("   \n  ")).toBe("no output");
+  });
+});
+
+describe("coverage", () => {
+  const rec = (kind: VerdictKind) => ({
+    at: new Date().toISOString(),
+    verdict: { kind, detail: "" },
+  });
+
+  test("says how many were tested, so a short failure list is not read as complete", () => {
+    const cache = {
+      "a/ok": rec("ok"),
+      "b/ok": rec("ok"),
+      "c/no-credit": rec("no-credit"),
+      "d/app-only": rec("app-only"),
+      "e/slow": rec("throttled"),
+    };
+    // throttled is reachable, so only no-credit and app-only count. Five
+    // tested, two unusable.
+    expect(probeCoverage(cache)).toEqual({ tested: 5, failed: 2 });
+  });
+
+  test("an unpingged machine is zero tested, not zero failed", () => {
+    expect(probeCoverage({})).toEqual({ tested: 0, failed: 0 });
   });
 });
 

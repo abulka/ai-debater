@@ -181,12 +181,16 @@ export function orderedModels(
   }
 
   // The counts are on the header because a header that silently drops rows is
-  // how a list loses a fifth of itself without anyone noticing.
+  // how a list loses a fifth of itself without anyone noticing — and "six of
+  // twenty" needs saying out loud, because those six are OpenCode's own
+  // favourites and their absence from its picker is the reader's puzzle.
   if (grouped.favourites.length > 0) {
     rows.push({
       kind: "group",
-      label: `★ favourites (${grouped.favourites.length} of ${favourites.length})`,
-      ...(grouped.dropped.length ? { note: `${grouped.dropped.length} not available, ? for why` } : {}),
+      label: `★ favourites OpenCode marks (${grouped.favourites.length} of ${favourites.length} reachable)`,
+      ...(grouped.dropped.length
+        ? { note: `${grouped.dropped.length} not available — ? to see which` }
+        : {}),
     });
     grouped.favourites.forEach(push);
   }

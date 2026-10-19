@@ -148,7 +148,7 @@ supersede rule.
 | ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it. A pair that belongs to a run is not stored here and goes when the run does |
 | ↑↓ · Enter | Settings: on **drafter** or **reviewer**, open the model picker |
-| p · P | Picker: **ping** the highlighted model — `p` one word, `P` forces a tool call. The only keys in `adv` that spend a model call |
+| P · T | Picker: **ping** the highlighted model — `P` one word, `T` forces a tool call. The only keys in `adv` that spend a model call, and both uppercase so `p` still types into the filter |
 | A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30). **Press twice**, refused above 40 matches, and it says so |
 | ? | Picker: what each provider bills to, whether a key is present, and every failure a ping has found |
 | Tab | Switch subject: **this repository** or a **general question** |
@@ -211,18 +211,36 @@ The first-run screen appears when the directory has no `.adv/`. Choose
 | `opencode-go/mimo-v2.6-flash` | **dead** — `model_coming_soon` |
 | `opencode-go/muse-spark-1.3-contributor` | **blocked** — trains on request data; the workspace privacy opt-in is not in the desktop app |
 | `opencode/*` (incl. `big-pickle`, `muse-spark-1.3`) | **no credit** — separate account, `402` |
+| `opencode/big-pickle`, `opencode/space-bunny-free`, `opencode/mimo-v2.6-flash-free` | **app only** — they work in the OpenCode app; `FreeTierError` 403 refuses any terminal call. Not a fault, and not fixable from here |
 | `groq/groq/compound-mini`, `groq/groq/compound` | **listed but unusable** — `model_not_found`. Also `tool_call: false`, so the catalogue catches them for free |
 | `opencode-go/space-bunny-free` | **listed but unroutable** — `provider.no-route`. The Console one, `opencode/space-bunny-free`, is separate |
 | `opencode-go/*-free` (5 models) | free on the subscription; only `beam-free` and `longcat-2.5-preview-free` are in `opencode models` |
 
 The `opencode` provider is *not* the `opencode-go` subscription. Do not use it.
 
-**Two new failure shapes arrived with the ping**, and both mean the same thing as
-`model_not_found`: the listing offered it, the account cannot. OpenCode's own
-refusal is `provider.no-route` ("Model unavailable"), which never reaches a
-provider at all. `classify` folds it into `no-access` rather than leaving it as
-an unrecognised `failed`, because "listed, but this account cannot call it" is
-the answer and "failed" is not.
+**Three failure shapes arrived with the ping**, and only two of them are faults.
+
+- `provider.no-route` ("Model unavailable") is OpenCode refusing before the
+  provider is reached. Same answer as `model_not_found`, so `classify` folds it
+  into `no-access` rather than leaving it as an unrecognised `failed`.
+- `FreeTierError` 403 — "OpenCode's free tier can only be used from within
+  OpenCode" — is its own verdict, **`app-only`**, and it is not a fault at all.
+  Those models work in the OpenCode app; the human has used them there and says
+  so; they are simply unreachable from a terminal, which is the only way `adv`
+  can call anything. It is separate from `blocked` because the remedy is
+  opposite: nothing about the model or the account is wrong and no setting the
+  reader can reach will change it. Treating it as a fault is what made
+  `opencode/big-pickle` look broken for an afternoon.
+- A **tool-less reply to `T`** is `no-tools`, and it is decided from the event
+  stream rather than the words. A model that answers from memory without calling
+  `read` passes any prose check and then fails the first real run.
+
+**Success is never inferred from the model's prose.** The first `classify`
+sniffed for the literal word "ok", which is right for `Reply with exactly: ok`
+and wrong for everything else: a full ping that had genuinely read `README.md`
+and answered `# adv — adversarial two-model plan review` was reported **failed**,
+quoting its own good output as the reason. The caller decides success now, and
+`classify` only ever classifies failures.
 
 **Verify with `adv ping <model>`, not by reading the table.** The table is dated
 and these rows are observations. One call is a few seconds and settles it; the

@@ -55,6 +55,30 @@ answers and neither works:
 So there is no configuration to write and no plugin to write. `adv` carries its
 own availability check, which is the ping.
 
+## A second, separate limitation: the free tier is app-only
+
+Found 19 Oct 2026, and it is not a listing problem at all. `opencode/big-pickle`,
+`opencode/space-bunny-free` and `opencode/mimo-v2.6-flash-free` all work in the
+OpenCode app and all fail from a terminal:
+
+```json
+{"type":"error","error":{"type":"provider.auth","status":403,
+ "message":"OpenCode's free tier can only be used from within OpenCode.
+            Download it at https://opencode.ai and keep building.",
+ "response":{"body":"{...\"type\":\"FreeTierError\"...}"}}}
+```
+
+`adv` reaches models only through `opencode run`, which is a terminal call, so
+these are unreachable to it however healthy the model and the account are. That
+makes them a category of their own — **reachable by the reader, not by the
+tool** — and reporting them as a fault is misleading in both directions: it
+suggests something is broken, and it hides the fact that the model is fine and
+only the access path is closed.
+
+This is also the reason `classify` does not treat an unrecognised 403 as
+`blocked`. "Blocked by an account setting" is `muse-spark-1.3-contributor` —
+genuinely a setting, and genuinely fixable. A free-tier refusal is neither.
+
 ---
 
 ## Upstream issue draft

@@ -42,6 +42,7 @@ export type VerdictKind =
   | "no-credit"
   | "not-yet"
   | "blocked"
+  | "app-only"
   | "throttled"
   | "no-tools"
   | "timeout"
@@ -84,6 +85,20 @@ const RULES: { kind: VerdictKind; re: RegExp; detail: string }[] = [
     detail: "listed, but this account cannot call it",
   },
   {
+    kind: "app-only",
+    // The one failure that looks like success. These models work perfectly in
+    // the OpenCode app — the reader has used them there — and the free tier
+    // refuses them from a terminal, which is the only way `adv` can call
+    // anything. Observed on `opencode/mimo-v2.6-flash-free`,
+    // `opencode/big-pickle` and `opencode/space-bunny-free`.
+    //
+    // It is its own verdict rather than a flavour of `blocked` because the
+    // remedy is opposite: nothing is wrong with the model or the account, and
+    // nothing the reader does to their settings will change it.
+    re: /FreeTierError|free tier can only be used from within/i,
+    detail: "works in the OpenCode app, but its free tier refuses calls from a terminal, so adv cannot use it",
+  },
+  {
     kind: "blocked",
     re: /privacy|opt[- ]?in|train(s|ing)? on (your )?(request|prompt|data)|data (retention|training) policy/i,
     detail: "blocked by an account setting",
@@ -108,22 +123,41 @@ const RULES: { kind: VerdictKind; re: RegExp; detail: string }[] = [
 /**
  * Read a verdict out of whatever the call produced.
  *
+ * `ms` present means the call completed, which is success — so success is
+ * decided by the caller and never guessed from the reply. The first version
+ * sniffed for the literal word "ok" in the model's output, which is right for
+ * `Reply with exactly: ok` and wrong for everything else: a full ping that
+ * successfully read `README.md` and answered `# adv — adversarial two-model
+ * plan review` was reported as **failed**, with a useful-looking line of its own
+ * output quoted as the reason. A model's prose is not a status field.
+ *
  * `detail` is the raw tail, truncated, for the cases where the rules have
  * nothing to say — an unrecognised failure is still worth seeing verbatim.
  */
 export function classify(text: string, ms?: number): Verdict {
+  if (ms !== undefined) return { kind: "ok", detail: "replied", ms };
   for (const rule of RULES) {
     if (rule.re.test(text)) return { kind: rule.kind, detail: rule.detail };
   }
-  if (/\bok\b/i.test(text)) return { kind: "ok", detail: "replied", ...(ms !== undefined ? { ms } : {}) };
   return { kind: "failed", detail: tail(text) };
 }
 
-/** The last few lines of a failure, so `?` can show what actually happened. */
+/**
+ * The end of a failure, so `?` can show what actually happened.
+ *
+ * **Keeps the end, not the start.** `opencode run --format json` emits one very
+ * long line, so the first 240 characters are `{"type":"step_start","timestamp"…`
+ * and the reason the call failed — which arrives last, in a trailing `error`
+ * object — is not in the window at all. The first version sliced from the front
+ * and reported `opencode run exited 1 {"type":"step_start",…` for a model that
+ * had in fact answered with a precise `FreeTierError`. Truncation from the
+ * front of a tail is a way of losing the only sentence that mattered.
+ */
 export const tail = (text: string, max = 240): string => {
   const lines = text.trim().split("\n").filter((l) => l.trim().length);
   const last = lines.slice(-4).join(" ").trim();
-  return last.length > max ? `${last.slice(0, max - 1)}…` : last || "no output";
+  if (!last) return "no output";
+  return last.length > max ? `…${last.slice(last.length - max + 1)}` : last;
 };
 
 /* ------------------------------------------------------------------ */
@@ -180,11 +214,22 @@ export async function pingModel(ref: string, opts: PingOptions): Promise<Verdict
       cwd: opts.repo,
     });
     const ms = Date.now() - t0;
-    // A full ping that produced no answer is not a success just because it did
-    // not throw — the model may have run out of steps, or answered nothing.
-    verdict = call.text.trim()
-      ? classify(call.text, ms)
-      : { kind: "failed", detail: `no reply (${call.usage.steps} step(s))` };
+    // A full ping's question is not "did it reply" but "did it reach for a
+    // tool". A model that answers from memory without calling `read` would pass
+    // a prose check and then fail the first real run, which is the whole reason
+    // this depth exists — so the event stream, not the wording, decides.
+    const usedTool = call.events.some((e) => e.part?.type === "tool");
+    if (opts.kind === "full" && call.text.trim() && !usedTool) {
+      verdict = {
+        kind: "no-tools",
+        detail: "answered without reaching for a tool — it will not work as a drafter",
+      };
+    } else if (call.text.trim()) {
+      verdict = classify(call.text, ms);
+    } else {
+      // Ran, exited clean, said nothing.
+      verdict = { kind: "failed", detail: `no reply (${call.usage.steps} step(s))` };
+    }
   } catch (err) {
     verdict = classify(err instanceof Error ? err.message : String(err));
     if (verdict.kind === "ok") verdict = { kind: "failed", detail: tail(String(err)) };
@@ -293,15 +338,21 @@ export const SHORT: Record<VerdictKind, string> = {
   "no-credit": "no credit",
   "not-yet": "not yet",
   blocked: "blocked",
+  "app-only": "app only",
   throttled: "throttled",
   "no-tools": "no tools",
   timeout: "timeout",
   failed: "failed",
 };
 
-/** Whether a verdict means "this model will not work", as opposed to "ask again". */
-export const isUsable = (v: Verdict): boolean =>
-  v.kind === "ok" || v.kind === "throttled";
+/**
+ * Whether `adv` can actually use this model.
+ *
+ * `throttled` counts as usable: a rate limit is a bad moment, not a bad model.
+ * `app-only` does not, and that is the whole point of separating it — it works
+ * for the reader in the app, which is exactly the confusion it exists to name.
+ */
+export const isUsable = (v: Verdict): boolean => v.kind === "ok" || v.kind === "throttled";
 
 /**
  * The row badge, or `null` when there is nothing to say.
@@ -331,7 +382,23 @@ export function failedProbes(
   cache: ProbeCache,
 ): { ref: string; at: string; verdict: Verdict }[] {
   return Object.entries(cache)
-    .filter(([, rec]) => rec.verdict.kind !== "ok" && rec.verdict.kind !== "throttled")
+    .filter(([, rec]) => !isUsable(rec.verdict))
     .sort((a, b) => Date.parse(b[1].at) - Date.parse(a[1].at))
     .map(([ref, rec]) => ({ ref, at: rec.at, verdict: rec.verdict }));
+}
+
+/**
+ * What fraction of what has been tested has failed.
+ *
+ * Without this the provider pane's failure list reads as "these were the only
+ * failures", which is the reading that makes a five-line list look like a
+ * complete survey. It is not: it is five failures out of however many models
+ * have been pinged, and the untested ones are the large majority.
+ */
+export function probeCoverage(cache: ProbeCache): { tested: number; failed: number } {
+  const entries = Object.entries(cache);
+  return {
+    tested: entries.length,
+    failed: entries.filter(([, rec]) => !isUsable(rec.verdict)).length,
+  };
 }

@@ -146,13 +146,15 @@ describe("orderedModels", () => {
     const { rows, dropped } = orderedModels(all, ["gone/model", "opencode-go/glm-5.3-flash"], []);
     expect(dropped).toEqual(["gone/model"]);
     const header = rows[0];
-    expect(header).toMatchObject({ kind: "group", note: "1 not available, ? for why" });
-    expect((header as { label: string }).label).toBe("★ favourites (1 of 2)");
+    expect(header).toMatchObject({ kind: "group", note: "1 not available — ? to see which" });
+    expect((header as { label: string }).label).toBe(
+      "★ favourites OpenCode marks (1 of 2 reachable)",
+    );
   });
 
   test("a clean favourites group says so without a note", () => {
     const { rows } = orderedModels(all, ["opencode-go/glm-5.3-flash"], []);
-    expect(rows[0]).toMatchObject({ kind: "group", label: "★ favourites (1 of 1)" });
+    expect(rows[0]).toMatchObject({ kind: "group", label: "★ favourites OpenCode marks (1 of 1 reachable)" });
     expect("note" in (rows[0] as object)).toBe(false);
   });
 

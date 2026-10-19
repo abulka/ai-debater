@@ -22,11 +22,11 @@ import {
   type GateAnswer,
   type GateItem,
 } from "./gate-model.ts";
-import { familyClash, familyOf, listModels, orderedModels } from "./models.ts";
+import { familyClash, familyOf, listModels, orderedModels, providerOf } from "./models.ts";
 import { costOf, cannotUseTools, formatCost, loadCatalogue, type Catalogue } from "./catalogue.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
 import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES } from "./providers.ts";
-import { failedProbes, loadProbes, pingModel, probeBadge, type ProbeCache } from "./probe.ts";
+import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, type ProbeCache } from "./probe.ts";
 import { readOpenCodeModels } from "./opencode-state.ts";
 import {
   deletePair,
@@ -714,7 +714,7 @@ function Pick({
         <Text dimColor>
           {marked
             ? "nothing to choose"
-            : `${items.length} model(s) · p ping · P ping+tools · A sweep · ? providers`}
+            : `${items.length} model(s) · P ping · T ping+tools · A sweep · ? providers`}
         </Text>
       </Box>
       <Box>
@@ -799,18 +799,50 @@ function providerLines(
 
   if (dropped.length > 0) {
     lines.push([{ text: "" }]);
-    lines.push([{ text: `! ${dropped.length} favourite(s) OpenCode lists that this machine cannot:`, color: THEME.warn }]);
+    lines.push([
+      { text: `★ ${dropped.length} of your OpenCode favourites cannot be reached from here`, color: THEME.warn },
+    ]);
+    lines.push([
+      {
+        text: "  OpenCode still marks these as favourites, but `opencode models` no longer",
+        dim: true,
+      },
+    ]);
+    lines.push([
+      { text: "  lists them — no key, or the model is gone. Its own picker cannot offer", dim: true },
+    ]);
+    lines.push([{ text: "  them either, so they are left out of adv's picker too.", dim: true }]);
     for (const d of dropped) lines.push([{ text: `    ${d}`, dim: true }]);
-    lines.push([{ text: "    not offered in the picker, and listed here so they are not simply missing", dim: true }]);
+  }
+
+  const { tested, failed } = probeCoverage(probes);
+  lines.push([{ text: "" }]);
+  if (tested === 0) {
+    lines.push([{ text: "no model has been pinged yet — press P on one, or A to sweep", dim: true }]);
+  } else {
+    lines.push([
+      {
+        text: `pinged ${tested} model(s) so far · ${failed} unusable · ${tested - failed} usable`,
+        dim: true,
+      },
+    ]);
   }
 
   if (failures.length > 0) {
     lines.push([{ text: "" }]);
-    lines.push([{ text: `✗ ${failures.length} model(s) a ping found unusable:`, color: THEME.warn }]);
+    lines.push([
+      {
+        text: `✗ the ${failed} that failed, out of the ${tested} pinged so far`,
+        color: THEME.warn,
+      },
+    ]);
+    lines.push([
+      { text: "  this is only what has been tested — the rest of the catalogue is unknown,", dim: true },
+    ]);
+    lines.push([{ text: "  not known-good. A verdict goes stale: successes after a week, failures after a day.", dim: true }]);
     for (const f of failures) {
       lines.push(...wrapNote(`${f.ref} — ${f.verdict.detail}`, width).map((t) => [{ text: t, dim: true }] as StyledLine));
     }
-    lines.push([{ text: "    a verdict goes stale — successes after a week, failures after a day", dim: true }]);
   }
 
   return lines;
@@ -2022,30 +2054,42 @@ function App({ repo }: { repo: string }) {
    */
   async function sweep() {
     const filtered = filter.trim().length > 0;
-    const targets = filtered
+    const all = filtered
       ? modelRows.items.map((i) => i.ref)
       : [...new Set([
           ...openCode.favourites.filter((m) => modelRows.items.some((i) => i.ref === m)),
           ...openCode.recents.filter((m) => modelRows.items.some((i) => i.ref === m)),
           ...(cfg ? [cfg.models.drafter.ref, cfg.models.reviewer.ref] : []),
         ])];
-    if (targets.length === 0) {
-      setNotice("nothing to ping — the list is empty");
+    // Skip any provider with no credential, rather than keeping a list of the
+    // ones that are slow or switched off. `opencode models` offers splash and
+    // bionic because they are local endpoints, not because anything is listening
+    // — sweeping them costs a timeout each and teaches nothing. Derived from
+    // `opencode auth list`, so there is nothing here to maintain.
+    const reachable = all.filter((ref) => authed.has(providerOf(ref)));
+    const skipped = all.length - reachable.length;
+    if (reachable.length === 0) {
+      setNotice(all.length === 0 ? "nothing to ping — the list is empty" : "nothing to ping — no provider here has a key");
       return;
     }
-    if (targets.length > SWEEP_MAX) {
-      setNotice(`${targets.length} match "${filter}" — narrow it to ${SWEEP_MAX} or fewer, or A with no filter`);
+    if (reachable.length > SWEEP_MAX) {
+      setNotice(
+        `${reachable.length} match "${filter}" — narrow it to ${SWEEP_MAX} or fewer, or A with no filter`,
+      );
       return;
     }
-    if (sweepArmed === targets.length) {
+    if (sweepArmed === reachable.length) {
       setSweepArmed(null);
       setNotice(null);
-      await runPing(targets, "cheap");
+      await runPing(reachable, "cheap");
       return;
     }
-    setSweepArmed(targets.length);
+    setSweepArmed(reachable.length);
     setNotice(
-      `${targets.length} models — press A again to ping them all${filtered ? ` (matching "${filter}")` : " (favourites, recents, current pair)"}. Any other key cancels.`,
+      `${reachable.length} models — press A again to ping them all` +
+        `${filtered ? ` (matching "${filter}")` : " (favourites, recents, current pair)"}` +
+        `${skipped ? ` · ${skipped} skipped, no key for their provider` : ""}` +
+        `. Any other key cancels.`,
     );
   }
 
@@ -2092,12 +2136,15 @@ function App({ repo }: { repo: string }) {
         setPhase("providers");
         return;
       }
-      if (input === "p") {
+      // Uppercase only, deliberately. `p` as a ping key made the letter `p`
+      // untypeable in the filter, and every one of the 651 refs is lowercase —
+      // so the command keys take the case nothing needs.
+      if (input === "P") {
         setSweepArmed(null);
         if (chosen) void runPing([chosen], "cheap");
         return;
       }
-      if (input === "P") {
+      if (input === "T") {
         setSweepArmed(null);
         if (chosen) void runPing([chosen], "full");
         return;

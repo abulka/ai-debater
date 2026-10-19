@@ -104,7 +104,7 @@ Bare `adv` opens the interactive TUI for the current directory (`adv --dir
 | ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it |
 | ↑↓ · Enter | Settings: on **drafter** or **reviewer**, open the model picker |
-| p · P | Picker: **ping** the highlighted model — `p` is one word, `P` forces a tool call. A real model call; the badge is `✓ 3.5s` or `✗ no credit` |
+| P · T | Picker: **ping** the highlighted model — `P` is one word, `T` forces a tool call. A real model call; the badge is `✓ 3.5s` or `✗ no credit` |
 | A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30 models). Press twice; refused above 40 |
 | ? | Picker: what each provider bills to, whether a key is present, and every failure a ping found |
 | Tab | Switch subject: **this repository** or a **general question** |
@@ -158,11 +158,18 @@ a real call can answer:
 - **The picker shows what it knows.** Price (`free`, `$0.10/$0.50`, or `?` when
   upstream has none), and `✗` on models the catalogue records as unable to call
   tools — fatal for a repository drafter, harmless for a general question.
-- **`p` settles it.** One real call, classified into what actually happened: no
-  credit, no access, blocked, throttled, or fine. Results are cached for a week
-  (a day for failures, since credit can be added at any time) and always shown
-  with their age. `P` forces a tool call, which is the only thing that catches a
-  model that answers but cannot work as an agent.
+- **`P` settles it.** One real call, classified into what actually happened: no
+  credit, no access, blocked, throttled, app-only, or fine. Results are cached
+  for a week (a day for failures, since credit can be added at any time) and
+  always shown with their age. `T` forces a tool call, which is the only thing
+  that catches a model that answers but cannot work as an agent.
+
+One verdict is worth knowing about, because it looks like the opposite of a
+fault: **`✗ app only`**. OpenCode's free tier refuses calls that come from a
+terminal, so models like `opencode/big-pickle` and `opencode/space-bunny-free`
+work perfectly in the OpenCode app and cannot be used by `adv` at all. The model
+is fine and your account is fine; the ping is reporting that the tool cannot
+reach it.
 
 From the shell, `adv ping <model-or-pair>` does the same and exits non-zero if
 anything failed. **Nothing pings on its own** — no call is made without a
