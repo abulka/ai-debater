@@ -4,12 +4,12 @@
   "familyCheck": "warn",
   "models": {
     "drafter": {
-      "ref": "opencode-go/deepseek-v4.1-flash",
-      "family": "deepseek"
+      "ref": "opencode-go/muse-spark-1.3-contributor",
+      "family": "muse"
     },
     "reviewer": {
-      "ref": "openrouter/openai/gpt-6-luna",
-      "family": "openai"
+      "ref": "opencode-go/deepseek-v4.1-flash",
+      "family": "deepseek"
     }
   }
 }

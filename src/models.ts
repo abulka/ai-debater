@@ -32,6 +32,23 @@ export async function listModels(repo: string): Promise<string[]> {
 export const providerOf = (ref: string): string => ref.split("/")[0] ?? ref;
 
 /**
+ * Providers the reader subscribed to sort first, then the long tail.
+ *
+ * `opencode-go` is the subscription thirty models live behind;
+ * `openrouter` is the gateway with three hundred. Alphabetical would bury
+ * both under `302ai`. Anything unlisted sorts after, alphabetically.
+ */
+const PROVIDER_RANK = ["opencode-go", "openrouter", "deepseek"];
+
+export function providerRank(provider: string): number {
+  const at = PROVIDER_RANK.indexOf(provider);
+  return at < 0 ? PROVIDER_RANK.length : at;
+}
+
+const byProviderRank = (a: string, b: string): number =>
+  providerRank(a) - providerRank(b) || (a < b ? -1 : a > b ? 1 : 0);
+
+/**
  * A coarse family label, used only to name a model's family in the picker and
  * to label models in the settings screen.
  *
@@ -159,8 +176,12 @@ export function orderedModels(
   favourites: string[],
   recents: string[],
   filter = "",
+  opts: { hideUnscored?: boolean; scoreOf?: (ref: string) => ModelScore } = {},
 ): ModelList {
-  const grouped = groupModels(all, favourites, recents);
+  const grouped =
+    opts.hideUnscored && opts.scoreOf
+      ? hideUnscoredRows(groupModels(all, favourites, recents), opts.scoreOf)
+      : groupModels(all, favourites, recents);
   const needle = filter.trim().toLowerCase();
 
   const rows: ModelRow[] = [];
@@ -177,7 +198,7 @@ export function orderedModels(
       seen.add(ref);
       push(ref);
     }
-    return { rows, items, favourite: new Set(grouped.favourites), dropped: grouped.dropped };
+    return finish(grouped, rows, items);
   }
 
   // The counts are on the header because a header that silently drops rows is
@@ -206,11 +227,132 @@ export function orderedModels(
     if (bucket) bucket.push(ref);
     else byProvider.set(p, [ref]);
   }
-  for (const provider of [...byProvider.keys()].sort()) {
+  for (const provider of [...byProvider.keys()].sort(byProviderRank)) {
     const bucket = byProvider.get(provider)!;
     rows.push({ kind: "provider", provider, count: bucket.length });
     bucket.forEach(push);
   }
 
+  return finish(grouped, rows, items);
+}
+
+/**
+ * What a row needs to know about a score. `null` is unscored — never a 0.
+ * Structural on purpose: the picker adapts `scoresFor` to this, and this
+ * module stays ignorant of catalogues and caches.
+ */
+export type ModelScore = { intelligence?: number } | null;
+
+export interface RankOptions {
+  filter?: string;
+  /** Drop refs with no benchmark. Off by default: unscored rows sort last. */
+  hideUnscored?: boolean;
+  /** Output $/M ceiling for the value view. `prefs.ts` owns the default. */
+  ceiling?: number;
+  favourites?: string[];
+  scoreOf: (ref: string) => ModelScore;
+  /** Output $/M, `undefined` when the catalogue is silent. Not "free": free is 0. */
+  outputOf: (ref: string) => number | undefined;
+}
+
+const scoredOnly = (scoreOf: (ref: string) => ModelScore, refs: string[]): string[] =>
+  refs.filter((ref) => scoreOf(ref) !== null);
+
+/**
+ * Apply the text filter and the unscored toggle to a flat ref list.
+ *
+ * The filter is the same substring rule `orderedModels` uses, so typing in
+ * one view never means something different in another.
+ */
+function visibleRefs(
+  refs: string[],
+  filter: string,
+  hideUnscored: boolean,
+  scoreOf: (ref: string) => ModelScore,
+): string[] {
+  const needle = filter.trim().toLowerCase();
+  const matching = needle
+    ? refs.filter((ref) => ref.toLowerCase().includes(needle))
+    : [...refs];
+  return hideUnscored ? scoredOnly(scoreOf, matching) : matching;
+}
+
+const byIntelligenceDesc =
+  (scoreOf: (ref: string) => ModelScore) =>
+  (a: string, b: string): number =>
+    (scoreOf(b)?.intelligence ?? Number.NEGATIVE_INFINITY) -
+      (scoreOf(a)?.intelligence ?? Number.NEGATIVE_INFINITY) || (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * What the picker lists, and in what order. `provider` is the grouped list
+ * the picker has always shown; the flat views rank by benchmark instead.
+ */
+export type PickerView = "provider" | "intelligence" | "value";
+
+/**
+ * A flat, score-ordered list for the intelligence and value views.
+ *
+ * Scored rows come first, highest intelligence first; unscored rows follow
+ * alphabetically — findable, never ranked above a measured one. The value
+ * view keeps only models with a known output cost at or under the ceiling:
+ * an unknown cost cannot be called cheap. Ties break alphabetically, so the
+ * order is stable between refreshes.
+ */
+export function rankModels(
+  refs: string[],
+  view: "intelligence" | "value",
+  opts: RankOptions,
+): ModelList {
+  const {
+    filter = "",
+    hideUnscored = false,
+    ceiling = 0.8,
+    favourites = [],
+    scoreOf,
+    outputOf,
+  } = opts;
+  const visible = visibleRefs(refs, filter, hideUnscored, scoreOf);
+  const inView =
+    view === "value"
+      ? visible.filter((ref) => {
+          const out = outputOf(ref);
+          return out !== undefined && out <= ceiling;
+        })
+      : visible;
+  const scored = inView.filter((ref) => scoreOf(ref) !== null).sort(byIntelligenceDesc(scoreOf));
+  const unscored = hideUnscored
+    ? []
+    : inView.filter((ref) => scoreOf(ref) === null).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const ordered = [...scored, ...unscored];
+
+  const rows: ModelRow[] = [];
+  const items: { row: number; ref: string }[] = [];
+  for (const ref of ordered) {
+    items.push({ row: rows.length, ref });
+    rows.push({ kind: "model", ref });
+  }
+  const listed = new Set(refs);
+  return { rows, items, favourite: new Set(favourites.filter((f) => listed.has(f))), dropped: [] };
+}
+
+/** Hide refs without a benchmark from an already-built provider list. */
+function hideUnscoredRows(
+  grouped: { favourites: string[]; recents: string[]; rest: string[]; dropped: string[] },
+  scoreOf: (ref: string) => ModelScore,
+): { favourites: string[]; recents: string[]; rest: string[]; dropped: string[] } {
+  return {
+    favourites: scoredOnly(scoreOf, grouped.favourites),
+    recents: scoredOnly(scoreOf, grouped.recents),
+    rest: scoredOnly(scoreOf, grouped.rest),
+    dropped: grouped.dropped,
+  };
+}
+
+/** Shared tail: no row cap, first occurrence wins — see `orderedModels`. */
+function finish(
+  grouped: { favourites: string[]; recents: string[]; rest: string[]; dropped: string[] },
+  rows: ModelRow[],
+  items: { row: number; ref: string }[],
+): ModelList {
   return { rows, items, favourite: new Set(grouped.favourites), dropped: grouped.dropped };
 }

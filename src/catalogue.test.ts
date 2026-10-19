@@ -151,3 +151,21 @@ describe("tool calling", () => {
     expect(cannotUseTools(c, "groq/compound-mini", "answer")).toBe(false);
   });
 });
+
+describe("canonical model id", () => {
+  test("carried when present, absent when not, never a throw", () => {
+    const c = parseCatalogue(
+      JSON.stringify({
+        "opencode-go": {
+          id: "opencode-go",
+          models: {
+            "glm-5.3-flash": { canonical_model_id: "z-ai/glm-5.3-flash", cost: null },
+            "beam-free": { cost: { input: 0, output: 0 } },
+          },
+        },
+      }),
+    );
+    expect(c.get("opencode-go/glm-5.3-flash")?.canonicalModelId).toBe("z-ai/glm-5.3-flash");
+    expect(c.get("opencode-go/beam-free")?.canonicalModelId).toBeUndefined();
+  });
+});

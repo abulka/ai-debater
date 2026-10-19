@@ -22,8 +22,20 @@ import {
   type GateAnswer,
   type GateItem,
 } from "./gate-model.ts";
-import { familyClash, familyOf, listModels, orderedModels, providerOf } from "./models.ts";
+import { familyClash, familyOf, listModels, orderedModels, providerOf, rankModels } from "./models.ts";
+import type { PickerView } from "./models.ts";
 import { costOf, cannotUseTools, formatCost, loadCatalogue, type Catalogue } from "./catalogue.ts";
+import {
+  countScored,
+  emptyBenchmarks,
+  fetchBenchmarks,
+  formatResolved,
+  isStale,
+  loadScores,
+  scoresFor,
+  type Benchmarks,
+} from "./benchmarks.ts";
+import { CEILING_STEP, DEFAULT_CEILING, loadCeiling, roundCeiling, saveCeiling } from "./prefs.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
 import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES } from "./providers.ts";
 import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, probeHint, type ProbeCache } from "./probe.ts";
@@ -618,6 +630,15 @@ const SWEEP_MAX = 40;
 /** Fixed badge columns, so every row's price and status line up. */
 const COST_W = 14;
 const BADGE_W = 16;
+/**
+ * The benchmark column. 14 fits `I100 C100 A100` without truncating a digit;
+ * `formatBenchmarks` rounds so a typical row reads `I56 C78 A62`. Yields
+ * before the ref does, and vanishes entirely below ~70 columns.
+ */
+const BENCH_W = 14;
+
+/** Model rows on screen at once. The picker's paging keys move by this. */
+const PICK_HEIGHT = 12;
 
 /** Pads or trims to an exact column count, so a badge column stays aligned. */
 const pad = (s: string, n: number): string =>
@@ -646,6 +667,10 @@ function Pick({
   index,
   catalogue,
   probes,
+  benchmarks,
+  view,
+  hideUnscored,
+  ceiling,
   pinging,
   keyed,
   subject,
@@ -657,12 +682,15 @@ function Pick({
   index: number;
   catalogue: Catalogue;
   probes: ProbeCache;
+  benchmarks: Benchmarks;
+  view: PickerView;
+  hideUnscored: boolean;
+  ceiling: number;
   pinging: Set<string>;
   keyed: Set<string>;
   subject: Mode;
   notice: string | null;
 }) {
-  const height = 12;
   const { rows, items, favourite } = list;
   const cursor = items[index]?.row ?? 0;
   /**
@@ -687,18 +715,29 @@ function Pick({
   // The badge columns yield before the ref does. Holding them at 14 and 16 on a
   // 44-column terminal leaves nine characters of model name and a price you
   // cannot use — the ref is the thing being chosen, so it gets the floor.
+  // Benchmarks yield first of all: newest, least essential, and blank on two
+  // thirds of rows. Below ~70 columns the column is gone rather than the ref.
   let costW = COST_W;
   let badgeW = BADGE_W;
+  let benchW = BENCH_W;
   const spare = width - 4 - 24;
+  if (spare < costW + badgeW + benchW) benchW = 0;
   if (spare < costW + badgeW) {
     costW = Math.max(9, Math.floor(spare * 0.45));
     badgeW = Math.max(9, spare - costW);
   }
   // `- 5` leaves a spare column so a truncated ref never runs straight into the
   // price with no gap, which is what it looked like at 58 columns.
-  const refWidth = Math.max(8, width - 5 - costW - badgeW);
-  const start = Math.max(0, Math.min(cursor - 5, Math.max(0, rows.length - height)));
+  const refWidth = Math.max(8, width - 5 - costW - badgeW - benchW);
+  const start = Math.max(0, Math.min(cursor - 5, Math.max(0, rows.length - PICK_HEIGHT)));
   const marked = items.length === 0;
+  // Counted over the view's own items, so the number stays true when the
+  // filter, the view, or H narrows what is on screen.
+  const scored = countScored(
+    items.map((i) => i.ref),
+    catalogue,
+    benchmarks,
+  );
 
   return (
     <Box flexDirection="column">
@@ -711,7 +750,7 @@ function Pick({
         <Text inverse> </Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        {rows.slice(start, start + height).map((row, i) => {
+        {rows.slice(start, start + PICK_HEIGHT).map((row, i) => {
           const absolute = start + i;
 
           if (row.kind === "group") {
@@ -745,6 +784,10 @@ function Pick({
             ? "… pinging"
             : (probeBadge(probes, m)?.badge ?? probeHint(probes, m));
           const cost = dead ? "—" : formatCost(costOf(catalogue, m));
+          // Benchmarks are context, not a verdict: no colour encodes a score,
+          // and the `≈` marks a match that needed normalisation. Blank on most
+          // rows, which is why the column vanishes before the ref does.
+          const bench = benchW > 0 ? formatResolved(scoresFor(catalogue, benchmarks, m)) : "";
           const note = noteForModel(m);
           // Truncated, not wrapped: a row that spills is two rows, and the
           // window here counts lines. The full sentence is in `?`.
@@ -768,6 +811,11 @@ function Pick({
               <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead} wrap="truncate">
                 {pad(status, badgeW)}
               </Text>
+              {benchW > 0 && (
+                <Text color={accent} dimColor={!selected} wrap="truncate">
+                  {pad(bench, benchW)}
+                </Text>
+              )}
             </Box>
           );
         })}
@@ -777,11 +825,16 @@ function Pick({
         <Text dimColor>
           {marked
             ? "nothing to choose"
-            : `${items.length} model(s) · P replies? · T replies AND uses a tool? · A sweep · ? providers`}
+            : `${items.length} model(s) · ${scored} scored · view: ${view}` +
+              `${view === "value" ? ` ≤ $${ceiling.toFixed(2)}` : ""}` +
+              `${hideUnscored ? " · hiding unscored" : ""}`}
         </Text>
       </Box>
       <Box>
-        <Text dimColor>↑↓ choose · Enter select · Esc back</Text>
+        <Text dimColor>
+          {`↑↓ choose · Enter select · V view · H hide unscored · B refresh · ^F/^B page · Esc back` +
+            `${view === "value" ? " · < > ceiling" : ""}`}
+        </Text>
       </Box>
       {notice && (
         <Box marginTop={1}>
@@ -880,6 +933,18 @@ function providerLines(
 
   const { tested, failed } = probeCoverage(probes);
   lines.push([{ text: "" }]);
+  lines.push([
+    {
+      text: "I intelligence · C coding · A agentic — Artificial Analysis indices, relayed keyless via OpenRouter (attribution: artificialanalysis.ai).",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "≈ needed normalising to match and is the weaker claim. A date is the fetch, not the measurement.",
+      dim: true,
+    },
+  ]);
   if (tested === 0) {
     lines.push([{ text: "no model has been pinged yet — press P on one, or A to sweep", dim: true }]);
   } else {
@@ -1638,6 +1703,12 @@ function App({ repo }: { repo: string }) {
   const [filter, setFilter] = useState("");
   const [pickIndex, setPickIndex] = useState(0);
   const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
+  /** What the picker lists: grouped providers, or a flat score-ordered view. */
+  const [view, setView] = useState<PickerView>("provider");
+  /** Drop models with no benchmark from every view. Off: they sort last. */
+  const [hideUnscored, setHideUnscored] = useState(false);
+  /** Output $/M ceiling for the value view. Personal, in `prefs.ts`. */
+  const [ceiling, setCeiling] = useState(DEFAULT_CEILING);
   /**
    * What is knowable about a model without calling one, and what a call once
    * said. All three are read on demand when the picker opens: the catalogue is a
@@ -1647,6 +1718,14 @@ function App({ repo }: { repo: string }) {
    */
   const [catalogue, setCatalogue] = useState<Catalogue>(new Map());
   const [probes, setProbes] = useState<ProbeCache>({});
+  /**
+   * Benchmark scores, keyed by normalised OpenRouter id. Read when the picker
+   * opens, refreshed in the background past 7 days, on demand with `B`.
+   * Empty until the first fetch lands — rows render blank, never `?`.
+   */
+  const [benchmarks, setBenchmarks] = useState<Benchmarks>(emptyBenchmarks());
+  /** One fetch at a time: settings can be opened twice before it lands. */
+  const benchFetching = useRef(false);
   const [authed, setAuthed] = useState<Map<string, "env" | "stored">>(new Map());
   /** Refs with a call in flight, so a row can say `…` instead of pretending. */
   const [pinging, setPinging] = useState<Set<string>>(new Set());
@@ -1827,10 +1906,41 @@ function App({ repo }: { repo: string }) {
     // sessions, and a list frozen at launch is the wrong list by the afternoon.
     // It never throws, so this is not worth a try.
     void readOpenCodeModels().then(setOpenCode);
+    void loadCeiling().then(setCeiling);
     // The catalogue and our own probe record do not depend on the listing, so
     // they do not wait for it. Neither throws.
     void loadCatalogue().then((r) => setCatalogue(r.catalogue));
     void loadProbes().then(setProbes);
+    // Benchmarks likewise. A stale cache refreshes in the background once the
+    // stored scores are on screen — the fetch is keyless and free, so unlike
+    // a ping it needs no keypress, only a week-old cache.
+    void loadScores().then((r) => {
+      setBenchmarks(r.scores);
+      if (isStale(r.at)) void refreshBenchmarks(true);
+    });
+  }
+
+  /**
+   * Refresh the benchmark cache: one keyless GET, then the rows re-render.
+   *
+   * Silent when automatic (a stale cache on opening settings): the old scores
+   * stay until the new ones land, and a failed fetch keeps them with nothing
+   * said — offline is not an error worth a notice. Loud on `B`: the reader
+   * asked, so the reader hears the answer either way.
+   */
+  async function refreshBenchmarks(silent = false) {
+    if (benchFetching.current) return;
+    benchFetching.current = true;
+    try {
+      if (!silent) setNotice("refreshing benchmarks…");
+      const r = await fetchBenchmarks();
+      setBenchmarks(r.scores);
+      setNotice(`benchmarks updated · ${r.count} models scored · fetched ${r.at.slice(0, 10)}`);
+    } catch (err) {
+      if (!silent) setNotice(err instanceof Error ? err.message : String(err));
+    } finally {
+      benchFetching.current = false;
+    }
   }
 
   /** The rows on the pair screen, recomputed from what is loaded. */
@@ -2069,10 +2179,37 @@ function App({ repo }: { repo: string }) {
   }
 
   /** The model picker's rows: favourites first, then recents, then the rest. */
-  const modelRows = useMemo(
-    () => orderedModels(allModels, openCode.favourites, openCode.recents, filter),
-    [allModels, openCode, filter],
-  );
+  const scoreOf = useMemo(() => {
+    // Adapted once per catalogue or cache change, not once per row: the
+    // picker calls this hundreds of times a render.
+    return (ref: string): { intelligence?: number } | null => {
+      const r = scoresFor(catalogue, benchmarks, ref);
+      return r ? { intelligence: r.intelligence } : null;
+    };
+  }, [catalogue, benchmarks]);
+  const outputOf = useMemo(() => {
+    return (ref: string): number | undefined => {
+      const c = costOf(catalogue, ref);
+      // Free is a price (0), unknown is not a price at all: the value view
+      // cannot call an unknown cost cheap.
+      return c.kind === "priced" ? c.output : c.kind === "free" ? 0 : undefined;
+    };
+  }, [catalogue]);
+  const modelRows = useMemo(() => {
+    if (view === "provider") {
+      return orderedModels(allModels, openCode.favourites, openCode.recents, filter, {
+        ...(hideUnscored ? { hideUnscored: true as const, scoreOf } : {}),
+      });
+    }
+    return rankModels(allModels, view, {
+      filter,
+      hideUnscored,
+      ceiling,
+      favourites: openCode.favourites,
+      scoreOf,
+      outputOf,
+    });
+  }, [allModels, openCode, filter, view, hideUnscored, ceiling, scoreOf, outputOf]);
 
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
@@ -2226,6 +2363,61 @@ function App({ repo }: { repo: string }) {
       }
       if (input === "A") {
         void sweep();
+        return;
+      }
+      // `B` refreshes the benchmark cache: one keyless GET, free, so unlike
+      // `P`/`T`/`A` it asks nothing twice. Uppercase like the rest, so
+      // lowercase keeps typing into the filter.
+      if (input === "B") {
+        setSweepArmed(null);
+        void refreshBenchmarks(false);
+        return;
+      }
+      // `V` cycles the view, `H` hides the unscored. Uppercase like the rest;
+      // the cursor resets because each view is a different list.
+      if (input === "V") {
+        setSweepArmed(null);
+        setView((v) => (v === "provider" ? "intelligence" : v === "intelligence" ? "value" : "provider"));
+        setPickIndex(0);
+        return;
+      }
+      if (input === "H") {
+        setSweepArmed(null);
+        setHideUnscored((h) => !h);
+        setPickIndex(0);
+        return;
+      }
+      // `<`/`>` move the value ceiling, in the value view only. No ref
+      // contains either, so nothing is lost to the filter anywhere else.
+      if ((input === "<" || input === ">") && view === "value") {
+        setSweepArmed(null);
+        const next = roundCeiling(Math.max(0, ceiling + (input === ">" ? CEILING_STEP : -CEILING_STEP)));
+        setCeiling(next);
+        void saveCeiling(next);
+        return;
+      }
+      // Paging before the control swallow below: Ctrl+F/B move a page and
+      // Ctrl+D/U half a page, matching the results-view scroller exactly.
+      // Plain `f`/`b` stay typeable in the filter, which is why these are
+      // control combos here and letters there.
+      if (key.ctrl && input === "f") {
+        setSweepArmed(null);
+        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + PICK_HEIGHT));
+        return;
+      }
+      if (key.ctrl && input === "b") {
+        setSweepArmed(null);
+        setPickIndex((i) => Math.max(0, i - PICK_HEIGHT));
+        return;
+      }
+      if (key.ctrl && input === "d") {
+        setSweepArmed(null);
+        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + Math.ceil(PICK_HEIGHT / 2)));
+        return;
+      }
+      if (key.ctrl && input === "u") {
+        setSweepArmed(null);
+        setPickIndex((i) => Math.max(0, i - Math.ceil(PICK_HEIGHT / 2)));
         return;
       }
       if (key.backspace || key.delete) {
@@ -3172,6 +3364,10 @@ function App({ repo }: { repo: string }) {
         index={pickIndex}
         catalogue={catalogue}
         probes={probes}
+        benchmarks={benchmarks}
+        view={view}
+        hideUnscored={hideUnscored}
+        ceiling={ceiling}
         pinging={pinging}
         keyed={new Set(authed.keys())}
         subject={mode}

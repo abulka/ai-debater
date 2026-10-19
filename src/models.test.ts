@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { familyClash, familyOf, groupModels, orderedModels, providerOf, type ModelRow } from "./models.ts";
+import {
+  familyClash,
+  familyOf,
+  groupModels,
+  orderedModels,
+  providerOf,
+  providerRank,
+  rankModels,
+  type ModelRow,
+} from "./models.ts";
 
 const ref = (ref: string, family: string) => ({ ref, family });
 /** The refs out of `rows`, dropping the headers — what the reader actually sees. */
@@ -158,18 +167,18 @@ describe("orderedModels", () => {
     expect("note" in (rows[0] as object)).toBe(false);
   });
 
-  test("the rest is split by provider, because 390 openrouter bury 29 opencode-go", () => {
+  test("the rest is split by provider, subscribed providers first", () => {
     const { rows } = orderedModels(
       ["openrouter/z-ai/glm-5.3-flash", "opencode-go/glm-5.3-flash", "opencode/muse-spark-1.3"],
       [],
       [],
     );
     expect(rows.map((r) => (r.kind === "provider" ? r.provider : r.kind))).toEqual([
-      "opencode",
-      "model",
       "opencode-go",
       "model",
       "openrouter",
+      "model",
+      "opencode",
       "model",
     ]);
     // and each header carries its count
@@ -193,5 +202,104 @@ describe("orderedModels", () => {
     const { rows, items } = orderedModels(many, [], [], "model");
     expect(items).toHaveLength(800);
     expect(items.at(-1)?.ref).toBe("p/model-799");
+  });
+
+  test("hideUnscored drops unscored rows and empties their groups", () => {
+    const scoreOf = (ref: string) => (ref.includes("scored") ? { intelligence: 50 } : null);
+    const { rows, items } = orderedModels(
+      ["opencode-go/scored-a", "opencode-go/plain-b", "openrouter/scored-c"],
+      [],
+      [],
+      "",
+      { hideUnscored: true, scoreOf },
+    );
+    expect(items.map((i) => i.ref)).toEqual(["opencode-go/scored-a", "openrouter/scored-c"]);
+    expect(rows.every((r) => r.kind !== "group")).toBe(true);
+    // Without the toggle nothing is dropped.
+    const kept = orderedModels(
+      ["opencode-go/scored-a", "opencode-go/plain-b"],
+      [],
+      [],
+      "",
+      { hideUnscored: false, scoreOf },
+    );
+    expect(kept.items).toHaveLength(2);
+  });
+});
+
+describe("providerRank", () => {
+  test("opencode-go, openrouter, deepseek, then the long tail", () => {
+    expect(providerRank("opencode-go")).toBe(0);
+    expect(providerRank("openrouter")).toBe(1);
+    expect(providerRank("deepseek")).toBe(2);
+    expect(providerRank("anthropic")).toBeGreaterThan(providerRank("deepseek"));
+    expect(providerRank("groq")).toBe(providerRank("anthropic"));
+  });
+});
+
+describe("rankModels", () => {
+  const refs = ["p/cheap-good", "p/cheap-best", "p/cheap-plain", "p/pricey-good", "p/unknown-cost"];
+  const scoreOf = (ref: string) => {
+    if (ref.endsWith("good")) return { intelligence: 50 };
+    if (ref.endsWith("best")) return { intelligence: 70 };
+    return null;
+  };
+  const outputOf = (ref: string) => {
+    if (ref.startsWith("p/cheap")) return 0.5;
+    if (ref.startsWith("p/pricey")) return 5;
+    return undefined;
+  };
+  const opts = { scoreOf, outputOf, favourites: [] as string[] };
+  const models = (list: { items: { ref: string }[] }) => list.items.map((i) => i.ref);
+
+  test("intelligence view: highest first, unscored after, never above a measured one", () => {
+    expect(models(rankModels(refs, "intelligence", opts))).toEqual([
+      "p/cheap-best",
+      "p/cheap-good",
+      "p/pricey-good",
+      "p/cheap-plain",
+      "p/unknown-cost",
+    ]);
+  });
+
+  test("value view: at or under the ceiling, scored first, unknown cost excluded", () => {
+    expect(models(rankModels(refs, "value", { ...opts, ceiling: 0.8 }))).toEqual([
+      "p/cheap-best",
+      "p/cheap-good",
+      "p/cheap-plain",
+    ]);
+    // A higher ceiling admits the pricey model, ranked by its score.
+    expect(models(rankModels(refs, "value", { ...opts, ceiling: 5 }))).toEqual([
+      "p/cheap-best",
+      "p/cheap-good",
+      "p/pricey-good",
+      "p/cheap-plain",
+    ]);
+  });
+
+  test("hideUnscored drops the tail in both flat views", () => {
+    expect(models(rankModels(refs, "intelligence", { ...opts, hideUnscored: true }))).toEqual([
+      "p/cheap-best",
+      "p/cheap-good",
+      "p/pricey-good",
+    ]);
+    expect(models(rankModels(refs, "value", { ...opts, hideUnscored: true, ceiling: 0.8 }))).toEqual([
+      "p/cheap-best",
+      "p/cheap-good",
+    ]);
+  });
+
+  test("the text filter means the same as in the provider view", () => {
+    expect(models(rankModels(refs, "intelligence", { ...opts, filter: "cheap" }))).toEqual([
+      "p/cheap-best",
+      "p/cheap-good",
+      "p/cheap-plain",
+    ]);
+  });
+
+  test("ties break alphabetically, so the order is stable between refreshes", () => {
+    expect(
+      models(rankModels(["p/b-good", "p/a-good"], "intelligence", opts)),
+    ).toEqual(["p/a-good", "p/b-good"]);
   });
 });

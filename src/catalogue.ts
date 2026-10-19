@@ -50,6 +50,13 @@ export interface CatalogueEntry {
   family?: string;
   /** Whether the model can call tools. `undefined` when the catalogue is silent. */
   toolCall?: boolean;
+  /**
+   * The canonical `provider/model` id — the same weights under one name.
+   * What `benchmarks.ts` matches on: an `adv` ref names where a model is
+   * *served* (`opencode-go/glm-5.3-flash`), the canonical id names what it
+   * *is* (`z-ai/glm-5.3-flash`). Display-only otherwise; never a family.
+   */
+  canonicalModelId?: string;
   cost: Cost;
   /** Max input context, when the catalogue knows it. */
   context?: number;
@@ -133,11 +140,15 @@ export const parseCatalogue = (raw: string): Catalogue => {
         tool_call?: unknown;
         cost?: unknown;
         limit?: { context?: unknown };
+        canonical_model_id?: unknown;
       };
       const ref = `${provider}/${model}`;
       out.set(ref, {
         ...(typeof e.family === "string" && e.family.trim() ? { family: e.family.trim() } : {}),
         ...(typeof e.tool_call === "boolean" ? { toolCall: e.tool_call } : {}),
+        ...(typeof e.canonical_model_id === "string" && e.canonical_model_id.trim()
+          ? { canonicalModelId: e.canonical_model_id.trim() }
+          : {}),
         cost: cost(e.cost),
         ...(typeof e.limit?.context === "number" ? { context: e.limit.context } : {}),
       });

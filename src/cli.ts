@@ -12,6 +12,7 @@
  *   adv revise [<run>] [--rewrite]
  *   adv status [<run>]
  *   adv ping <model-or-pair>… [--full] [--timeout <ms>]
+ *   adv benchmarks [--refresh] [<ref>]
  *   adv rm <run> | --all | --older-than 30d [--yes]
  *
  *   ping makes one real model call per argument and says whether the model is
@@ -27,6 +28,15 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config.ts";
 import type { FamilyCheck } from "./config.ts";
+import { loadCatalogue } from "./catalogue.ts";
+import {
+  fetchBenchmarks,
+  isStale,
+  loadScores,
+  scoresFor,
+  type Benchmarks,
+} from "./benchmarks.ts";
+import { listModels } from "./models.ts";
 import { loadPairs } from "./pairs.ts";
 import { pingModel } from "./probe.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
@@ -61,7 +71,7 @@ import type { CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 import type { ApprovalRequest } from "./audit.ts";
 
-const BOOLEAN_FLAGS = new Set(["no-gate", "general", "plan", "rewrite", "help", "strict", "all", "yes"]);
+const BOOLEAN_FLAGS = new Set(["no-gate", "general", "plan", "rewrite", "help", "strict", "all", "yes", "refresh"]);
 
 function parse(args: string[]): { flags: Map<string, string | true>; positional: string[] } {
   const flags = new Map<string, string | true>();
@@ -678,6 +688,7 @@ function usage() {
   adv revise [<run>] [--rewrite] [--strict]
   adv status [<run>]
   adv ping <model-or-pair>… [--full] [--timeout <ms>]
+  adv benchmarks [--refresh] [<ref>]
   adv rm <run> | --all | --older-than 30d [--yes]
 
   rm removes run directories from the store. Nothing in a repository is touched:
@@ -749,6 +760,66 @@ async function cmdPing(flags: Map<string, string | true>, positional: string[]) 
   if (failed > 0) process.exit(1);
 }
 
+/**
+ * `adv benchmarks [--refresh] [<ref>]` — Artificial Analysis indices for the
+ * models `opencode models` lists, relayed keyless via OpenRouter.
+ *
+ * No model call, one GET at most, and only with `--refresh`: without it the
+ * command reads the cache the picker's `B` and auto-refresh keep. A ref
+ * prints its three indices and the OpenRouter id they came from, so a `≈`
+ * guess can be checked; without one, every listed model that resolves.
+ */
+async function cmdBenchmarks(flags: Map<string, string | true>, positional: string[]) {
+  const repo = repoOf(flags);
+  const ref = positional.find((p) => !p.startsWith("-"));
+
+  const { catalogue } = await loadCatalogue();
+  let scores: Benchmarks;
+  let at: string | null;
+  if (flags.has("refresh")) {
+    const fetched = await fetchBenchmarks();
+    scores = fetched.scores;
+    at = fetched.at;
+    console.log(`  fetched ${fetched.count} scored models`);
+  } else {
+    ({ scores, at } = await loadScores());
+  }
+  if (scores.byId.size === 0) {
+    console.log("  no benchmark cache — run `adv benchmarks --refresh` to fetch it");
+    return;
+  }
+
+  const age = at ? ` · fetched ${at.slice(0, 10)}${isStale(at) ? " (stale — --refresh)" : ""}` : "";
+  const num = (n: number | undefined) => (n === undefined ? "—" : String(Math.round(n * 10) / 10));
+
+  if (ref) {
+    const r = scoresFor(catalogue, scores, ref);
+    if (!r) {
+      console.log(`  no benchmark data for ${ref}${age}`);
+      return;
+    }
+    console.log(`  ${ref}`);
+    console.log(`    intelligence ${num(r.intelligence)} · coding ${num(r.coding)} · agentic ${num(r.agentic)}`);
+    console.log(`    via ${r.openrouterId}${r.normalised ? " (≈ normalised match)" : ""}${age}`);
+    console.log(`    Artificial Analysis indices, relayed by OpenRouter`);
+    return;
+  }
+
+  const listing = await listModels(repo).catch(() => [] as string[]);
+  const rows = listing
+    .map((m) => ({ ref: m, r: scoresFor(catalogue, scores, m) }))
+    .filter((row): row is { ref: string; r: NonNullable<ReturnType<typeof scoresFor>> } => row.r !== null)
+    .sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
+  console.log(`  ${rows.length} of ${listing.length} listed models scored${age}`);
+  for (const { ref: m, r } of rows) {
+    console.log(
+      `    ${m}  I${num(r.intelligence)} C${num(r.coding)} A${num(r.agentic)}` +
+        `${r.normalised ? " ≈" : ""}`,
+    );
+  }
+  console.log(`  Artificial Analysis indices, relayed by OpenRouter (attribution: artificialanalysis.ai)`);
+}
+
 /* ------------------------------------------------------------------ */
 
 const argv = process.argv.slice(2);
@@ -791,6 +862,9 @@ try {
       break;
     case "ping":
       await cmdPing(flags, positional);
+      break;
+    case "benchmarks":
+      await cmdBenchmarks(flags, positional);
       break;
     default:
       usage();
