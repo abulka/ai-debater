@@ -103,6 +103,10 @@ Bare `adv` opens the interactive TUI for the current directory (`adv --dir
 | Ctrl+P | Settings — pick a saved **pair**, a drafter, a reviewer, or the subject |
 | ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it |
+| ↑↓ · Enter | Settings: on **drafter** or **reviewer**, open the model picker |
+| p · P | Picker: **ping** the highlighted model — `p` is one word, `P` forces a tool call. A real model call; the badge is `✓ 3.5s` or `✗ no credit` |
+| A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30 models). Press twice; refused above 40 |
+| ? | Picker: what each provider bills to, whether a key is present, and every failure a ping found |
 | Tab | Switch subject: **this repository** or a **general question** |
 | Enter | Run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
@@ -138,6 +142,31 @@ runs used are offered from the run records themselves, so deleting a run
 withdraws its pair from that list. The model picker marks the models you have
 favourited in OpenCode with `★` and puts them first — `adv` reads OpenCode's
 favourites and never writes them.
+
+### Which models will actually work
+
+`opencode models` lists every model in the models.dev catalogue for any provider
+you hold a key for. It never asks the provider which of those the key can call,
+so it offers models that fail on first use — on this machine it listed four
+Groq models Groq answers `model_not_found` for, and hid four it can call.
+`docs/OPENCODE-MODELS.md` has the diff, the reproduction, and the two dead ends
+(config filtering and plugins, neither of which works).
+
+So `adv` treats that listing as candidates and adds two things the catalogue and
+a real call can answer:
+
+- **The picker shows what it knows.** Price (`free`, `$0.10/$0.50`, or `?` when
+  upstream has none), and `✗` on models the catalogue records as unable to call
+  tools — fatal for a repository drafter, harmless for a general question.
+- **`p` settles it.** One real call, classified into what actually happened: no
+  credit, no access, blocked, throttled, or fine. Results are cached for a week
+  (a day for failures, since credit can be added at any time) and always shown
+  with their age. `P` forces a tool call, which is the only thing that catches a
+  model that answers but cannot work as an agent.
+
+From the shell, `adv ping <model-or-pair>` does the same and exits non-zero if
+anything failed. **Nothing pings on its own** — no call is made without a
+keypress, and the multi-model sweep asks twice before spending forty calls.
 
 ## How it works
 

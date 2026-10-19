@@ -20,11 +20,13 @@ export const advDir = (repo: string) => path.join(repo, ".adv");
  * "one rule for both modes" — which cost a question its identity (its directory
  * named a repository it never read) and hid it from every other directory.
  */
-export const runsRoot = (): string => {
+export const advDataRoot = (): string => {
   const xdg = process.env["XDG_DATA_HOME"];
   const data = xdg && xdg.trim() ? xdg : path.join(os.homedir(), ".local", "share");
-  return path.join(data, "adv", "runs");
+  return path.join(data, "adv");
 };
+
+export const runsRoot = (): string => path.join(advDataRoot(), "runs");
 
 /**
  * One directory per repository: a readable name plus a short hash of the

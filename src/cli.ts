@@ -11,17 +11,24 @@
  *   adv decide [<run>]
  *   adv revise [<run>] [--rewrite]
  *   adv status [<run>]
-  adv rm <run> | --all | --older-than 30d [--yes]
-
-  rm removes run directories from the store. Nothing in a repository is touched:
-  not the source, not .adv/. Decisions already written to .adv/decisions.md stay.
-  Without a terminal it refuses unless --yes is passed.
+ *   adv ping <model-or-pair>… [--full] [--timeout <ms>]
+ *   adv rm <run> | --all | --older-than 30d [--yes]
+ *
+ *   ping makes one real model call per argument and says whether the model is
+ *   reachable on this account today. The only thing in adv that costs a call,
+ *   and it never runs unless asked. See docs/OPENCODE-MODELS.md.
+ *
+ *   rm removes run directories from the store. Nothing in a repository is touched:
+ *   not the source, not .adv/. Decisions already written to .adv/decisions.md stay.
+ *   Without a terminal it refuses unless --yes is passed.
  */
 
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config.ts";
 import type { FamilyCheck } from "./config.ts";
+import { loadPairs } from "./pairs.ts";
+import { pingModel } from "./probe.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
 import type { Audit, AuditRecord } from "./contracts.ts";
 import { collectGate } from "./gate.ts";
@@ -670,6 +677,7 @@ function usage() {
   adv decide [<run>]
   adv revise [<run>] [--rewrite] [--strict]
   adv status [<run>]
+  adv ping <model-or-pair>… [--full] [--timeout <ms>]
   adv rm <run> | --all | --older-than 30d [--yes]
 
   rm removes run directories from the store. Nothing in a repository is touched:
@@ -684,6 +692,61 @@ function usage() {
 
   revise re-asks the gate with your recorded answers (Enter keeps one) and re-runs
   only the rewrite: the draft and the review are never repeated.`);
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * `adv ping <model-or-pair>…` — is this reachable, on this account, today?
+ *
+ * The one check in `adv` that costs a model call, so it is never implicit:
+ * nothing runs it unless this command or a keypress asks. `docs/OPENCODE-MODELS.md`
+ * is why it exists — `opencode models` is a catalogue, and it offers models the
+ * provider will refuse.
+ *
+ * An argument is a saved pair's name when one matches, and a ref otherwise, so
+ * `adv ping trial` checks the pair and `adv ping groq/groq/compound-mini`
+ * checks the model. Results are written to the probe cache, so the TUI shows
+ * them afterwards; the exit code is non-zero if anything failed, so a script
+ * can gate on it.
+ */
+async function cmdPing(flags: Map<string, string | true>, positional: string[]) {
+  const repo = repoOf(flags);
+  const wanted = positional.filter((p) => !p.startsWith("-"));
+  if (wanted.length === 0) throw new Error("usage: adv ping <model-or-pair>… [--full] [--timeout <ms>]");
+
+  const timeoutRaw = flags.get("timeout");
+  const timeoutMs = typeof timeoutRaw === "string" ? Number(timeoutRaw) : undefined;
+  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+    throw new Error(`--timeout wants milliseconds, got "${String(timeoutRaw)}"`);
+  }
+  const kind = flags.has("full") ? "full" : "cheap";
+
+  // A name wins over a ref, because a pair is what a reader is asking about
+  // and a ref is what they would type if they had no pair.
+  const pairs = await loadPairs();
+  const refs: string[] = [];
+  for (const arg of wanted) {
+    const pair = pairs.find((p) => p.name === arg);
+    if (pair) refs.push(pair.drafter.ref, pair.reviewer.ref);
+    else refs.push(arg);
+  }
+
+  console.log(
+    `  ping (${kind}${kind === "full" ? ": adv-drafter, one tool call" : ": adv-writer, one word"})` +
+      `${timeoutMs ? `, ${Math.round(timeoutMs / 1000)}s cap` : ", 30s cap"}`,
+  );
+
+  let failed = 0;
+  for (const ref of refs) {
+    process.stdout.write(`  ${ref} … `);
+    const verdict = await pingModel(ref, { repo, kind, ...(timeoutMs ? { timeoutMs } : {}) });
+    const ok = verdict.kind === "ok";
+    const ms = verdict.ms ? ` ${(verdict.ms / 1000).toFixed(1)}s` : "";
+    if (!ok) failed += 1;
+    console.log(`${ok ? "ok" : `FAILED — ${verdict.detail}`}${ms}`);
+  }
+  if (failed > 0) process.exit(1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -725,6 +788,9 @@ try {
       break;
     case "status":
       await cmdStatus(flags, positional);
+      break;
+    case "ping":
+      await cmdPing(flags, positional);
       break;
     default:
       usage();

@@ -67,6 +67,8 @@ replacement for tests. The models never resolve judgment calls.
 | M3 real trial | **done 17 Oct** — spec in `docs/M2-PLAN.md` |
 | M2 evidence execution | **done 17–18 Oct** — both slices: contract, matcher, executor, approval split, merged view (`src/audit.ts`). Parked: `adv audit <run>`, MCP disable |
 | M4 revise | **done 18 Oct** — `adv revise [<run>] [--rewrite]`; spec in `docs/REVISE.md` |
+| Model pairs + favourites | **done 18 Oct** — named pairs, OpenCode's favourites inherited read-only |
+| Model ping | **done 18 Oct** — `p`/`P`/`A` in the picker, `adv ping` on the CLI, price and tool-calling badges, the provider pane. Findings in `docs/OPENCODE-MODELS.md` |
 | TUI revise door | **done 18 Oct** — the same revise, reachable from the TUI: `r` on the result screen, past-runs picker on the start screen (Ctrl+R) |
 
 Typecheck must stay clean: `bun run typecheck`. Tests must stay green:
@@ -93,6 +95,7 @@ adv decide [<run>]
 adv run --resume [<run>]
 adv revise [<run>] [--rewrite] # re-ask the gate (prefilled), re-run only the tail
 adv status [<run>]
+adv ping <model-or-pair>… [--full] [--timeout <ms>]
 
 # spike
 bun run spike/m0.ts endpoints permissions artifacts   # cheap, no model calls for endpoints
@@ -144,6 +147,10 @@ supersede rule.
 | Ctrl+P | Settings — pick a saved **pair**, a drafter, a reviewer, or the subject |
 | ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it. A pair that belongs to a run is not stored here and goes when the run does |
+| ↑↓ · Enter | Settings: on **drafter** or **reviewer**, open the model picker |
+| p · P | Picker: **ping** the highlighted model — `p` one word, `P` forces a tool call. The only keys in `adv` that spend a model call |
+| A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30). **Press twice**, refused above 40 matches, and it says so |
+| ? | Picker: what each provider bills to, whether a key is present, and every failure a ping has found |
 | Tab | Switch subject: **this repository** or a **general question** |
 | Enter | Run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
@@ -204,8 +211,22 @@ The first-run screen appears when the directory has no `.adv/`. Choose
 | `opencode-go/mimo-v2.6-flash` | **dead** — `model_coming_soon` |
 | `opencode-go/muse-spark-1.3-contributor` | **blocked** — trains on request data; the workspace privacy opt-in is not in the desktop app |
 | `opencode/*` (incl. `big-pickle`, `muse-spark-1.3`) | **no credit** — separate account, `402` |
+| `groq/groq/compound-mini`, `groq/groq/compound` | **listed but unusable** — `model_not_found`. Also `tool_call: false`, so the catalogue catches them for free |
+| `opencode-go/space-bunny-free` | **listed but unroutable** — `provider.no-route`. The Console one, `opencode/space-bunny-free`, is separate |
+| `opencode-go/*-free` (5 models) | free on the subscription; only `beam-free` and `longcat-2.5-preview-free` are in `opencode models` |
 
 The `opencode` provider is *not* the `opencode-go` subscription. Do not use it.
+
+**Two new failure shapes arrived with the ping**, and both mean the same thing as
+`model_not_found`: the listing offered it, the account cannot. OpenCode's own
+refusal is `provider.no-route` ("Model unavailable"), which never reaches a
+provider at all. `classify` folds it into `no-access` rather than leaving it as
+an unrecognised `failed`, because "listed, but this account cannot call it" is
+the answer and "failed" is not.
+
+**Verify with `adv ping <model>`, not by reading the table.** The table is dated
+and these rows are observations. One call is a few seconds and settles it; the
+table costs nothing and might be wrong.
 
 The trial pair is anthropic + openai **families** on two different providers: the
 direct OpenAI account has no credit, so the reviewer goes through the gateway.
@@ -296,6 +317,12 @@ src/
   clipboard.ts      copying the answer out: pbcopy/wl-copy, then OSC 52, then
                     the file path. Tested.
   models.ts         model list, picker ordering, family heuristic for the picker
+  catalogue.ts      models.dev's models.json: price, tool-calling, real family.
+                    Read-only, never written. Tested.
+  probe.ts          the ping: one real model call, classified, cached with a TTL.
+                    The only thing in adv that spends a call. Tested.
+  providers.ts      what a provider bills to, from `opencode auth list` and the
+                    catalogue, plus the dated account notes. Tested.
   pairs.ts          named model pairs: the file, the order, and the rows the
                     pair screen draws. Tested.
   opencode-state.ts OpenCode's model.json, read for its favourites and never
@@ -333,6 +360,43 @@ spike/              M0
 - **`family` is a statement; `familyOf()` is a guess.** The diversity check
   compares the explicit `family` fields. `familyOf` only labels models in the
   picker. Do not use it to decide whether a pair is diverse.
+- **`opencode models` is a catalogue, not an availability check.** It lists every
+  models.dev model for any provider holding a credential and never asks the
+  provider which of those the key can call. On this machine it offered four Groq
+  models Groq answers `model_not_found` for and hid four it can call —
+  `docs/OPENCODE-MODELS.md` has the diff and the reproduction. So the listing is
+  **candidates**, and three layers sit above it: not-listed (no credential, free),
+  the models.dev `tool_call: false` flag (cannot be a repository agent, free), and
+  the ping (a real call, and the only trustworthy one). Do not let anything above
+  the ping claim a model works.
+- **Absent metadata is `?`, never `free`.** 77 of the 651 listed models have no
+  cost upstream — including `opencode-go/beam-free`, whose catalogue entry is
+  literally `null`. Rendering an unknown cost as "free" bills real money at 3am,
+  so `costOf` has a third state and every renderer must keep it.
+- **`model.json` and `models.json` are one character apart and read differently.**
+  OpenCode's favourites state is `~/.local/state/opencode/model.json`; the
+  catalogue is `~/.cache/opencode/models.json`. Reading the wrong one does not
+  fail — the state file parses as JSON, every lookup misses, and every row renders
+  `?` with nothing reporting an error. `parseCatalogue` rejects the state file's
+  shape by name and that rejection is a test. `openCodeStateDirs()` also lists
+  `~/.cache/opencode` as a candidate for the singular file, which is how the two
+  get confused in the first place.
+- **The models.dev `family` is finer-grained than ours and must not replace it.**
+  It says `claude-haiku`, `gpt-luna`, `deepseek-flash` where `familyOf` says
+  `claude`, `gpt`, `deepseek`. Substituting it would make `familyClash` *miss* a
+  `deepseek` drafter against a `deepseek-flash` reviewer under
+  `familyCheck: "require"` — measuring "an extra pass" while claiming
+  cross-family review. The catalogue family is display-only; the comparison is
+  made prefix-tolerant instead. Do not "fix" this by trusting the catalogue.
+- **A ping is a real model call and nothing fires one on its own.** `p`, `P`, `A`
+  and `adv ping` are the only callers. There is deliberately no background sweep
+  on launch: an earlier draft proposed one and it was dropped, because a tool
+  that spends calls the reader did not ask for is a different tool. `A` needs two
+  presses and is refused above 40 targets by name, because a single keypress
+  cannot tell a deliberate `A` from a slipped Shift and forty calls is real money.
+  `p` and `P` cost one call each and say so in the footer, which is why they do
+  not ask twice. The cost is that `p`, `P`, `A` and `?` cannot be typed into the
+  filter — acceptable because every ref is lowercase.
 - **A failure writes `state: "failed"` plus the error.** A run left at
   `created` means the process died before it could record anything — that is
   different from a run parked at the gate, and used to be indistinguishable.

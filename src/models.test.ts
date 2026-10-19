@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { familyClash, familyOf, groupModels, orderedModels } from "./models.ts";
+import { familyClash, familyOf, groupModels, orderedModels, providerOf, type ModelRow } from "./models.ts";
 
 const ref = (ref: string, family: string) => ({ ref, family });
+/** The refs out of `rows`, dropping the headers — what the reader actually sees. */
+const models = (rows: ModelRow[]) =>
+  rows.filter((r): r is { kind: "model"; ref: string } => r.kind === "model").map((r) => r.ref);
+const labels = (rows: ModelRow[]) => rows.filter((r) => r.kind !== "model").map((r) => r);
 
 describe("familyClash", () => {
   test("two models of one family are flagged", () => {
@@ -36,6 +40,26 @@ describe("familyClash", () => {
       familyClash({ drafter: ref("a/b", "GPT "), reviewer: ref("c/d", "gpt") }),
     ).toContain("share family");
   });
+
+  test("a label that is a prefix of another is still the same family", () => {
+    // The miss this exists for. `familyOf` says `deepseek`; the catalogue says
+    // `deepseek-flash`. Under `familyCheck: "require"` a trial started on this
+    // pair would measure "an extra pass" while claiming cross-family review.
+    expect(
+      familyClash({ drafter: ref("a/deepseek-v4.1", "deepseek"), reviewer: ref("b/deepseek-flash", "deepseek-flash") }),
+    ).toContain("share family");
+  });
+
+  test("the prefix has to be a real one, not a shared first letter", () => {
+    expect(familyClash({ drafter: ref("a/gpt-5", "gpt"), reviewer: ref("b/glm-5", "glm") })).toBeNull();
+    expect(familyClash({ drafter: ref("a/qwen3", "qwen"), reviewer: ref("b/qwen3.8", "qwen3.8") })).toContain(
+      "share family",
+    );
+  });
+
+  test("an unset family is not a clash", () => {
+    expect(familyClash({ drafter: ref("a/b", ""), reviewer: ref("c/d", "gpt") })).toBeNull();
+  });
 });
 
 describe("familyOf", () => {
@@ -45,7 +69,15 @@ describe("familyOf", () => {
   });
 });
 
-describe("ordering the picker", () => {
+describe("providerOf", () => {
+  test("is the first segment, even when the model id carries its own namespace", () => {
+    expect(providerOf("opencode-go/space-bunny-free")).toBe("opencode-go");
+    expect(providerOf("groq/groq/compound-mini")).toBe("groq");
+    expect(providerOf("local/lmstudio/qwen3.8-27b-mlx")).toBe("local");
+  });
+});
+
+describe("groupModels", () => {
   const all = [
     "groq/openai/gpt-oss-120b",
     "anthropic/claude-sonnet-5-5",
@@ -64,27 +96,34 @@ describe("ordering the picker", () => {
     ]);
   });
 
-  test("a model that is both a favourite and recent is listed once", () => {
-    const { rows } = orderedModels(all, ["opencode-go/glm-5.3-flash"], ["opencode-go/glm-5.3-flash"]);
-    expect(rows.filter((r) => r === "opencode-go/glm-5.3-flash")).toHaveLength(1);
-    // And it stays in the better group.
-    expect(rows[0]).toBe("opencode-go/glm-5.3-flash");
-  });
-
-  test("a favourite for a model OpenCode no longer lists is dropped from the picker", () => {
+  test("an unavailable favourite is dropped from the picker AND reported", () => {
     // Offering it would offer a run that cannot happen; the pair list marks a
-    // stale model `!` instead of hiding it.
-    const { rows } = orderedModels(all, ["gone/model", "opencode-go/glm-5.3-flash"], []);
-    expect(rows).not.toContain("gone/model");
-    expect(rows[0]).toBe("opencode-go/glm-5.3-flash");
+    // stale model `!` instead of hiding it. The report is the part that was
+    // missing: four of twenty favourites once vanished with nothing to say why.
+    const grouped = groupModels(all, ["gone/model", "opencode-go/glm-5.3-flash"], []);
+    expect(grouped.favourites).toEqual(["opencode-go/glm-5.3-flash"]);
+    expect(grouped.dropped).toEqual(["gone/model"]);
+  });
+});
+
+describe("orderedModels", () => {
+  const all = [
+    "groq/openai/gpt-oss-120b",
+    "anthropic/claude-sonnet-5-5",
+    "opencode-go/glm-5.3-flash",
+  ];
+
+  test("a model that is both a favourite and recent is listed once, in the better group", () => {
+    const { rows } = orderedModels(all, ["opencode-go/glm-5.3-flash"], ["opencode-go/glm-5.3-flash"]);
+    expect(models(rows).filter((m) => m === "opencode-go/glm-5.3-flash")).toHaveLength(1);
+    expect(models(rows)[0]).toBe("opencode-go/glm-5.3-flash");
   });
 
   test("a filter keeps the group order and can reach anything", () => {
-    const { rows } = orderedModels(all, ["opencode-go/glm-5.3-flash"], ["anthropic/claude-sonnet-5-5"], "OSS");
-    expect(rows).toEqual(["groq/openai/gpt-oss-120b"]);
-
-    const everything = orderedModels(all, [], [], "-");
-    expect(everything.rows).toEqual([
+    expect(models(orderedModels(all, ["opencode-go/glm-5.3-flash"], ["anthropic/claude-sonnet-5-5"], "OSS").rows)).toEqual([
+      "groq/openai/gpt-oss-120b",
+    ]);
+    expect(models(orderedModels(all, [], [], "-").rows)).toEqual([
       "anthropic/claude-sonnet-5-5",
       "groq/openai/gpt-oss-120b",
       "opencode-go/glm-5.3-flash",
@@ -93,13 +132,64 @@ describe("ordering the picker", () => {
 
   test("a filter that matches a favourite shows it first", () => {
     const { rows, favourite } = orderedModels(all, ["opencode-go/glm-5.3-flash"], [], "o");
-    expect(rows[0]).toBe("opencode-go/glm-5.3-flash");
+    expect(models(rows)[0]).toBe("opencode-go/glm-5.3-flash");
     expect(favourite.has("opencode-go/glm-5.3-flash")).toBe(true);
     expect(favourite.has("groq/openai/gpt-oss-120b")).toBe(false);
   });
 
-  test("the list is capped so a one-character filter cannot draw forever", () => {
-    const many = Array.from({ length: 800 }, (_, i) => `p/model-${i}`);
-    expect(orderedModels(many, [], [], "model").rows).toHaveLength(500);
+  test("a filter flattens everything: no headers to compete with a short result", () => {
+    const { rows } = orderedModels(all, ["opencode-go/glm-5.3-flash"], ["anthropic/claude-sonnet-5-5"], "o");
+    expect(rows.every((r) => r.kind === "model")).toBe(true);
+  });
+
+  test("unfiltered, the favourites header states how many were dropped and why", () => {
+    const { rows, dropped } = orderedModels(all, ["gone/model", "opencode-go/glm-5.3-flash"], []);
+    expect(dropped).toEqual(["gone/model"]);
+    const header = rows[0];
+    expect(header).toMatchObject({ kind: "group", note: "1 not available, ? for why" });
+    expect((header as { label: string }).label).toBe("★ favourites (1 of 2)");
+  });
+
+  test("a clean favourites group says so without a note", () => {
+    const { rows } = orderedModels(all, ["opencode-go/glm-5.3-flash"], []);
+    expect(rows[0]).toMatchObject({ kind: "group", label: "★ favourites (1 of 1)" });
+    expect("note" in (rows[0] as object)).toBe(false);
+  });
+
+  test("the rest is split by provider, because 390 openrouter bury 29 opencode-go", () => {
+    const { rows } = orderedModels(
+      ["openrouter/z-ai/glm-5.3-flash", "opencode-go/glm-5.3-flash", "opencode/muse-spark-1.3"],
+      [],
+      [],
+    );
+    expect(rows.map((r) => (r.kind === "provider" ? r.provider : r.kind))).toEqual([
+      "opencode",
+      "model",
+      "opencode-go",
+      "model",
+      "openrouter",
+      "model",
+    ]);
+    // and each header carries its count
+    const providers = rows.filter((r) => r.kind === "provider");
+    expect(providers.map((p) => (p as { count: number }).count)).toEqual([1, 1, 1]);
+  });
+
+  test("headers are not selectable, so the cursor's arithmetic stays over models", () => {
+    const { rows, items } = orderedModels(all, ["opencode-go/glm-5.3-flash"], ["anthropic/claude-sonnet-5-5"]);
+    expect(items).toHaveLength(3);
+    // Every item points at a real model row, so no header is reachable.
+    for (const item of items) expect(rows[item.row]).toMatchObject({ kind: "model", ref: item.ref });
+    expect(items.map((i) => i.row)).toEqual([1, 3, 5]);
+  });
+
+  test("there is no row cap — 651 models draw, and the count is the real count", () => {
+    // The cap was two bugs: the footer reported the truncated number, and the
+    // keyboard handler used an untruncated list, so the cursor could walk off the
+    // end of what was drawn into a blank screen.
+    const many = Array.from({ length: 800 }, (_, i) => `p/model-${String(i).padStart(3, "0")}`);
+    const { rows, items } = orderedModels(many, [], [], "model");
+    expect(items).toHaveLength(800);
+    expect(items.at(-1)?.ref).toBe("p/model-799");
   });
 });

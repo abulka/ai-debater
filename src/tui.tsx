@@ -23,7 +23,10 @@ import {
   type GateItem,
 } from "./gate-model.ts";
 import { familyClash, familyOf, listModels, orderedModels } from "./models.ts";
+import { costOf, cannotUseTools, formatCost, loadCatalogue, type Catalogue } from "./catalogue.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
+import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES } from "./providers.ts";
+import { failedProbes, loadProbes, pingModel, probeBadge, type ProbeCache } from "./probe.ts";
 import { readOpenCodeModels } from "./opencode-state.ts";
 import {
   deletePair,
@@ -85,6 +88,7 @@ type Phase =
   | "clarify"
   | "settings"
   | "pick"
+  | "providers"
   | "pairs"
   | "pairname"
   | "pairconfirm"
@@ -589,22 +593,59 @@ function Settings({
   );
 }
 
+/** Above this a sweep is refused by name rather than silently costing 100 calls. */
+const SWEEP_MAX = 40;
+
+/** Pads or trims to an exact column count, so a badge column stays aligned. */
+const pad = (s: string, n: number): string => (s.length >= n ? s : s + " ".repeat(n - s.length));
+
+/**
+ * Shorten a ref from the middle, never the end.
+ *
+ * `opencode-go/muse-spark` and `opencode/muse-spark-free` differ at *both*
+ * ends — the provider prefix and the free suffix. A trailing `…` hides exactly
+ * the distinction a reader is trying to make, so the middle goes instead and
+ * both halves stay legible.
+ */
+function shorten(ref: string, max: number): string {
+  if (ref.length <= max) return ref;
+  const keep = max - 1;
+  const head = Math.ceil(keep * 0.55);
+  const tail = keep - head;
+  return `${ref.slice(0, head)}…${ref.slice(ref.length - tail)}`;
+}
+
 function Pick({
   role,
-  rows,
-  favourite,
+  list,
   filter,
   index,
+  catalogue,
+  probes,
+  pinging,
+  keyed,
+  subject,
+  notice,
 }: {
   role: "drafter" | "reviewer";
-  /** Already filtered, deduplicated and ordered — see `orderedModels`. */
-  rows: string[];
-  favourite: Set<string>;
+  list: ReturnType<typeof orderedModels>;
   filter: string;
   index: number;
+  catalogue: Catalogue;
+  probes: ProbeCache;
+  pinging: Set<string>;
+  keyed: Set<string>;
+  subject: Mode;
+  notice: string | null;
 }) {
   const height = 12;
-  const start = Math.max(0, Math.min(index - 5, Math.max(0, rows.length - height)));
+  const { rows, items, favourite } = list;
+  const cursor = items[index]?.row ?? 0;
+  const width = Math.max(60, (process.stdout.columns ?? 100) - 2);
+  // The ref column takes what is left after the marks and the two badge columns.
+  const refWidth = Math.max(18, width - 2 - 2 - 14 - 22);
+  const start = Math.max(0, Math.min(cursor - 5, Math.max(0, rows.length - height)));
+  const marked = items.length === 0;
 
   return (
     <Box flexDirection="column">
@@ -617,19 +658,53 @@ function Pick({
         <Text inverse> </Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        {rows.slice(start, start + height).map((m, i) => {
+        {rows.slice(start, start + height).map((row, i) => {
           const absolute = start + i;
-          const selected = absolute === index;
+
+          if (row.kind === "group") {
+            return (
+              <Box key={`g${absolute}`}>
+                <Text dimColor>{`  ${row.label}${row.note ? ` — ${row.note}` : ""}`}</Text>
+              </Box>
+            );
+          }
+          if (row.kind === "provider") {
+            // The header carries what the reader came for: which account this
+            // is, and whether a credential is present at all. `opencode-go` and
+            // `opencode` are different bills and look identical otherwise.
+            return (
+              <Box key={`p${row.provider}`}>
+                <Text dimColor>
+                  {`  ${row.provider} · ${row.count} · ${keyed.has(row.provider) ? "key set" : "NO KEY"}`}
+                </Text>
+              </Box>
+            );
+          }
+
+          const m = row.ref;
+          const selected = absolute === cursor;
+          const dead = cannotUseTools(catalogue, m, subject);
+          const badge = pinging.has(m)
+            ? "… pinging"
+            : (probeBadge(probes, m)?.badge ?? "");
+          const cost = dead ? "—" : formatCost(costOf(catalogue, m));
+          const note = noteForModel(m);
+          // Truncated, not wrapped: a row that spills is two rows, and the
+          // window here counts lines. The full sentence is in `?`.
+          const tail = (badge || (note ? "· note" : "")).slice(0, 21);
           return (
             <Box key={m}>
-              {/* A mark, not a colour: a monochrome terminal loses decoration and
-                  nothing else. The star is OpenCode's own favourite list. */}
+              {/* Marks, not colour: a monochrome terminal loses decoration and
+                  nothing else. ★ is OpenCode's own list; ✗ is a verdict. Two
+                  columns of two, so a row starts at the same offset whatever
+                  is in them. */}
               <Text dimColor={!selected}>{favourite.has(m) ? "★ " : "  "}</Text>
               <Text color={selected ? THEME.accent : undefined}>{selected ? "❯ " : "  "}</Text>
-              <Text color={selected ? THEME.accent : undefined} bold={selected}>
-                {m}
+              <Text color={selected ? THEME.accent : undefined} bold={selected} dimColor={dead}>
+                {pad(shorten(m, refWidth), refWidth)}
               </Text>
-              <Text dimColor>{`  [${familyOf(m)}]`}</Text>
+              <Text dimColor>{pad(cost, 14)}</Text>
+              <Text color={dead ? THEME.warn : undefined}>{pad(tail, 22)}</Text>
             </Box>
           );
         })}
@@ -637,10 +712,138 @@ function Pick({
       </Box>
       <Box marginTop={1}>
         <Text dimColor>
-          {rows.length} match(es) · ★ your OpenCode favourites, first · ↑↓ choose · Enter select · Esc back
+          {marked
+            ? "nothing to choose"
+            : `${items.length} model(s) · p ping · P ping+tools · A sweep · ? providers`}
         </Text>
       </Box>
+      <Box>
+        <Text dimColor>↑↓ choose · Enter select · Esc back</Text>
+      </Box>
+      {notice && (
+        <Box marginTop={1}>
+          <Text color={THEME.warn}>{notice}</Text>
+        </Box>
+      )}
     </Box>
+  );
+}
+
+/**
+ * Wrap a note to the pane, with a hanging indent.
+ *
+ * A provider note is a sentence or two and the pane has no scroller, so a long
+ * one would wrap on its own and break the one-element-one-row rule that every
+ * scrolled pane here depends on. It wraps here instead, where the indent is
+ * visible.
+ */
+function wrapNote(text: string, width: number, indent = 4): string[] {
+  const room = Math.max(20, width - indent);
+  const words = text.split(/\s+/);
+  const out: string[] = [];
+  let line = "";
+  for (const word of words) {
+    if (line && line.length + 1 + word.length > room) {
+      out.push(line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  if (line) out.push(line);
+  return out.map((l, i) => (i === 0 ? `${" ".repeat(indent)}${l}` : `${" ".repeat(indent + 2)}${l}`));
+}
+
+/**
+ * The provider pane: what each provider is, and which bill it lands on.
+ *
+ * Answers the question the picker cannot: `opencode-go` is a subscription,
+ * `opencode` is a different account that meters per token, and on this machine
+ * the second one had no credit. Everything here is derived — the credential from
+ * `opencode auth list`, the counts from the catalogue and the listing — except
+ * the dated account notes, which no command can report.
+ *
+ * Built as styled lines and handed to a `Scroller` rather than drawn as boxes,
+ * because it outgrows a short terminal: thirteen providers, three notes, the
+ * dropped favourites and the failed pings is forty-odd rows, and a pane with no
+ * scroller pushes its own `Esc back` off the bottom on a 24-row window. The hint
+ * that says how to leave must never be the thing that scrolls away.
+ */
+function providerLines(
+  listing: string[],
+  catalogue: Catalogue,
+  keyed: Map<string, "env" | "stored">,
+  dropped: string[],
+  probes: ProbeCache,
+): StyledLine[] {
+  const bills = allProviderBills(listing, catalogue, keyed);
+  const failures = failedProbes(probes);
+  const width = wrapWidth();
+  const lines: StyledLine[] = [
+    [{ text: "each provider, what it bills to, and whether a key is present.", dim: true }],
+    [{ text: "counts are free / priced / unknown · n without tools cannot be a repo agent", dim: true }],
+    [{ text: "" }],
+  ];
+
+  for (const b of bills) {
+    const summary =
+      `${b.billing} · ${b.listed} listed · ${b.free}f ${b.priced}p ${b.unknown}?` +
+      `${b.noTools ? ` · ${b.noTools} without tools` : ""} · ` +
+      `${b.keyed === null ? "NO KEY" : `key (${b.keyed})`}`;
+    lines.push([
+      { text: b.provider, bold: true },
+      ...(b.keyed === null ? [{ text: "  ", dim: true }, { text: summary, color: THEME.warn }] : [{ text: `  ${summary}`, dim: true }]),
+    ]);
+    if (b.note) lines.push(...wrapNote(b.note, width).map((t) => [{ text: t, dim: true }] as StyledLine));
+  }
+
+  if (dropped.length > 0) {
+    lines.push([{ text: "" }]);
+    lines.push([{ text: `! ${dropped.length} favourite(s) OpenCode lists that this machine cannot:`, color: THEME.warn }]);
+    for (const d of dropped) lines.push([{ text: `    ${d}`, dim: true }]);
+    lines.push([{ text: "    not offered in the picker, and listed here so they are not simply missing", dim: true }]);
+  }
+
+  if (failures.length > 0) {
+    lines.push([{ text: "" }]);
+    lines.push([{ text: `✗ ${failures.length} model(s) a ping found unusable:`, color: THEME.warn }]);
+    for (const f of failures) {
+      lines.push(...wrapNote(`${f.ref} — ${f.verdict.detail}`, width).map((t) => [{ text: t, dim: true }] as StyledLine));
+    }
+    lines.push([{ text: "    a verdict goes stale — successes after a week, failures after a day", dim: true }]);
+  }
+
+  return lines;
+}
+
+function Providers({
+  listing,
+  catalogue,
+  keyed,
+  dropped,
+  probes,
+  notice,
+  onClose,
+}: {
+  listing: string[];
+  catalogue: Catalogue;
+  keyed: Map<string, "env" | "stored">;
+  dropped: string[];
+  probes: ProbeCache;
+  notice: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <Scroller
+      title="providers"
+      lines={providerLines(listing, catalogue, keyed, dropped, probes)}
+      notice={notice}
+      footer={[
+        { text: "the picker", color: THEME.accent },
+        { text: " · ↑↓ scroll · Esc back", dim: true },
+      ]}
+      onClose={onClose}
+    />
   );
 }
 
@@ -1328,6 +1531,20 @@ function App({ repo }: { repo: string }) {
   const [filter, setFilter] = useState("");
   const [pickIndex, setPickIndex] = useState(0);
   const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
+  /**
+   * What is knowable about a model without calling one, and what a call once
+   * said. All three are read on demand when the picker opens: the catalogue is a
+   * file OpenCode already keeps, `auth list` is free, and the probes are our own
+   * record. Every one degrades to empty, which renders `?` — the honest reading,
+   * and never "free".
+   */
+  const [catalogue, setCatalogue] = useState<Catalogue>(new Map());
+  const [probes, setProbes] = useState<ProbeCache>({});
+  const [authed, setAuthed] = useState<Map<string, "env" | "stored">>(new Map());
+  /** Refs with a call in flight, so a row can say `…` instead of pretending. */
+  const [pinging, setPinging] = useState<Set<string>>(new Set());
+  /** How many models a sweep is armed for, so the count survives a re-render. */
+  const [sweepArmed, setSweepArmed] = useState<number | null>(null);
   /* Saved pairs, and the runs the recent-pair rows come from. The runs are a
      separate list from the past-runs screen's: that one is a snapshot with its
      own tags and scroll, and opening pairs must not disturb it. */
@@ -1485,16 +1702,28 @@ function App({ repo }: { repo: string }) {
     setNotice(null);
     setPhase("settings");
     if (allModels.length === 0) {
-      try {
-        setAllModels(await listModels(repo));
-      } catch {
-        setAllModels([]);
-      }
+      // The listing must resolve *before* the credential lookup: the provider
+      // ids come from it, and passing the stale `[]` this closure captured made
+      // every provider resolve to no match and report NO KEY.
+      void listModels(repo)
+        .then(async (listing) => {
+          setAllModels(listing);
+          setAuthed(await authedProviders(listing).catch(() => new Map()));
+        })
+        .catch(() => setAllModels([]));
+    } else {
+      void authedProviders(allModels)
+        .then(setAuthed)
+        .catch(() => setAuthed(new Map()));
     }
     // Re-read on every visit: favourites are marked in OpenCode, between
     // sessions, and a list frozen at launch is the wrong list by the afternoon.
     // It never throws, so this is not worth a try.
     void readOpenCodeModels().then(setOpenCode);
+    // The catalogue and our own probe record do not depend on the listing, so
+    // they do not wait for it. Neither throws.
+    void loadCatalogue().then((r) => setCatalogue(r.catalogue));
+    void loadProbes().then(setProbes);
   }
 
   /** The rows on the pair screen, recomputed from what is loaded. */
@@ -1738,26 +1967,114 @@ function App({ repo }: { repo: string }) {
     [allModels, openCode, filter],
   );
 
+  /**
+   * Ping some models, one at a time, and record each verdict as it lands.
+   *
+   * Sequential rather than parallel on purpose: a burst of thirty calls at a
+   * rate-limited provider produces thirty rate limits and teaches the reader
+   * nothing, and the cost of the queue is seconds. The cache is re-read per
+   * model rather than merged at the end, so a screen left open shows progress
+   * and a screen closed halfway keeps the half it got.
+   */
+  async function runPing(refs: string[], kind: "cheap" | "full") {
+    const first = refs[0];
+    if (first) {
+      setPinging((s) => new Set(s).add(first));
+      setNotice(`pinging ${refs.length > 1 ? `${refs.length} models` : refs[0]} (${kind})…`);
+    }
+    try {
+      for (const ref of refs) {
+        await pingModel(ref, { repo, kind });
+        // Re-read rather than merge in memory: the file is the record, and a
+        // screen closed halfway keeps the half it got.
+        setProbes(await loadProbes());
+      }
+      const after = await loadProbes();
+      const bad = refs.filter((r) => after[r] && after[r]!.verdict.kind !== "ok");
+      setNotice(
+        bad.length === 0
+          ? `pinged ${refs.length}: all reachable`
+          : `pinged ${refs.length}: ${bad.length} not reachable — ? for why`,
+      );
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPinging(new Set());
+    }
+  }
+
+  /**
+   * `A` — ping the models a reader would actually pick.
+   *
+   * With a filter typed, that is every match. Without one, it is the set this
+   * whole feature exists for: OpenCode's favourites, its recents, and the two
+   * models currently configured. Around thirty models rather than 651, which is
+   * the difference between a sweep you run and one you do not.
+   *
+   * **Two presses, on purpose.** Up to `SWEEP_MAX` calls is real money, and a
+   * single keypress cannot tell a deliberate `A` from a slipped Shift — `P` and
+   * `A` are the only way to spend calls at all, so a mis-typed one is exactly
+   * what this feature promises it will not do. One call is cheap enough not to
+   * ask twice; forty is not.
+   *
+   * Refused above `SWEEP_MAX` with the number named, because a filter of `-`
+   * would otherwise spend a hundred calls on a gesture.
+   */
+  async function sweep() {
+    const filtered = filter.trim().length > 0;
+    const targets = filtered
+      ? modelRows.items.map((i) => i.ref)
+      : [...new Set([
+          ...openCode.favourites.filter((m) => modelRows.items.some((i) => i.ref === m)),
+          ...openCode.recents.filter((m) => modelRows.items.some((i) => i.ref === m)),
+          ...(cfg ? [cfg.models.drafter.ref, cfg.models.reviewer.ref] : []),
+        ])];
+    if (targets.length === 0) {
+      setNotice("nothing to ping — the list is empty");
+      return;
+    }
+    if (targets.length > SWEEP_MAX) {
+      setNotice(`${targets.length} match "${filter}" — narrow it to ${SWEEP_MAX} or fewer, or A with no filter`);
+      return;
+    }
+    if (sweepArmed === targets.length) {
+      setSweepArmed(null);
+      setNotice(null);
+      await runPing(targets, "cheap");
+      return;
+    }
+    setSweepArmed(targets.length);
+    setNotice(
+      `${targets.length} models — press A again to ping them all${filtered ? ` (matching "${filter}")` : " (favourites, recents, current pair)"}. Any other key cancels.`,
+    );
+  }
+
+  /** The provider pane scrolls and closes itself; `Scroller` owns its keys. */
   /* Model picker. */
   useInput(
     (input, key) => {
       if (!cfg) return;
-      const shown = modelRows.rows;
+      // Items, not rows: group and provider headers are not cursor targets, and
+      // indexing `rows` directly is how the cursor used to land on a header.
+      const items = modelRows.items;
+      const chosen = items[pickIndex]?.ref;
 
       if (key.escape) {
+        setSweepArmed(null);
         setPhase("settings");
         return;
       }
       if (key.upArrow) {
+        setSweepArmed(null);
         setPickIndex((i) => Math.max(0, i - 1));
         return;
       }
       if (key.downArrow) {
-        setPickIndex((i) => Math.min(Math.max(0, shown.length - 1), i + 1));
+        setSweepArmed(null);
+        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + 1));
         return;
       }
       if (key.return) {
-        const chosen = shown[pickIndex];
         if (chosen) {
           const next: Config = {
             ...cfg,
@@ -1765,10 +2082,33 @@ function App({ repo }: { repo: string }) {
           };
           void persist(next, mode).then(() => setSaved(`saved ${pickRole}: ${chosen}`));
         }
+        setSweepArmed(null);
         setPhase("settings");
         return;
       }
+      // `?` before the text handling below: it is a key, not a character to filter.
+      if (input === "?") {
+        setSweepArmed(null);
+        setPhase("providers");
+        return;
+      }
+      if (input === "p") {
+        setSweepArmed(null);
+        if (chosen) void runPing([chosen], "cheap");
+        return;
+      }
+      if (input === "P") {
+        setSweepArmed(null);
+        if (chosen) void runPing([chosen], "full");
+        return;
+      }
+      if (input === "A") {
+        void sweep();
+        return;
+      }
       if (key.backspace || key.delete) {
+        setSweepArmed(null);
+        setNotice(null);
         setFilter(filter.slice(0, -1));
         setPickIndex(0);
         return;
@@ -1776,6 +2116,8 @@ function App({ repo }: { repo: string }) {
       if (key.ctrl || key.meta) return;
       // Mouse reports arrive as input; the filter is text, so it refuses them.
       if (input) {
+        setSweepArmed(null);
+        setNotice(null);
         setFilter(filter + input);
         setPickIndex(0);
       }
@@ -2703,10 +3045,27 @@ function App({ repo }: { repo: string }) {
     content = (
       <Pick
         role={pickRole}
-        rows={modelRows.rows}
-        favourite={modelRows.favourite}
+        list={modelRows}
         filter={filter}
         index={pickIndex}
+        catalogue={catalogue}
+        probes={probes}
+        pinging={pinging}
+        keyed={new Set(authed.keys())}
+        subject={mode}
+        notice={notice}
+      />
+    );
+  } else if (phase === "providers") {
+    content = (
+      <Providers
+        listing={allModels}
+        catalogue={catalogue}
+        keyed={authed}
+        dropped={modelRows.dropped}
+        probes={probes}
+        notice={notice}
+        onClose={() => setPhase("pick")}
       />
     );
   } else if (phase === "pairs") {
