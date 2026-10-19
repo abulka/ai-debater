@@ -4,8 +4,8 @@
   "familyCheck": "warn",
   "models": {
     "drafter": {
-      "ref": "opencode-go/claude-haiku-5-5",
-      "family": "claude"
+      "ref": "openai/gpt-6-luna",
+      "family": "gpt"
     },
     "reviewer": {
       "ref": "opencode-go/deepseek-v4.1-flash",

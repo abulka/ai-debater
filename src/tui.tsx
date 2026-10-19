@@ -114,6 +114,7 @@ import type { Mode, ModelRef } from "./runner.ts";
 
 type Phase =
   | "setup"
+  | "home"
   | "start"
   | "clarify"
   | "settings"
@@ -158,7 +159,7 @@ const RESULT_KEYS: { key: string; what: string }[] = [
   { key: "b · u", what: "page up · half a page up" },
   { key: "Ctrl+D · Ctrl+U", what: "half a page down · half a page up" },
   { key: "g / G", what: "jump to the top / the end" },
-  { key: "q", what: "quit (the run stays on disk — reopen it with Ctrl+R on the start screen)" },
+  { key: "q", what: "quit (the run stays on disk — reopen it with Ctrl+R from home)" },
 ];
 
 /**
@@ -476,26 +477,135 @@ function looksLikeQuestion(task: string): boolean {
   );
 }
 
+function Home({
+  selection,
+  setSelection,
+  notice,
+  onChoose,
+}: {
+  selection: number;
+  setSelection: (v: number | ((s: number) => number)) => void;
+  notice: string | null;
+  onChoose: (i: number) => void;
+}) {
+  useInput((input, key) => {
+    if (key.upArrow) {
+      setSelection((s) => (s + 4) % 5);
+      return;
+    }
+    if (key.downArrow) {
+      setSelection((s) => (s + 1) % 5);
+      return;
+    }
+    // Ctrl+R (past runs) and Ctrl+P (settings) are answered by the app-wide
+    // handler, so they work the same from every settled screen.
+    if (key.ctrl || key.meta) return;
+    if (key.return) {
+      onChoose(selection);
+      return;
+    }
+    if (input === "m") {
+      onChoose(0);
+      return;
+    }
+    if (input === "n") {
+      onChoose(1);
+      return;
+    }
+    if (input === "p") {
+      onChoose(2);
+      return;
+    }
+    if (input === "s") {
+      onChoose(3);
+      return;
+    }
+    if (input === "q") {
+      onChoose(4);
+      return;
+    }
+  });
+
+  const rows: { label: string; hint: string }[] = [
+    { label: "models browser", hint: "the model list — browse, ping, compare" },
+    { label: "new debate", hint: "ask a question or plan a change" },
+    { label: "past runs", hint: "reopen a finished or parked run" },
+    { label: "settings", hint: "saved pairs · benchmarks key" },
+    { label: "quit", hint: "" },
+  ];
+
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="home" />
+      </Box>
+      <Box flexDirection="column">
+        {rows.map((r, i) => (
+          <Box key={r.label}>
+            <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
+            <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
+              {r.label.padEnd(15)}
+            </Text>
+            <Text dimColor>{r.hint}</Text>
+          </Box>
+        ))}
+      </Box>
+      {notice && (
+        <Box marginTop={1}>
+          <Text color={THEME.warn} wrap="truncate">
+            {notice}
+          </Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text dimColor wrap="truncate">
+          ↑↓ move · Enter choose · m models · n new · p runs · s settings · q quit · Ctrl+C quit
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
 function Start({
   repo,
   cfg,
   mode,
   task,
   setTask,
+  deskSel,
+  setDeskSel,
+  notice,
+  pair,
   onRun,
   onToggleMode,
+  onPick,
+  onPickPair,
   onSettings,
+  onHome,
 }: {
   repo: string;
   cfg: Config | null;
   mode: Mode;
   task: string;
   setTask: (v: string) => void;
+  /** Which row the cursor is on: 0 pair · 1 drafter · 2 reviewer · 3 subject · 4 prompt. */
+  deskSel: number;
+  setDeskSel: (v: number | ((s: number) => number)) => void;
+  notice: string | null;
+  /** The name of the saved pair the current two models are, or null when unnamed. */
+  pair: string | null;
   onRun: () => void;
   onToggleMode: () => void;
+  onPick: (role: "drafter" | "reviewer") => void;
+  onPickPair: () => void;
   onSettings: () => void;
+  onHome: () => void;
 }) {
   useInput((input, key) => {
+    if (key.escape) {
+      onHome();
+      return;
+    }
     if (key.tab) {
       onToggleMode();
       return;
@@ -505,24 +615,49 @@ function Start({
       onSettings();
       return;
     }
-    // Ctrl+U clears the draft, readline-style. The prompt outlives a trip to a
-    // past run, so a deliberate wipe is what makes room for the next one.
+    // Ctrl+U clears the draft, readline-style.
     if (key.ctrl && input === "u") {
       setTask("");
+      setDeskSel(4);
+      return;
+    }
+    if (key.upArrow) {
+      setDeskSel((s) => (s + 4) % 5);
+      return;
+    }
+    if (key.downArrow) {
+      setDeskSel((s) => (s + 1) % 5);
       return;
     }
     if (key.return) {
-      if (task.trim() && cfg) onRun();
+      if (deskSel === 4) {
+        if (task.trim() && cfg) onRun();
+        return;
+      }
+      if (deskSel === 0) {
+        onPickPair();
+        return;
+      }
+      if (deskSel === 1 || deskSel === 2) {
+        onPick(deskSel === 1 ? "drafter" : "reviewer");
+        return;
+      }
+      onToggleMode();
       return;
     }
     if (key.backspace || key.delete) {
       setTask(task.slice(0, -1));
+      setDeskSel(4);
       return;
     }
     if (key.ctrl || key.meta) return;
-    // Mouse reports arrive as input too. A wheel notch must scroll the screen,
-    // not type `[<64;10;5M` into the question.
-    if (input) setTask(task + input);
+    // Typing always goes to the prompt and snaps the cursor back to it, so a
+    // task can never land on a row and Enter can never mean choose by accident.
+    // Mouse reports arrive as input too — they must not type into the question.
+    if (input && !input.startsWith("\x1b[<")) {
+      setTask(task + input);
+      setDeskSel(4);
+    }
   });
 
   const clash = cfg ? familyClash(cfg.models) : null;
@@ -530,22 +665,35 @@ function Start({
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Header right="adversarial two-model review" />
+        <Header right="new debate" />
       </Box>
       <Box>
-        <Text dimColor>repo    </Text>
-        <Text>{repo}</Text>
-      </Box>
-      <Box>
-        <Text dimColor>models  </Text>
-        <Text>
-          {cfg
-            ? `${cfg.models.drafter.ref} [${cfg.models.drafter.family}]  ->  ${cfg.models.reviewer.ref} [${cfg.models.reviewer.family}]`
-            : "loading…"}
+        <Text color={deskSel === 0 ? THEME.accent : undefined}>{deskSel === 0 ? "❯ " : "  "}</Text>
+        <Text color={deskSel === 0 ? THEME.accent : undefined} bold={deskSel === 0}>
+          {"pair    ".padEnd(9)}
         </Text>
+        <Text>{pair ?? "—"}</Text>
+        <Text dimColor>  preset only — manage in settings</Text>
       </Box>
       <Box>
-        <Text dimColor>subject </Text>
+        <Text color={deskSel === 1 ? THEME.accent : undefined}>{deskSel === 1 ? "❯ " : "  "}</Text>
+        <Text color={deskSel === 1 ? THEME.accent : undefined} bold={deskSel === 1}>
+          {"drafter ".padEnd(9)}
+        </Text>
+        <Text>{cfg ? `${cfg.models.drafter.ref} [${cfg.models.drafter.family}]` : "loading…"}</Text>
+      </Box>
+      <Box>
+        <Text color={deskSel === 2 ? THEME.accent : undefined}>{deskSel === 2 ? "❯ " : "  "}</Text>
+        <Text color={deskSel === 2 ? THEME.accent : undefined} bold={deskSel === 2}>
+          {"reviewer".padEnd(9)}
+        </Text>
+        <Text>{cfg ? `${cfg.models.reviewer.ref} [${cfg.models.reviewer.family}]` : "loading…"}</Text>
+      </Box>
+      <Box>
+        <Text color={deskSel === 3 ? THEME.accent : undefined}>{deskSel === 3 ? "❯ " : "  "}</Text>
+        <Text color={deskSel === 3 ? THEME.accent : undefined} bold={deskSel === 3}>
+          {"subject ".padEnd(9)}
+        </Text>
         <Text color={THEME.accent}>{mode === "answer" ? "general question" : "this repository"}</Text>
         <Text dimColor>
           {"  "}
@@ -560,12 +708,12 @@ function Start({
           <Text color="yellow">
             ! {clash}
             {cfg?.familyCheck === "require"
-              ? " — this repo requires different families, so Enter is blocked (Ctrl+P to change)"
+              ? " — this repo requires different families, so Enter is blocked (↑↓ to choose models)"
               : " (fine for testing; use --strict or familyCheck: \"require\" for a trial)"}
           </Text>
         </Box>
       )}
-      <Box borderStyle="round" borderColor="cyan" paddingX={1} marginTop={1}>
+      <Box borderStyle="round" borderColor={deskSel === 4 ? "cyan" : "gray"} paddingX={1} marginTop={1}>
         {task ? (
           <Text>
             {task}
@@ -585,8 +733,21 @@ function Start({
           </Text>
         </Box>
       )}
+      {notice && (
+        <Box marginTop={1}>
+          <Text color={THEME.warn} wrap="truncate">
+            {notice}
+          </Text>
+        </Box>
+      )}
       <Box marginTop={1}>
-        <Text dimColor>Enter run · Tab mode · Ctrl+R past runs · Ctrl+P settings · Ctrl+U clear · Ctrl+C quit</Text>
+        <Text dimColor wrap="truncate">
+          Enter {deskSel === 4 ? "run" : "choose"} · ↑↓ pick a row · Tab subject · Esc home · Ctrl+R runs ·
+          Ctrl+P settings · Ctrl+U clear
+        </Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>repo {repo}</Text>
       </Box>
       <Box>
         <Text dimColor>models, criteria and decisions live in {repo}/.adv/</Text>
@@ -596,15 +757,11 @@ function Start({
 }
 
 function Settings({
-  cfg,
-  mode,
   selection,
   saved,
   pair,
   aaKey,
 }: {
-  cfg: Config;
-  mode: Mode;
   selection: number;
   saved: string | null;
   /** The name of the saved pair these two models are, or null when unnamed. */
@@ -616,21 +773,17 @@ function Settings({
     // Matched by model, not by position: a pair saved under another name is
     // still the pair in use, and showing nothing would read as "no pair".
     { label: "pair", value: pair ?? "—" },
-    { label: "drafter", value: cfg.models.drafter.ref },
-    { label: "reviewer", value: cfg.models.reviewer.ref },
-    { label: "subject", value: mode === "answer" ? "general question" : "this repository" },
     {
       label: "benchmarks",
       value: aaKey ? "artificialanalysis.ai · key set" : "artificialanalysis.ai · no key — OpenRouter benchmarks",
     },
     { label: "back", value: "" },
   ];
-  const clash = familyClash(cfg.models);
 
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Header right={`settings · family check ${cfg.familyCheck}`} />
+        <Header right="settings" />
       </Box>
       {rows.map((r, i) => (
         <Box key={r.label}>
@@ -641,23 +794,13 @@ function Settings({
           <Text>{r.value}</Text>
         </Box>
       ))}
-      {clash && (
-        <Box marginTop={1} flexDirection="column">
-          <Text color={THEME.warn}>! {clash}</Text>
-          <Text dimColor>
-            {cfg.familyCheck === "require"
-              ? "familyCheck: require — runs here will refuse to start."
-              : "fine for testing. Set familyCheck to \"require\" in .adv/config.json for a trial."}
-          </Text>
-        </Box>
-      )}
       {saved && (
         <Box marginTop={1}>
           <Text color={THEME.ok}>{saved}</Text>
         </Box>
       )}
       <Box marginTop={1}>
-        <Text dimColor>↑↓ move · Enter choose · Esc back</Text>
+        <Text dimColor>↑↓ move · Enter choose · Esc home</Text>
       </Box>
     </Box>
   );
@@ -708,6 +851,7 @@ function shorten(ref: string, max: number): string {
 
 function Pick({
   role,
+  pickMode,
   list,
   filter,
   index,
@@ -728,6 +872,8 @@ function Pick({
   taskCeiling,
 }: {
   role: "drafter" | "reviewer";
+  /** Browse: Enter does nothing, Esc goes home. Select: Enter assigns, Esc returns to the debate screen. */
+  pickMode: "browse" | "select";
   list: ReturnType<typeof orderedModels>;
   filter: string;
   index: number;
@@ -842,7 +988,7 @@ function Pick({
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Header right={`pick ${role}`} />
+        <Header right={pickMode === "browse" ? "models browser" : `pick ${role}`} />
       </Box>
       <Box>
         <Text dimColor>filter  </Text>
@@ -980,7 +1126,9 @@ function Pick({
           line fits eight. Both truncate — the budget counts two rows. */}
       <Box>
         <Text dimColor wrap="truncate">
-          {`↑↓ choose · Enter select · ^F/^B page · ^D/^U half · Esc back`}
+          {pickMode === "browse"
+            ? `browsing — choose a model on the debate screen · ^F/^B page · ^D/^U half · Esc home`
+            : `↑↓ choose · Enter select · ^F/^B page · ^D/^U half · Esc back`}
         </Text>
       </Box>
       <Box>
@@ -1214,27 +1362,33 @@ function Pairs({
   current,
   notice,
   loading,
+  allowManage,
 }: {
   rows: PairRow[];
   index: number;
   /** Visible rows, from the viewport budget: the frame must fit the terminal. */
   height: number;
-  /** The pair the settings are on, so the row it names can be marked. */
+  /** The pair in use, so the row it names can be marked. */
   current: PairModels | null;
   notice: string | null;
   /** The file is being read; an empty list is not yet an answer. */
   loading: boolean;
+  /** False from the debate screen: choosing only — the save row is hidden and `d` is inert. */
+  allowManage: boolean;
 }) {
   const width = Math.max(8, useTerminalWidth() - 6);
+  // Choose-only hides the row that saves the current two: creating a pair
+  // lives in settings, and a list that offers it here would lie about that.
+  const visible = allowManage ? rows : rows.filter((r) => r.kind !== "save");
   // Sticky like the picker: the window holds while the cursor walks its rows,
   // and follows only at an edge — down pins to the last line, up to the top.
   const startRef = useRef(0);
-  const maxStart = Math.max(0, rows.length - height);
+  const maxStart = Math.max(0, visible.length - height);
   const prev = Math.min(Math.max(0, startRef.current), maxStart);
   const start =
     index < prev ? index : index >= prev + height ? Math.min(index - height + 1, maxStart) : prev;
   startRef.current = start;
-  const at = rows[index];
+  const at = visible[index];
 
   return (
     <Box flexDirection="column">
@@ -1242,10 +1396,12 @@ function Pairs({
         <Header right="pairs" />
       </Box>
       <Text dimColor>
-        two models at once, under a name — the pair you used last is first
+        {allowManage
+          ? "two models at once, under a name — the pair you used last is first"
+          : "choose a preset — saving and deleting live in settings"}
       </Text>
       <Box marginTop={1} flexDirection="column">
-        {rows.slice(start, start + height).map((row, i) => {
+        {visible.slice(start, start + height).map((row, i) => {
           const absolute = start + i;
           const selected = absolute === index;
           const models = row.kind === "saved" ? row.pair : row.kind === "recent" ? row.recent : null;
@@ -1288,8 +1444,10 @@ function Pairs({
           );
         })}
         {loading && <Text dimColor>reading the pairs…</Text>}
-        {!loading && rows.length === 1 && (
-          <Text dimColor>no pairs saved, and no runs to learn one from</Text>
+        {!loading && visible.length === 0 && (
+          <Text dimColor>
+            {allowManage ? "no pairs saved, and no runs to learn one from" : "no pairs saved yet — save one in settings"}
+          </Text>
         )}
       </Box>
       {at && at.kind === "saved" && at.warnings.length > 0 && (
@@ -1309,7 +1467,7 @@ function Pairs({
           <Line
             spans={hints(
               ["Enter", "use this pair"],
-              ["d", "delete"],
+              ...(allowManage ? [["d", "delete"] as [string, string]] : []),
               ["Esc", "back"],
             )}
           />
@@ -1925,14 +2083,17 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     if (
       key.ctrl &&
       input === "r" &&
-      (phase === "start" || phase === "gate" || phase === "result" || phase === "error")
+      (phase === "home" || phase === "start" || phase === "gate" || phase === "result" || phase === "error")
     ) {
       void openRuns();
+    }
+    if (key.ctrl && input === "p" && phase === "home") {
+      void openSettings();
     }
   });
   const [cfg, setCfg] = useState<Config | null>(null);
   const [hasCriteria, setHasCriteria] = useState(false);
-  const [phase, setPhase] = useState<Phase>("start");
+  const [phase, setPhase] = useState<Phase>("home");
   const [mode, setMode] = useState<Mode>("plan");
   /* Two tasks, not one. `task` is the prompt on the question desk: the start
      screen owns it and nothing else writes to it, so looking at a past run and
@@ -1952,6 +2113,13 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [setupSelection, setSetupSelection] = useState(0);
   const [answers, setAnswers] = useState<GateAnswer[]>([]);
   const [settingsSel, setSettingsSel] = useState(0);
+  const [homeSel, setHomeSel] = useState(0);
+  /** Debate-screen cursor: 0 pair · 1 drafter · 2 reviewer · 3 subject · 4 prompt. Starts on the prompt. */
+  const [deskSel, setDeskSel] = useState(4);
+  /** Where the pairs list was opened from: the debate screen only chooses, settings manages. */
+  const [pairOrigin, setPairOrigin] = useState<"settings" | "debate">("settings");
+  /** The model list's mode: browse from home (Enter does nothing), select from the debate screen. */
+  const [pickMode, setPickMode] = useState<"browse" | "select">("select");
   const [allModels, setAllModels] = useState<string[]>([]);
   /**
    * OpenCode's own favourites and recents, read on demand from its state file.
@@ -2111,7 +2279,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setMode(config.mode);
         setHasCriteria(present.criteria);
         // First run in a repo with no .adv/: ask, rather than silently using defaults.
-        setPhase(present.dir ? "start" : "setup");
+        setPhase(present.dir ? "home" : "setup");
+        // Warm what home and settings show without a visit: the pair name and
+        // the benchmarks-key state. Neither throws.
+        void loadPairs().then(setSavedPairs).catch(() => {});
+        void loadAAKey().then((k) => setAAKeySet(!!k)).catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setPhase("error");
@@ -2154,7 +2326,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setCfg(await loadConfig(repo));
         setHasCriteria(true);
       }
-      setPhase("start");
+      setPhase("home");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setPhase("error");
@@ -2166,11 +2338,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     await saveConfig(repo, { ...next, mode: nextMode });
   };
 
-  async function openSettings() {
-    setSettingsSel(0);
-    setSaved(null);
-    setNotice(null);
-    setPhase("settings");
+  /** Load everything the model list needs, shared by both its doors. */
+  async function ensureModelData() {
     if (allModels.length === 0) {
       // The listing must resolve *before* the credential lookup: the provider
       // ids come from it, and passing the stale `[]` this closure captured made
@@ -2207,6 +2376,65 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       setBenchMeta({ at: r.at, indexVersion: r.indexVersion });
       if (isStale(r.at)) void refreshBenchmarks(true);
     });
+    // What settings names, without a visit: the pair the current models are.
+    void loadPairs().then(setSavedPairs).catch(() => {});
+  }
+
+  async function openSettings() {
+    setSettingsSel(0);
+    setSaved(null);
+    setNotice(null);
+    setPhase("settings");
+    void ensureModelData();
+  }
+
+  /** Home → models browser: the same list, with Enter inert. */
+  async function openBrowser() {
+    setPickMode("browse");
+    setFilter("");
+    setPickIndex(0);
+    setNotice(null);
+    setPhase("pick");
+    void ensureModelData();
+  }
+
+  /** Debate screen → pick a drafter or reviewer: Enter assigns. */
+  async function openPick(role: "drafter" | "reviewer") {
+    setPickMode("select");
+    setPickRole(role);
+    setFilter("");
+    setPickIndex(0);
+    setNotice(null);
+    setPhase("pick");
+    void ensureModelData();
+  }
+
+  function openHome() {
+    setPanel(null);
+    setNotice(null);
+    setPhase("home");
+  }
+
+  /** Home menu choice: 0 browser · 1 new debate · 2 runs · 3 settings · 4 quit. */
+  function chooseHome(i: number) {
+    if (i === 0) {
+      void openBrowser();
+      return;
+    }
+    if (i === 1) {
+      setDeskSel(4);
+      setPhase("start");
+      return;
+    }
+    if (i === 2) {
+      void openRuns();
+      return;
+    }
+    if (i === 3) {
+      void openSettings();
+      return;
+    }
+    exit();
   }
 
   /**
@@ -2214,7 +2442,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
    * when a key is stored, then the rows re-render merged, Artificial Analysis
    * first.
    *
-   * Silent when automatic (a stale cache on opening settings): the old scores
+   * Silent when automatic (a stale cache on opening the model list): the old scores
    * stay until the new ones land, and a failed fetch keeps them with nothing
    * said — offline is not an error worth a notice. Loud on `B`: the reader
    * asked, so the reader hears the answer either way.
@@ -2312,20 +2540,24 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     await persist({ ...cfg, models }, mode);
     addLog(`pair${name ? ` "${name}"` : " from a run"} · ${models.drafter.ref} -> ${models.reviewer.ref}`);
     setSavedPairs(name ? await markPairUsed(name) : await loadPairs());
+    if (pairOrigin === "debate") {
+      // Choosing only: back to the debate screen, which shows notices.
+      setNotice(name ? `using pair "${name}"` : "using a pair a run used");
+      setPhase("start");
+      return;
+    }
     setSettingsSel(0);
     setSaved(name ? `using pair "${name}"` : "using a pair a run used");
     setPhase("settings");
   }
 
-  /* Settings: choose a pair, a model, the subject, or the benchmarks key.
-     Every change but the key is written to the repository's .adv/ and to the
-     user config; the key lives in the user's config dir alone, never in a
-     repo. */
+  /* Settings: a saved pair, or the benchmarks key. The key lives in the user's
+     config dir alone, never in a repo. */
   useInput(
     (_input, key) => {
       if (!cfg) return;
       if (key.escape) {
-        setPhase("start");
+        setPhase("home");
         return;
       }
       if (key.upArrow) {
@@ -2333,36 +2565,23 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         return;
       }
       if (key.downArrow) {
-        setSettingsSel((s) => Math.min(5, s + 1));
+        setSettingsSel((s) => Math.min(2, s + 1));
         return;
       }
       if (!key.return) return;
 
       if (settingsSel === 0) {
-        void openPairs();
+        void openPairs("settings");
         return;
       }
-      if (settingsSel === 1 || settingsSel === 2) {
-        setPickRole(settingsSel === 1 ? "drafter" : "reviewer");
-        setFilter("");
-        setPickIndex(0);
-        setPhase("pick");
-        return;
-      }
-      if (settingsSel === 3) {
-        const nextMode: Mode = mode === "plan" ? "answer" : "plan";
-        setMode(nextMode);
-        void persist(cfg, nextMode).then(() => setSaved(`saved mode: ${nextMode}`));
-        return;
-      }
-      if (settingsSel === 4) {
+      if (settingsSel === 1) {
         // A fresh field every visit: a key left on screen is a key photographed.
         setAAKeyInput("");
         setNotice(null);
         setPhase("aakey");
         return;
       }
-      setPhase("start");
+      setPhase("home");
     },
     { isActive: phase === "settings" },
   );
@@ -2446,12 +2665,14 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
    * The pair list: saved pairs last-used first, then pairs runs have used.
    *
    * Both are read on the way in rather than kept warm, so what is on screen is
-   * what is on disk — including after another `adv`, or a hand edit.
+   * what is on disk — including after another `adv`, or a hand edit. From the
+   * debate screen the list is choose-only; managing lives in settings.
    */
-  async function openPairs() {
+  async function openPairs(origin: "settings" | "debate") {
     setPairName("");
     setPairAsk(null);
     setNotice(null);
+    setPairOrigin(origin);
     setPhase("pairs");
     setPairLoading(true);
     const [pairs, runs] = await Promise.all([loadPairs(), listRuns(repo)]);
@@ -2470,22 +2691,28 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
 
   const currentPairKey = () => (cfg ? pairKey(cfg.models) : "");
 
+  /** The rows the cursor can land on: choose-only from the debate screen hides the save row. */
+  const pairVisible = useMemo(
+    () => (pairOrigin === "debate" ? pairScreen.filter((r) => r.kind !== "save") : pairScreen),
+    [pairScreen, pairOrigin],
+  );
+
   /* Pair list. Every key its footer names is answered here: Enter, `d`, Esc. */
   useInput(
     (input, key) => {
       if (key.escape) {
-        setPhase("settings");
+        setPhase(pairOrigin === "debate" ? "start" : "settings");
         return;
       }
       if (key.upArrow || input === "k") {
-        setPairIndex((i) => clampIndex(i - 1, pairScreen.length));
+        setPairIndex((i) => clampIndex(i - 1, pairVisible.length));
         return;
       }
       if (key.downArrow || input === "j") {
-        setPairIndex((i) => clampIndex(i + 1, pairScreen.length));
+        setPairIndex((i) => clampIndex(i + 1, pairVisible.length));
         return;
       }
-      const row = pairScreen[pairIndex];
+      const row = pairVisible[pairIndex];
       if (key.return) {
         if (!row) return;
         if (row.kind === "save") {
@@ -2497,7 +2724,9 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         return;
       }
       if (input === "d") {
-        if (row?.kind === "saved") {
+        if (pairOrigin === "debate") {
+          setNotice("saved pairs are managed in settings");
+        } else if (row?.kind === "saved") {
           setPairAsk({ ask: "delete", pair: row.pair });
           setPhase("pairconfirm");
         } else if (row?.kind === "recent")
@@ -2787,13 +3016,13 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
 
       if (key.escape) {
         // Armed first: Esc stands down the ping-all and stays, so `n`/`Esc`
-        // both mean no. Unarmed, Esc leaves for settings as before.
+        // both mean no. Unarmed, Esc leaves for where this list was opened.
         if (pingArmed !== null) {
           setPingArmed(null);
           setNotice(null);
           return;
         }
-        setPhase("settings");
+        setPhase(pickMode === "browse" ? "home" : "start");
         return;
       }
       if (key.upArrow) {
@@ -2807,15 +3036,17 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         return;
       }
       if (key.return) {
+        // Browsing: Enter is inert — this list assigns nothing from home.
+        if (pickMode === "browse") return;
         if (chosen) {
           const next: Config = {
             ...cfg,
             models: { ...cfg.models, [pickRole]: { ref: chosen, family: familyOf(chosen) } },
           };
-          void persist(next, mode).then(() => setSaved(`saved ${pickRole}: ${chosen}`));
+          void persist(next, mode).then(() => setNotice(`saved ${pickRole}: ${chosen}`));
         }
         setPingArmed(null);
-        setPhase("settings");
+        setPhase("start");
         return;
       }
       // `?` before the text handling below: it is a key, not a character to filter.
@@ -3018,7 +3249,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     if (clash && cfg.familyCheck === "require") {
       setError(
         `${clash}.\n\nThis repo sets familyCheck: "require", so the run was not started. ` +
-          `Choose a reviewer from another family with Ctrl+P.`,
+          `Choose a reviewer from another family on the debate screen (↑↓ to choose models).`,
       );
       setPhase("error");
       return;
@@ -3220,7 +3451,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   );
   useWheelScroll(
     (rows) =>
-      setPairIndex((i) => clampIndex(i + Math.sign(rows), pairScreen.length)),
+      setPairIndex((i) => clampIndex(i + Math.sign(rows), pairVisible.length)),
     phase === "pairs",
   );
 
@@ -3261,14 +3492,14 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     setRunsOffset(0);
     // The run on screen may be one of them: the screen is then a record of
     // something that no longer exists, and `r` would fail on a missing
-    // directory. Back to the question desk rather than a stale result.
+    // directory. Back home rather than to a stale result.
     if (head && result.deleted.includes(head.paths.dir)) {
       setHead(null);
       setTail(null);
       setGate(null);
       setRunTask("");
-      addLog("the run on screen was deleted — back to the start screen");
-      setPhase("start");
+      addLog("the run on screen was deleted — back home");
+      setPhase("home");
     }
   }
 
@@ -3865,7 +4096,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       }
       if (key.escape) {
         setTaggedRuns(new Set());
-        setPhase("start");
+        setPhase("home");
         return;
       }
       if (input === "n" && !key.ctrl && !key.meta) {
@@ -3940,16 +4171,18 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
 
   if (phase === "setup") {
     content = <Setup repo={repo} selection={setupSelection} />;
+  } else if (phase === "home") {
+    content = (
+      <Home
+        selection={homeSel}
+        setSelection={setHomeSel}
+        notice={notice}
+        onChoose={(i) => chooseHome(i)}
+      />
+    );
   } else if (phase === "settings" && cfg) {
     content = (
-      <Settings
-        cfg={cfg}
-        mode={mode}
-        selection={settingsSel}
-        saved={saved}
-        pair={currentPairName}
-        aaKey={aaKeySet}
-      />
+      <Settings selection={settingsSel} saved={saved} pair={currentPairName} aaKey={aaKeySet} />
     );
   } else if (phase === "aakey") {
     content = <AAKey value={aaKeyInput} busy={aaKeyBusy} notice={notice} hasKey={aaKeySet} />;
@@ -3957,6 +4190,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     content = (
       <Pick
         role={pickRole}
+        pickMode={pickMode}
         list={modelRows}
         filter={filter}
         index={pickIndex}
@@ -3993,7 +4227,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   } else if (phase === "pairs") {
     // The selected pair's warnings take rows of their own, so the list budget
     // subtracts them: a warning must never push a row off the screen.
-    const pairAt = pairScreen[pairIndex];
+    const pairAt = pairVisible[pairIndex];
     const pairWarn = pairAt && pairAt.kind === "saved" ? pairAt.warnings.length : 0;
     content = (
       <Pairs
@@ -4003,6 +4237,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         current={cfg?.models ?? null}
         notice={notice}
         loading={pairLoading}
+        allowManage={pairOrigin !== "debate"}
       />
     );
   } else if (phase === "pairname") {
@@ -4019,6 +4254,10 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         mode={mode}
         task={task}
         setTask={setTask}
+        deskSel={deskSel}
+        setDeskSel={setDeskSel}
+        notice={notice}
+        pair={currentPairName}
         onRun={() => {
           // A question typed in plan mode reads the repository and answers with
           // a "Plan:". Ask once, rather than relying on a warning line.
@@ -4036,7 +4275,10 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           setMode(next);
           if (cfg) void persist(cfg, next);
         }}
+        onPick={(role) => void openPick(role)}
+        onPickPair={() => void openPairs("debate")}
         onSettings={() => void openSettings()}
+        onHome={() => openHome()}
       />
     );
   } else if (phase === "running" && approval) {
@@ -4219,8 +4461,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           <Box marginTop={1}>
             <Text dimColor>
               The model took longer than three minutes. With web checking that
-              usually means too many searches. Try a different reviewer with
-              Ctrl+P, or a narrower question.
+              usually means too many searches. Try a different reviewer on the
+              debate screen (↑↓ to choose models), or a narrower question.
             </Text>
           </Box>
         )}
@@ -4229,7 +4471,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
             <Text dimColor>
               That is the model's reply, not a bug in adv: it did not fit the
               expected shape, twice. Try again, or choose a different reviewer
-              with Ctrl+P.
+              on the debate screen (↑↓ to choose models).
             </Text>
           </Box>
         )}

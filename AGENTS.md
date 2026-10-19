@@ -69,7 +69,7 @@ replacement for tests. The models never resolve judgment calls.
 | M4 revise | **done 18 Oct** — `adv revise [<run>] [--rewrite]`; spec in `docs/REVISE.md` |
 | Model pairs + favourites | **done 18 Oct** — named pairs, OpenCode's favourites inherited read-only |
 | Model ping | **done 18 Oct** — `p`/`P`/`A` in the picker, `adv ping` on the CLI, price and tool-calling badges, the provider pane. Findings in `docs/OPENCODE-MODELS.md` |
-| TUI revise door | **done 18 Oct** — the same revise, reachable from the TUI: `r` on the result screen, past-runs picker on the start screen (Ctrl+R) |
+| TUI revise door | **done 18 Oct** — the same revise, reachable from the TUI: `r` on the result screen, past-runs picker (Ctrl+R) |
 
 Typecheck must stay clean: `bun run typecheck`. Tests must stay green:
 `bun test` (the gate mapping, resume-model choice and failed-state write are
@@ -144,10 +144,12 @@ supersede rule.
 
 | Key | Action |
 | --- | --- |
-| Ctrl+P | Settings — pick a saved **pair**, a drafter, a reviewer, the subject, or the benchmarks key |
+| m / n / p / s / q | Home — models browser · new debate · past runs · settings · quit (↑↓ · Enter works too; cursor starts on models browser) |
+| Ctrl+P | Settings — a saved **pair** or the benchmarks key (from home or the debate screen; Esc home) |
 | ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
-| d | Pairs: delete the highlighted saved pair, after a confirmation that names it. A pair that belongs to a run is not stored here and goes when the run does |
-| ↑↓ · Enter | Settings: on **drafter** or **reviewer**, open the model picker |
+| d | Pairs: delete the highlighted saved pair, after a confirmation that names it (settings only — inert from the debate screen). A pair that belongs to a run is not stored here and goes when the run does |
+| ↑↓ · Enter | New debate: on **pair**, choose a preset (saving and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt and snaps the cursor back to it |
+| models browser | Home's first row: the same model list — Enter does nothing, Esc home. Everything else (filter, views, ping, export) works as in the picker |
 | P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
 | A | Picker: ping every model shown — the list after the filter, the lock, the view and H. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown, and it says how to narrow |
 | B | Picker: refresh the benchmark cache — OpenRouter plus Artificial Analysis direct when a key is stored, merged Artificial-Analysis-first, and the notice says which of those it got. Auto-refreshes in the background past 7 days |
@@ -159,8 +161,8 @@ supersede rule.
 | < > | Cheap views: move the active ceiling — value in $0.10 steps, taskcost geometrically (×1.5 / ÷1.5). Capped at the dearest measured cost, so `>` past everything is a no-op. Saved to `~/.config/adv/picker.json` |
 | ? | Picker: what each provider bills to, whether a key is present, what the ★ ✓ ✗ marks mean, and every failure a ping has found |
 | Y | Picker: export the visible list as a Markdown table with a legend — for a second opinion in another LLM — to the clipboard and `~/.local/share/adv/models.md` (overwritten each time) |
-| Tab | Switch subject: **this repository** or a **general question** |
-| Enter | Run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
+| Tab | New debate: switch subject — **this repository** or a **general question** (also the subject row, Enter toggles) |
+| Enter | New debate: on the prompt, run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
 | s | Skip the current question (finding: untriaged; judgment: open) |
 | o | Gate: leave a judgment call open |
@@ -177,15 +179,15 @@ supersede rule.
 | y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
-| n | Result/Gate/Runs: back to your question — the draft, subject and models you had are kept |
-| Esc | Back where you came from: a panel closes; a result or gate opened from the past-runs list returns to that list (tags, scroll and all); one started at the desk returns to the desk. `n` is the unconditional way to the desk, `q` quits |
-| n · Esc · q | Error: the same rule — Esc back where you came from, n to the desk, q quits. This screen had no handler at all, which is how a reader got stuck on it |
-| Ctrl+R | Past runs — open a finished or parked run, from home, the gate, a result or an error |
+| n | Result/Gate/Runs: back to the debate screen — the draft, subject and models you had are kept |
+| Esc | Back, one level: home is the root (debate · runs · settings → home; pick browse → home, pick select → debate; pairs → settings). A panel closes; a result or gate opened from the past-runs list returns to that list (tags, scroll and all). `n` is the unconditional way to the debate screen, `q` quits |
+| n · Esc · q | Error: the same rule — Esc back where you came from, n to the debate screen, q quits. This screen had no handler at all, which is how a reader got stuck on it |
+| Ctrl+R | Past runs — open a finished or parked run, from home, the debate screen, the gate, a result or an error |
 | space | Runs: tag the highlighted run (`●`), and move on — tag several in a row |
 | a / A | Runs: tag all listed / clear the tags |
 | d | Runs: delete the tagged runs, or the highlighted one when none are tagged |
 | D | Runs: delete every run listed, questions included — the confirmation states the split |
-| Ctrl+U | Start: clear the prompt |
+| Ctrl+U | New debate: clear the prompt |
 | ↑↓ · j/k | Scroll a line |
 | space · f | Page down (both do the same; `space` is what a reader tries first) |
 | b · u · Ctrl+D · Ctrl+U | Page up · half up · half down · half up |
@@ -200,7 +202,9 @@ rather than deciding blind.
 
 The first-run screen appears when the directory has no `.adv/`. Choose
 "Initialise .adv/ here", or "Continue without it" (models then default to
-`DEFAULT_CONFIG`). Models can always be changed afterwards with Ctrl+P.
+`DEFAULT_CONFIG`). Models are chosen on the debate screen (↑↓ to drafter /
+reviewer, Enter opens the picker); the models browser on home is the
+read-only way in.
 
 ---
 
@@ -526,12 +530,12 @@ spike/              M0
   end, which is a blank pane with no error. Each screen is keyed by what is on
   it, so every pane starts at the top.
 - **There are two task states, and the TUI is not allowed to trap you in a
-  run.** `task` is the draft on the question desk: the start screen owns it, and
+  run.** `task` is the draft on the question desk: the debate screen owns it, and
   opening a past run must never touch it (it briefly did — `openRun` wrote the
   run's task into the same state, so Ctrl+R ate the prompt you were typing).
   `runTask` is the task of the run on screen, set from the draft by `beginRun`
   and from the record by `openRun`; `runHead`/`runTail` and the head effect read
-  it. `n` is the way back to the question desk from a result, a gate or the runs
+  it. `n` is the way back to the debate screen from a result, a gate or the runs
   list, and Ctrl+R opens the list from any settled screen. Esc is inert on the
   result on purpose — quitting is `q`, never a stray Escape. The `Scroller`
   swallows Ctrl/meta combos so Ctrl+R cannot also read as `r` (revisit) or
@@ -543,11 +547,11 @@ spike/              M0
   handler in the same commit, and make the hint line name the keys the handler
   answers to.
 - **Esc means "back", and back is where you came from.** `openedFrom` records
-  whether the run on screen came from the past-runs list or from the desk, and
+  whether the run on screen came from the past-runs list or from the debate screen, and
   `goBack()` is the only thing that reads it: the result, the gate and the error
   screen all call it. Returning to the list does not reload it — the list is a
   snapshot and keeps its tags and its scroll — which is why `goBack` sets the
-  phase and nothing else. `n` stays the unconditional way to the desk for when
+  phase and nothing else. `n` stays the unconditional way to the debate screen for when
   "back" is not where you want to be. Note the corollary: Ctrl+R does nothing
   while the list is already open, because it opens the list rather than
   refreshing it; leave the list and come back to see a run created meanwhile.

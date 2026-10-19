@@ -96,14 +96,19 @@ plain Markdown into a file; `NO_COLOR` turns off the styling.
 ### TUI mode
 
 Bare `adv` opens the interactive TUI for the current directory (`adv --dir
-/path/to/repo` for another). Type the task; the rest is keys.
+/path/to/repo` for another). Home first — models browser, new debate, past
+runs, settings — then keys.
 
 | Key | Action |
 | --- | --- |
-| Ctrl+P | Settings — pick a saved **pair**, a drafter, a reviewer, or the subject |
+| m / n / p / s / q | Home — models browser · new debate · past runs · settings · quit (↑↓ · Enter works too; cursor starts on models browser) |
+| models browser | Home's first row: the model list — browse, ping, compare. Enter does nothing; Esc home |
+| ↑↓ · Enter | New debate: on **pair**, choose a preset (saving and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt |
+| Tab | New debate: switch subject — **this repository** or a **general question** (also the subject row, Enter toggles) |
+| Enter | New debate: on the prompt, run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
+| Ctrl+P | Settings — a saved **pair** or the benchmarks key (from home or the debate screen; Esc home) |
 | ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it |
-| ↑↓ · Enter | Settings: on **drafter** or **reviewer**, open the model picker |
 | P · T | Picker: **ping** the highlighted model. `P` asks one word — does this account reach it? `T` asks it to read a file — does it also use tools? The row says which ran |
 | A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30 models). Press twice; refused above 40 |
 | ? | Picker: what each provider bills to, whether a key is present, and every failure a ping found |
@@ -125,15 +130,17 @@ Bare `adv` opens the interactive TUI for the current directory (`adv --dir
 | y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
-| n | Result/Gate/Runs: back to your question — the draft, subject and models you had are kept |
-| Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `n` is a new question, `q` quits (the run stays on disk — reopen it with Ctrl+R) |
-| Ctrl+R | Past runs — open a finished or parked run, from home, the gate or a result |
-| Ctrl+U | Start: clear the prompt |
+| n | Result/Gate/Runs: back to the debate screen — the draft, subject and models you had are kept |
+| Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `n` is a new debate, `q` quits (the run stays on disk — reopen it with Ctrl+R from home) |
+| Ctrl+R | Past runs — open a finished or parked run, from home, the debate screen, the gate, a result or an error |
+| Ctrl+U | New debate: clear the prompt |
 | ↑↓ · q | Scroll the result; `q` quits |
 
 The first-run screen appears when the directory has no `.adv/`: choose
 "Initialise .adv/ here", or "Continue without it" (models then default to the
-built-in config). Models can be changed afterwards with Ctrl+P.
+built-in config). Models are chosen on the debate screen (↑↓ to drafter /
+reviewer, Enter opens the picker); the models browser on home is the
+read-only way in.
 
 The pair you use most is worth a name: save it from the **pair** row and it is
 one keystroke away next time, listed last-used first. Pairs live in
