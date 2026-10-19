@@ -582,6 +582,32 @@ spike/              M0
   URL or code line is split rather than allowed to overflow, and why the section
   headers are re-fitted to the width. Any new line put into a pane has to go
   through the renderer or `fitLines`.
+- **The TUI is fullscreen, and the frame must never exceed the terminal.**
+  Ink renders into the alternate screen (`render(node, {alternateScreen})`),
+  the root is `<Box height={termRows}>`, the log sits on top, the screen fills
+  the middle (`flexGrow` + `overflow="hidden"`), and the mouse line is pinned
+  last. The budgets live in `src/viewport.ts` and every screen subtracts only
+  its own chrome — the arithmetic is tested in `src/viewport.test.ts`, next to
+  the gate-model rule. A screen that miscounts clips instead of corrupting the
+  redraw, but none should have to: the invariant is log + spinner + content +
+  mouse ≤ rows.
+- **`<Static>` is banned.** It is designed for inline rendering; on the
+  alternate screen Ink replays the whole accumulated static output on any full
+  clear (a resize, leaving a fullscreen frame), pushing the live frame off the
+  screen. The log is a bounded in-frame window over state instead, and `l`
+  shows it whole in a pane. Do not reintroduce `Static` without leaving the
+  alternate screen first.
+- **The log is a window, not a history.** While a screen is up it shows the
+  last rows that leave the content its minimum (`MIN_CONTENT_ROWS`, at most
+  `LOG_MAX_ROWS`); while running it fills. The full log stays in state for the
+  session, and the exit recap (state, run dir, plan path) is printed after Ink
+  restores the shell — the alt screen leaves with everything else. The escape
+  hatch is `--no-alt-screen` / `ADV_NO_ALT_SCREEN=1`, for terminals that
+  misbehave with the alternate screen.
+- **On the alternate screen there is no scrollback.** The handed-over mouse mode
+  promises selection only — "wheel scrolls back" is false there and the line
+  must not say it. The current wording is "drag to select text · Ctrl+T takes
+  it back".
 - The diff check is a **heuristic** (hunk count vs changelog entries). It flags
   possible out-of-scope edits; it cannot prove one, and a legitimately unclaimed
   consequence of a decision will be flagged as readily as a real edit.

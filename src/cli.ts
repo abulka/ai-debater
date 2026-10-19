@@ -577,7 +577,11 @@ async function cmdTui(flags: Map<string, string | true>) {
     throw new Error('the TUI needs a terminal. Use `adv run "<task>"` for scripted use.');
   }
   const { startTui } = await import("./tui.tsx");
-  await startTui({ repo });
+  const { altScreenEnabled } = await import("./viewport.ts");
+  await startTui({
+    repo,
+    altScreen: altScreenEnabled(flags.has("no-alt-screen"), process.env.ADV_NO_ALT_SCREEN),
+  });
 }
 
 
@@ -679,7 +683,7 @@ async function readLine(): Promise<string> {
 function usage() {
   console.log(`adv — adversarial two-model plan review
 
-  adv                        open the TUI
+  adv [--no-alt-screen]    open the TUI (fullscreen; ADV_NO_ALT_SCREEN=1 disables)
   adv init [--dir <repo>]    criteria, decisions and config (optional)
   adv run "<task>" [--general] [--plan] [--drafter <model> --drafter-family <f>]
                    [--reviewer <model> --reviewer-family <f>]

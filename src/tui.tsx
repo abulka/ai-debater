@@ -1,4 +1,4 @@
-import { Box, Static, Text, render, useApp, useInput } from "ink";
+import { Box, Text, render, useApp, useInput } from "ink";
 import path from "node:path";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
@@ -92,6 +92,19 @@ import {
   type StyledLine,
 } from "./markdown.ts";
 import { THEME } from "./theme.ts";
+import {
+  altScreenEnabled,
+  cappedLines,
+  contentRows,
+  gateDetailBudget,
+  logWindow,
+  LOG_MAX_ROWS,
+  MIN_CONTENT_ROWS,
+  pairsListHeight,
+  pickListHeight,
+  runsListHeight,
+  scrollerHeight,
+} from "./viewport.ts";
 import { copyMarkdown, copyNotice } from "./clipboard.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 
@@ -240,17 +253,15 @@ function useWheelScroll(onScroll: (rows: number) => void, active = true) {
   }, [active]);
 }
 
-/** Terminal height for a scrollable pane, leaving room for the chrome. */
-const paneHeight = (chrome: number, rows: number) => Math.max(6, rows - chrome);
-
 /**
- * The live terminal width. `process.stdout.columns` is read during render, so
- * a component that measures must also re-render when it changes — otherwise
- * Ink resizes Yoga and repaints the committed tree, still carrying the old
- * width, and every row padded to the old width wraps once in the new one.
- * Ink's own `resize` listener is registered first (at `render()`), so Yoga is
- * already at the new size when this notifies; the re-render lands framed
- * right. Worst case during a drag is one stale frame, immediately corrected.
+ * The live terminal size. `process.stdout.columns`/`rows` are read during
+ * render, so a component that measures must also re-render when they change —
+ * otherwise Ink resizes Yoga and repaints the committed tree, still carrying
+ * the old width, and every row padded to the old width wraps once in the new
+ * one. Ink's own `resize` listener is registered first (at `render()`), so
+ * Yoga is already at the new size when this notifies; the re-render lands
+ * framed right. Worst case during a drag is one stale frame, immediately
+ * corrected.
  */
 const subscribeResize = (cb: () => void) => {
   process.stdout.on("resize", cb);
@@ -272,6 +283,7 @@ function Scroller({
   lines,
   footer,
   notice,
+  height,
   escLabel = "Esc back",
   escCloses = true,
   onClose,
@@ -284,6 +296,8 @@ function Scroller({
   footer: StyledLine;
   /** A one-line answer to the last key, shown under the footer. */
   notice?: string | null;
+  /** Visible rows, from the viewport budget: the frame must fit the terminal. */
+  height: number;
   /**
    * What Esc does here, shown in the scroll hint. A panel says "Esc back"; the
    * result says "q quits" because Esc there is inert. A hint that names the
@@ -301,9 +315,12 @@ function Scroller({
   onClose: () => void;
   onKey?: (input: string) => boolean;
 }) {
-  const termRows = useTerminalRows();
-  const height = paneHeight(8, termRows);
   const [offset, setOffset] = useState(0);
+  // A resize changes the budget under a scrolled pane: clamp back into range
+  // rather than showing rows past the end.
+  useEffect(() => {
+    setOffset((o) => clampOffset(o, lines.length, height));
+  }, [lines.length, height]);
 
   useWheelScroll((rows) => by(rows));
 
@@ -646,9 +663,6 @@ const BADGE_W = 16;
  */
 const BENCH_W = 14;
 
-/** Model rows on screen at once. The picker's paging keys move by this. */
-const PICK_HEIGHT = 12;
-
 /** Pads or trims to an exact column count, so a badge column stays aligned. */
 const pad = (s: string, n: number): string =>
   s.length > n ? s.slice(0, n) : s.length >= n ? s : s + " ".repeat(n - s.length);
@@ -674,6 +688,7 @@ function Pick({
   list,
   filter,
   index,
+  height,
   catalogue,
   probes,
   benchmarks,
@@ -689,6 +704,8 @@ function Pick({
   list: ReturnType<typeof orderedModels>;
   filter: string;
   index: number;
+  /** Visible model rows, from the viewport budget: the frame must fit the terminal. */
+  height: number;
   catalogue: Catalogue;
   probes: ProbeCache;
   benchmarks: Benchmarks;
@@ -738,7 +755,7 @@ function Pick({
   // `- 5` leaves a spare column so a truncated ref never runs straight into the
   // price with no gap, which is what it looked like at 58 columns.
   const refWidth = Math.max(8, width - 5 - costW - badgeW - benchW);
-  const start = Math.max(0, Math.min(cursor - 5, Math.max(0, rows.length - PICK_HEIGHT)));
+  const start = Math.max(0, Math.min(cursor - 5, Math.max(0, rows.length - height)));
   const marked = items.length === 0;
   // Counted over the view's own items, so the number stays true when the
   // filter, the view, or H narrows what is on screen. Split by source when
@@ -760,7 +777,7 @@ function Pick({
         <Text inverse> </Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        {rows.slice(start, start + PICK_HEIGHT).map((row, i) => {
+        {rows.slice(start, start + height).map((row, i) => {
           const absolute = start + i;
 
           if (row.kind === "group") {
@@ -995,6 +1012,7 @@ function Providers({
   dropped,
   probes,
   notice,
+  height,
   onClose,
 }: {
   listing: string[];
@@ -1003,6 +1021,8 @@ function Providers({
   dropped: string[];
   probes: ProbeCache;
   notice: string | null;
+  /** Visible rows, from the viewport budget: the frame must fit the terminal. */
+  height: number;
   onClose: () => void;
 }) {
   return (
@@ -1010,6 +1030,7 @@ function Providers({
       title="providers"
       lines={providerLines(listing, catalogue, keyed, dropped, probes)}
       notice={notice}
+      height={height}
       footer={[
         { text: "the picker", color: THEME.accent },
         { text: " · ↑↓ scroll · Esc back", dim: true },
@@ -1029,12 +1050,15 @@ function Providers({
 function Pairs({
   rows,
   index,
+  height,
   current,
   notice,
   loading,
 }: {
   rows: PairRow[];
   index: number;
+  /** Visible rows, from the viewport budget: the frame must fit the terminal. */
+  height: number;
   /** The pair the settings are on, so the row it names can be marked. */
   current: PairModels | null;
   notice: string | null;
@@ -1042,7 +1066,6 @@ function Pairs({
   loading: boolean;
 }) {
   const width = Math.max(8, useTerminalWidth() - 6);
-  const height = 14;
   const start = Math.max(0, Math.min(index - 6, Math.max(0, rows.length - height)));
   const at = rows[index];
 
@@ -1163,7 +1186,7 @@ function AAKey({ value, busy, notice }: { value: string; busy: boolean; notice: 
 }
 
 /** The name prompt. Typing is handled by the app; this draws the field. */
-function PairName({ value, known }: { value: string; known: string[] }) {
+function PairName({ value, known, maxShown }: { value: string; known: string[]; maxShown: number }) {
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
@@ -1176,7 +1199,7 @@ function PairName({ value, known }: { value: string; known: string[] }) {
       {known.length > 0 && (
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>saved names:</Text>
-          {known.slice(0, 8).map((n) => (
+          {known.slice(0, maxShown).map((n) => (
             <Text key={n} dimColor>{`  ${n}`}</Text>
           ))}
         </Box>
@@ -1333,9 +1356,12 @@ function Runs({
  */
 function ConfirmDelete({
   summary,
+  maxLines,
   onAnswer,
 }: {
   summary: DeletionSummary;
+  /** Run rows that fit: the confirmation must fit the terminal too. */
+  maxLines: number;
   onAnswer: (ok: boolean) => void;
 }) {
   useInput((input, key) => {
@@ -1361,13 +1387,15 @@ function ConfirmDelete({
         )}
       </Box>
       <Box marginTop={1} flexDirection="column">
-        {summary.lines.slice(0, 8).map((line) => (
+        {summary.lines.slice(0, maxLines).map((line) => (
           <Text key={line.dir} dimColor>
             {"  "}
             {line.text}
           </Text>
         ))}
-        {summary.lines.length > 8 && <Text dimColor>{`  … and ${summary.lines.length - 8} more`}</Text>}
+        {summary.lines.length > maxLines && (
+          <Text dimColor>{`  … and ${summary.lines.length - maxLines} more`}</Text>
+        )}
       </Box>
       <Box marginTop={1}>
         <Text dimColor>
@@ -1431,17 +1459,14 @@ function Approve({
 /**
  * The run log, and the one live line that goes with it.
  *
- * Finished lines go into Ink's <Static>: each is written to the terminal once
- * and is never redrawn or erased. That is what keeps the log when the phase
- * changes — the gate, the result, the exit — because the redrawn frame is
- * everything *below* it, and the history stays on screen and in the scrollback.
- * Before this, each phase replaced the whole frame, and the gate wiped the log
- * exactly when the human wanted to know how the run got to that question.
- *
- * The live line is the spinner, labelled with what is happening. It is part of
- * the frame, so it disappears with the phase — only settled lines are permanent.
+ * A bounded in-frame window over the session's log: the last rows that fit the
+ * viewport budget, with the spinner below while a model is thinking. There is
+ * deliberately no `<Static>` here — on the alternate screen there is no
+ * scrollback, and Ink replays the whole accumulated static output on any full
+ * clear, pushing the live frame off the screen. The full log stays in state
+ * for the session, and `l` shows it whole in a pane.
  */
-function Log({ lines, label }: { lines: StyledLine[]; label: string | null }) {
+function Log({ lines, label, maxLines }: { lines: StyledLine[]; label: string | null; maxLines: number }) {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
     if (label === null) return;
@@ -1449,22 +1474,23 @@ function Log({ lines, label }: { lines: StyledLine[]; label: string | null }) {
     return () => clearInterval(t);
   }, [label]);
   const spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[frame % 10];
+  // Already wrapped to the width: one element is one row on screen, which is
+  // what makes the pane's position below it a number rather than a guess. Ink
+  // wrapping a long log line would shift everything under it.
+  const shown = lines.slice(Math.max(0, lines.length - Math.max(0, maxLines)));
 
   return (
-    <>
-      {/* Already wrapped to the width: one element is one row on screen, which
-          is what makes the pane's position below it a number rather than a
-          guess. Ink wrapping a long log line would shift everything under it. */}
-      <Static items={lines}>
-        {(line, i) => <Line key={i} spans={line} />}
-      </Static>
+    <Box flexDirection="column" flexShrink={0}>
+      {shown.map((line, i) => (
+        <Line key={i} spans={line} />
+      ))}
       {label !== null && (
         <Box>
           <Text color={THEME.warn}>{spinner} </Text>
           <Text dimColor>{label}</Text>
         </Box>
       )}
-    </>
+    </Box>
   );
 }
 
@@ -1500,6 +1526,7 @@ function GateView({
   mode,
   revisit,
   current,
+  contentH,
 }: {
   claims: Claims;
   review: Review;
@@ -1514,6 +1541,8 @@ function GateView({
   revisit?: boolean;
   /** The recorded answer for the current item, when there is one. */
   current?: string;
+  /** Content rows the screen may use: the finding's own text fills what fits. */
+  contentH: number;
 }) {
   const item = items[index];
   if (!item) return null;
@@ -1532,9 +1561,20 @@ function GateView({
   ].filter(Boolean);
 
   const wrapW = Math.max(8, useTerminalWidth() - 4);
+  const titleRows = wrapText(item.title, 4, wrapW);
   const detail: string[] = [];
   for (const line of item.detail) detail.push(...wrapText(line, 2, wrapW));
-  const clippedDetail = detail.slice(0, 4);
+  // The finding's own text fills what the title and options leave — on a tall
+  // terminal that is the whole finding, and `w` still shows it whole in a pane.
+  const clippedDetail = detail.slice(
+    0,
+    gateDetailBudget(contentH, {
+      titleRows: titleRows.length,
+      optionRows: item.options.length,
+      extras: extras.length > 0,
+      revisit: !!revisit,
+    }),
+  );
 
   return (
     <Box flexDirection="column">
@@ -1565,7 +1605,7 @@ function GateView({
       </Box>
 
       <Box flexDirection="column">
-        {wrapText(item.title, 4, wrapW).map((line, i) => (
+        {titleRows.map((line, i) => (
           <Text key={i} bold>
             {line}
           </Text>
@@ -1673,7 +1713,7 @@ function callLine(info: {
   return `${what}${info.retry ? " (retry)" : ""} — ${(info.ms / 1000).toFixed(1)}s, ${cost}`;
 }
 
-function App({ repo }: { repo: string }) {
+function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) => void }) {
   const { exit } = useApp();
   /* One handler for the whole app, in every phase, so no screen forgets it. */
   useInput((input, key) => {
@@ -1688,11 +1728,12 @@ function App({ repo }: { repo: string }) {
       setMouseReporting(next);
       // The log is the channel that exists on every screen; the notice is the
       // one next to the pane. A toggle with no feedback is a toggle you press
-      // twice to find out what it did.
+      // twice to find out what it did. (No scrollback on the alternate screen,
+      // so the second mode promises selection, not scrolling back.)
       addLog(
         next
           ? "mouse: the pane scrolls with the wheel again"
-          : "mouse: the terminal has it — drag to select, wheel to scroll back; Ctrl+T takes it back",
+          : "mouse: the terminal has it — drag to select text; Ctrl+T takes it back",
       );
       setNotice(
         next
@@ -2560,25 +2601,26 @@ function App({ repo }: { repo: string }) {
       // Paging before the control swallow below: Ctrl+F/B move a page and
       // Ctrl+D/U half a page, matching the results-view scroller exactly.
       // Plain `f`/`b` stay typeable in the filter, which is why these are
-      // control combos here and letters there.
+      // control combos here and letters there. The page is the visible list,
+      // from the viewport budget — not a constant.
       if (key.ctrl && input === "f") {
         setSweepArmed(null);
-        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + PICK_HEIGHT));
+        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + pickH));
         return;
       }
       if (key.ctrl && input === "b") {
         setSweepArmed(null);
-        setPickIndex((i) => Math.max(0, i - PICK_HEIGHT));
+        setPickIndex((i) => Math.max(0, i - pickH));
         return;
       }
       if (key.ctrl && input === "d") {
         setSweepArmed(null);
-        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + Math.ceil(PICK_HEIGHT / 2)));
+        setPickIndex((i) => Math.min(Math.max(0, items.length - 1), i + Math.ceil(pickH / 2)));
         return;
       }
       if (key.ctrl && input === "u") {
         setSweepArmed(null);
-        setPickIndex((i) => Math.max(0, i - Math.ceil(PICK_HEIGHT / 2)));
+        setPickIndex((i) => Math.max(0, i - Math.ceil(pickH / 2)));
         return;
       }
       if (key.backspace || key.delete) {
@@ -2816,9 +2858,9 @@ function App({ repo }: { repo: string }) {
   /**
    * The runs list is longer than the screen, so it shows a window of it — the
    * same arithmetic the panes use, because an index that can walk past the
-   * visible rows is a row you cannot see you are about to delete.
+   * visible rows is a row you cannot see you are about to delete. The height
+   * is the viewport budget, computed with the frame layout below.
    */
-  const runsHeight = paneHeight(11, useTerminalRows());
 
   // Only while the list is the screen: otherwise a wheel notch on a result
   // would move a cursor nobody can see.
@@ -2833,8 +2875,8 @@ function App({ repo }: { repo: string }) {
     setRunsIndex(index);
     setRunsOffset((offset) => {
       if (index < offset) return index;
-      if (index >= offset + runsHeight) return index - runsHeight + 1;
-      return clampOffset(offset, runs.length, runsHeight);
+      if (index >= offset + runsH) return index - runsH + 1;
+      return clampOffset(offset, runs.length, runsH);
     });
   }
 
@@ -3408,11 +3450,11 @@ function App({ repo }: { repo: string }) {
         return;
       }
       if (key.pageDown || input === "f") {
-        moveRuns(runsCursor.current + runsHeight);
+        moveRuns(runsCursor.current + runsH);
         return;
       }
       if (key.pageUp || input === "b") {
-        moveRuns(runsCursor.current - runsHeight);
+        moveRuns(runsCursor.current - runsH);
         return;
       }
       if (input === "g") {
@@ -3489,9 +3531,14 @@ function App({ repo }: { repo: string }) {
     }
   }, [phase, head, items.length, answers.length]);
 
-  /* The log is never part of a phase's frame. It sits above the frame, in
-     <Static>: settled lines are written once and stay on screen, so a phase
-     change rewrites the screen below the history instead of erasing it. */
+  /* Fullscreen budgets: the frame is the terminal, so every screen takes its
+     rows from the viewport rather than a constant. `contentRows` is the frame
+     minus the pinned mouse line; the log shows the last rows that leave the
+     content its minimum (while running, the log is the screen and fills);
+     each screen then subtracts only its own chrome. The content box below is
+     `overflow="hidden"`, so a screen that miscounts clips instead of pushing
+     the frame past the terminal. */
+  const termRows = useTerminalRows();
   const logLabel = approval ? null : workingLabel(log, phase, effectiveMode);
   /* The log as rows: `!` lines keep their colour, and every line is wrapped here
      rather than by Ink — a wrapped log line would occupy two rows and shift
@@ -3507,6 +3554,32 @@ function App({ repo }: { repo: string }) {
       ),
     [log],
   );
+  const usable = contentRows(termRows);
+  const running = phase === "running" || phase === "working";
+  const logTake = logWindow(logRows.length, usable, {
+    label: logLabel !== null,
+    minContent: running ? 0 : MIN_CONTENT_ROWS,
+    maxLog: running ? usable : LOG_MAX_ROWS,
+  });
+  const contentH = Math.max(1, usable - logTake - (logLabel !== null ? 1 : 0));
+  const scrollerH = scrollerHeight(contentH, notice !== null);
+  const pickH = pickListHeight(contentH, notice !== null);
+  const runsH = runsListHeight(contentH);
+
+  /* The exit recap: the alternate screen leaves with the log, so the shell
+     gets the record instead — state, run directory, and where the plan went.
+     Short lines, printed after Ink restores the shell. (Per-call costs stay in
+     the log; no total is tracked, so none is claimed.) */
+  const recap = !head
+    ? null
+    : tail
+      ? `done · ${displayPath(head.paths.dir)}\nplan: ${displayPath(head.paths.planV2)}`
+      : phase === "error" && error
+        ? `failed · ${displayPath(head.paths.dir)}\n${error.split("\n")[0]}`
+        : `parked · ${displayPath(head.paths.dir)}\nresume: adv run --resume ${path.basename(head.paths.dir)}`;
+  useEffect(() => {
+    onRecap?.(recap);
+  }, [recap, onRecap]);
 
   let content: ReactNode;
 
@@ -3532,6 +3605,7 @@ function App({ repo }: { repo: string }) {
         list={modelRows}
         filter={filter}
         index={pickIndex}
+        height={pickH}
         catalogue={catalogue}
         probes={probes}
         benchmarks={benchmarks}
@@ -3553,21 +3627,29 @@ function App({ repo }: { repo: string }) {
         dropped={modelRows.dropped}
         probes={probes}
         notice={notice}
+        height={scrollerH}
         onClose={() => setPhase("pick")}
       />
     );
   } else if (phase === "pairs") {
+    // The selected pair's warnings take rows of their own, so the list budget
+    // subtracts them: a warning must never push a row off the screen.
+    const pairAt = pairScreen[pairIndex];
+    const pairWarn = pairAt && pairAt.kind === "saved" ? pairAt.warnings.length : 0;
     content = (
       <Pairs
         rows={pairScreen}
         index={pairIndex}
+        height={pairsListHeight(contentH, pairWarn, notice !== null)}
         current={cfg?.models ?? null}
         notice={notice}
         loading={pairLoading}
       />
     );
   } else if (phase === "pairname") {
-    content = <PairName value={pairName} known={savedPairs.map((p) => p.name)} />;
+    content = (
+      <PairName value={pairName} known={savedPairs.map((p) => p.name)} maxShown={cappedLines(contentH, 8)} />
+    );
   } else if (phase === "pairconfirm" && pairAsk) {
     content = <ConfirmPair ask={pairAsk.ask} pair={pairAsk.pair} onAnswer={(ok) => void answerPairAsk(ok)} />;
   } else if (phase === "start") {
@@ -3612,6 +3694,7 @@ function App({ repo }: { repo: string }) {
           runs.filter((r) => pendingDelete.includes(r.dir)),
           repo,
         )}
+        maxLines={cappedLines(contentH, 9)}
         onAnswer={(ok) => void (ok ? deleteSelected(pendingDelete) : setPendingDelete(null))}
       />
     ) : (
@@ -3619,7 +3702,7 @@ function App({ repo }: { repo: string }) {
         runs={runs}
         index={runsIndex}
         offset={runsOffset}
-        height={runsHeight}
+        height={runsH}
         tagged={taggedRuns}
       />
     );
@@ -3631,6 +3714,7 @@ function App({ repo }: { repo: string }) {
           title={panel.title}
           lines={panel.lines}
         notice={notice}
+          height={scrollerH}
           footer={[
             { text: `gate ${index + 1} of ${items.length}`, color: THEME.accent },
             { text: " · Esc back to the question", dim: true },
@@ -3663,6 +3747,7 @@ function App({ repo }: { repo: string }) {
           mode={effectiveMode}
           revisit={hadAnswers}
           current={current}
+          contentH={contentH}
         />
       );
     }
@@ -3677,6 +3762,7 @@ function App({ repo }: { repo: string }) {
         title={panel.title}
         lines={panel.lines}
         notice={notice}
+        height={scrollerH}
         footer={[
           { text: "the result", color: THEME.accent },
           { text: " · Esc back", dim: true },
@@ -3689,10 +3775,11 @@ function App({ repo }: { repo: string }) {
         title="done"
         lines={renderResultLines(report)}
         notice={notice}
+        height={scrollerH}
         escLabel={openedFrom === "runs" ? "Esc back to the list" : "Esc back"}
         escCloses={false}
         onEsc={goBack}
-        // Short on purpose: the pane's height is the terminal minus the chrome,
+        // Short on purpose: the pane's height is the content minus the chrome,
         // and a footer that wraps to two lines takes a row from the text. The
         // rest of the keys are behind `?`.
         footer={[
@@ -3805,14 +3892,21 @@ function App({ repo }: { repo: string }) {
   }
 
   return (
-    <Box flexDirection="column">
-      <Log lines={logRows} label={logLabel} />
-      {content}
+    /* Fullscreen: the frame is the terminal, so it is exactly `termRows` high —
+       the bounded log on top, the screen in the middle, the mouse line pinned
+       last. The middle clips (`overflow="hidden"`) rather than growing: a
+       screen taller than its budget loses rows instead of pushing the frame
+       past the terminal and corrupting the redraw. */
+    <Box flexDirection="column" height={termRows}>
+      <Log lines={logRows} label={logLabel} maxLines={logTake} />
+      <Box flexDirection="column" flexGrow={1} overflow="hidden">
+        {content}
+      </Box>
       {/* Which mode the mouse is in, on every screen: the two modes do
           different things with a drag, and a reader who cannot see which one
           they are in has a mouse that seems to work at random. Truncated rather
           than wrapped, so it is always exactly one row. */}
-      <Box>
+      <Box flexShrink={0} height={1}>
         {mouseReporting ? (
           <Line
             wrap="truncate"
@@ -3826,7 +3920,7 @@ function App({ repo }: { repo: string }) {
             wrap="truncate"
             spans={[
               { text: "◉ mouse: the terminal's", color: THEME.warn, bold: true },
-              { text: " — drag to select text, wheel scrolls back · Ctrl+T takes it back", dim: true },
+              { text: " — drag to select text · Ctrl+T takes it back", dim: true },
             ]}
           />
         )}
@@ -3835,7 +3929,7 @@ function App({ repo }: { repo: string }) {
   );
 }
 
-export async function startTui(opts: { repo: string }): Promise<void> {
+export async function startTui(opts: { repo: string; altScreen?: boolean }): Promise<void> {
   // Without this the wheel scrolls the terminal's scrollback instead of the
   // pane, and there is no way to ask for it later: the terminal has to be told
   // before it stops handling the wheel itself.
@@ -3844,11 +3938,18 @@ export async function startTui(opts: { repo: string }): Promise<void> {
   // gave it up costs nothing, and this is the path that must not be missed.
   const handBack = () => process.stdout.write(MOUSE_OFF);
   process.once("exit", handBack);
+  // The alternate screen leaves with the log, so the run's record goes to the
+  // shell instead. Collected through the session, printed after Ink restores
+  // the primary screen.
+  let recap: string | null = null;
   try {
-    const app = render(<App repo={opts.repo} />);
+    const app = render(<App repo={opts.repo} onRecap={(text) => { recap = text; }} />, {
+      alternateScreen: opts.altScreen ?? true,
+    });
     await app.waitUntilExit();
   } finally {
     handBack();
     process.removeListener("exit", handBack);
   }
+  if (recap) console.log(`\n${recap}`);
 }
