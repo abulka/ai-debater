@@ -1,28 +1,43 @@
 /**
- * Benchmark scores for the model picker, relayed keyless via OpenRouter.
+ * Benchmark scores for the model picker: Artificial Analysis indices, with
+ * OpenRouter as the fallback and filler.
  *
  * Artificial Analysis publishes an Intelligence Index and a Coding Index that
  * absorb LiveCodeBench, SciCode and Terminal-Bench internally, so one number
  * covers what would otherwise be three sources. Their own API needs a signup
- * key (`401 API key is required`, verified October 2026), but OpenRouter
- * relays the same three indices — intelligence, coding, agentic — under
- * `benchmarks.artificial_analysis` on its keyless `GET /api/v1/models`.
- * No auth, one request, ~471 models. That is the source, and the keyed API
- * stays unwired until the relay proves too thin.
+ * key, but OpenRouter relays the same three indices — intelligence, coding,
+ * agentic — under `benchmarks.artificial_analysis` on its keyless
+ * `GET /api/v1/models`. No auth, one request, ~470 models. So there are two
+ * sources for the same numbers: AA direct (keyed, `src/artificialanalysis.ts`,
+ * all ~700 models plus the index version OpenRouter never exposes) and the
+ * OpenRouter relay (keyless, but a third party's copy, and missing models AA
+ * retired). When a key is set, AA is the primary source and the relay fills
+ * the gaps; without one the relay is the whole source, and the behaviour is
+ * what it always was.
  *
  * Matching is the whole design. `adv` says `opencode-go/glm-5.3-flash`;
- * OpenRouter says `z-ai/glm-5.3-flash`. The bridge is models.dev's
- * `canonical_model_id`, which OpenCode already caches and `catalogue.ts`
- * carries. A slug match would silently attach one model's score to another —
- * the exact `model.json`/`models.json` failure this repo already documents —
- * so resolution is two tiers with no guessing. Tier 1 is the exact normalised
+ * OpenRouter says `z-ai/glm-5.3-flash`; AA says `glm-5.3-flash` — a bare slug
+ * with no namespace at all. The bridge is models.dev's `canonical_model_id`,
+ * which OpenCode already caches and `catalogue.ts` carries. A slug match
+ * would silently attach one model's score to another — the exact
+ * `model.json`/`models.json` failure this repo already documents — so
+ * resolution is suffix tiers with no guessing. Tier 1 is the exact normalised
  * canonical id. Tier 2 drops the provider namespace (`zhipuai/glm-5.3-flash`
  * → `glm-5.3-flash`) and matches only when that bare part is unique across
- * the whole index — measured zero collisions, so the check costs nothing and
- * is insurance for the day one appears. Both tiers mark anything that needed
- * normalisation `≈` rather than assuming it. Ambiguity resolves to nothing:
- * two OpenRouter ids collapsing to one key with different scores is a guess,
- * and the row would rather be blank.
+ * the whole index. Tier 3 runs the same suffix chain on the served ref
+ * itself, for the refs models.dev knows nothing about. Tier 4 is what the
+ * chain already does past one strip: `togetherai/deepseek-ai/…` still ends in
+ * the model. Every tier past the first marks the match `≈` rather than
+ * assuming it. Ambiguity resolves to nothing: two ids collapsing to one key
+ * with different scores is a guess, and the row would rather be blank.
+ *
+ * AA publishes reasoning and non-reasoning variants of one model as separate
+ * entries (`claude-opus-4-5` at 23.7 beside `claude-opus-4-5-thinking` at
+ * 29.1). A group that names a reasoning variant resolves to it — `adv`
+ * picks a drafter and a reviewer, and the reasoning number is what describes
+ * the model in use — and the `≈` says a choice was made. A group with no
+ * reasoning variant keeps the exact or base entry. Names come from the
+ * source; an entry without one never triggers an override.
  *
  * Scores are observations, cached beside the probes with their own lifetime.
  * A benchmark number without its date is a claim about today, so the fetch
@@ -42,33 +57,114 @@ export interface BenchmarkScores {
 }
 
 export interface BenchmarkEntry {
-  /** The OpenRouter id the scores came attached to. */
+  /** The id the scores came attached to: an OpenRouter id or an AA slug. */
   id: string;
   scores: BenchmarkScores;
+  /** Which source measured it. Required: a row should know its provenance. */
+  source: "aa" | "openrouter";
+  /** The source's display name, for variant preference. Absent on old caches. */
+  name?: string;
 }
 
 /**
  * The resolved index. `byId` is keyed by normalised full id; `byBare` maps a
  * bare model part to its full-id key, only when unique across the index.
- * Built once per parse or load, so a row never rebuilds it per keystroke.
+ * `variants` maps a variant-stripped key to the full-id keys of its group,
+ * preferred representative first — built once per parse or load, so a row
+ * never rebuilds it per keystroke.
  */
 export interface Benchmarks {
   byId: Map<string, BenchmarkEntry>;
   byBare: Map<string, string>;
+  variants: Map<string, string[]>;
 }
 
 /** An index with nothing in it. A factory, because a shared map would be shared state. */
 export function emptyBenchmarks(): Benchmarks {
-  return { byId: new Map(), byBare: new Map() };
+  return { byId: new Map(), byBare: new Map(), variants: new Map() };
 }
 
 /**
  * The model part of an id, without the provider namespace. `z-ai/glm-5.3`
  * and `zhipuai/glm-5.3` are the same weights under different namespaces;
  * this is what tier 2 matches on.
+ *
+ * A bare slug has no namespace to strip, so it is itself: AA ids arrive
+ * without one, and returning "" here collapsed every one of them together.
  */
 export function bareOf(id: string): string {
-  return normalizeId(id.split("/").slice(1).join("/"));
+  const norm = normalizeId(id);
+  const at = norm.indexOf("/");
+  return at < 0 ? norm : norm.slice(at + 1);
+}
+
+/**
+ * Every progressively shorter form of an id: the full id, then minus the
+ * first namespace, and so on down to the bare model part. Tiers 2–4 are one
+ * loop over this chain: each form is tried against the exact index, then the
+ * unique bare shortcut, longest (most specific) first.
+ */
+export function suffixesOf(id: string): string[] {
+  const parts = normalizeId(id)
+    .split("/")
+    .filter((p) => p.length > 0);
+  const out: string[] = [];
+  for (let i = 0; i < parts.length; i++) out.push(parts.slice(i).join("/"));
+  return out;
+}
+
+/** Effort and mode suffixes that mark variants of one model, not a model. */
+const VARIANT_SUFFIX = /-(thinking|reasoning|adaptive|non-reasoning|max|high|low|medium|preview|exp)$/;
+
+/**
+ * The base a variant belongs to: variant suffixes stripped from the last
+ * segment, namespaces kept. Never strips to nothing — `max` alone is a name.
+ */
+export function baseKeyOf(key: string): string {
+  const parts = key.split("/");
+  const last = parts[parts.length - 1]!;
+  let base = last;
+  for (;;) {
+    const m = VARIANT_SUFFIX.exec(base);
+    if (!m) break;
+    const next = base.slice(0, m.index);
+    if (!next) {
+      base = last;
+      break;
+    }
+    base = next;
+  }
+  if (base === last) return key;
+  return [...parts.slice(0, -1), base].join("/");
+}
+
+const NON_REASONING = /non-reasoning/i;
+const REASONING = /reasoning|adaptive|\bmax\b/i;
+
+/**
+ * Order a variant group, preferred representative first. A group that names a
+ * reasoning variant resolves to it (excluding `-non-reasoning` first, because
+ * it contains the word "reasoning"); without one, the base slug wins, then
+ * alphabetical. Deterministic: the same fetch always picks the same row.
+ * Entries without names never trigger an override — only an exact or base
+ * match survives.
+ */
+function preferVariants(keys: string[], byId: Map<string, BenchmarkEntry>): string[] {
+  const entries = keys
+    .map((k) => ({ key: k, entry: byId.get(k)! }))
+    .filter((x) => x.entry !== undefined);
+  const eligible = entries.filter((x) => !(x.entry.name && NON_REASONING.test(x.entry.name)));
+  const pool = eligible.length > 0 ? eligible : entries;
+  const flagged = pool.filter((x) => x.entry.name && REASONING.test(x.entry.name));
+  const contenders = flagged.length > 0 ? flagged : pool;
+  const isBase = (key: string) => baseKeyOf(key) === key;
+  return [...contenders]
+    .sort(
+      (a, b) =>
+        (isBase(a.key) ? 0 : 1) - (isBase(b.key) ? 0 : 1) ||
+        (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+    )
+    .map((x) => x.key);
 }
 
 /** One keyless GET carries every benchmark. Nothing here spends a model call. */
@@ -134,7 +230,7 @@ export function parseBenchmarks(raw: string): Benchmarks {
     };
     if (scores.intelligence === undefined && scores.coding === undefined && scores.agentic === undefined)
       continue;
-    entries.push({ id, scores });
+    entries.push({ id, scores, source: "openrouter" });
   }
 
   return buildIndex(entries);
@@ -152,6 +248,10 @@ export function parseBenchmarks(raw: string): Benchmarks {
  * `byBare` keeps a bare model part only when a single full-id key owns it:
  * two providers serving one model name is a guess, and tier 2 refuses it
  * rather than picking.
+ *
+ * `variants` groups keys by their variant-stripped base, preferred
+ * representative first. Single-member groups cost one map entry and change
+ * nothing.
  */
 export function buildIndex(entries: BenchmarkEntry[]): Benchmarks {
   const buckets = new Map<string, BenchmarkEntry[]>();
@@ -176,7 +276,7 @@ export function buildIndex(entries: BenchmarkEntry[]): Benchmarks {
   const contested = new Set<string>();
   for (const key of byId.keys()) {
     const bare = bareOf(key);
-    if (contested.has(bare)) continue;
+    if (!bare || contested.has(bare)) continue;
     const owner = owners.get(bare);
     if (owner === undefined) owners.set(bare, key);
     else if (owner !== key) {
@@ -184,24 +284,84 @@ export function buildIndex(entries: BenchmarkEntry[]): Benchmarks {
       contested.add(bare);
     }
   }
-  return { byId, byBare: owners };
+  const groups = new Map<string, string[]>();
+  for (const key of byId.keys()) {
+    const base = baseKeyOf(key);
+    const group = groups.get(base);
+    if (group) group.push(key);
+    else groups.set(base, [key]);
+  }
+  const variants = new Map<string, string[]>();
+  for (const [base, keys] of groups) variants.set(base, preferVariants(keys, byId));
+  return { byId, byBare: owners, variants };
+}
+
+/**
+ * Merge two indexes, AA first. An OpenRouter entry is dropped when AA covers
+ * the same model: same normalised key, or an AA key that is a trailing
+ * segment-suffix of it (`deepseek-v4-1-flash` beats
+ * `deepseek/deepseek-v4-1-flash`). Everything AA never heard of — retired
+ * models included — survives. Rebuilds the bare and variant maps over the
+ * union, so matching downstream never knows there were two sources; each
+ * entry keeps its own `source`.
+ */
+export function mergeIndexes(aa: Benchmarks, or: Benchmarks): Benchmarks {
+  const aaKeys = new Set(aa.byId.keys());
+  const coveredByAA = (orKey: string): boolean => {
+    const parts = orKey.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      if (aaKeys.has(parts.slice(i).join("/"))) return true;
+    }
+    return false;
+  };
+  const entries: BenchmarkEntry[] = [...aa.byId.values()];
+  for (const [key, entry] of or.byId) {
+    if (!aaKeys.has(key) && !coveredByAA(key)) entries.push(entry);
+  }
+  return buildIndex(entries);
 }
 
 export interface ResolvedBenchmark extends BenchmarkScores {
-  /** The OpenRouter id the scores were read from, so a `≈` can be checked. */
-  openrouterId: string;
+  /** The id the scores were read from, so a `≈` can be checked. */
+  sourceId: string;
+  /** Which source measured it: the row's provenance. */
+  source: "aa" | "openrouter";
   /** True when `-`/`.` normalisation was needed to match. A guess, marked. */
   normalised: boolean;
 }
 
 /**
- * Resolve an `adv` ref to scores via the catalogue's `canonical_model_id`.
+ * Walk one id's suffix chain — full, then minus the first namespace, down to
+ * the bare model part — trying each against the exact index and then the
+ * unique bare shortcut. Longest (most specific) first, first hit wins.
+ */
+function resolveSuffixes(benchmarks: Benchmarks, id: string): BenchmarkEntry | null {
+  const seen = new Set<string>();
+  for (const form of suffixesOf(id)) {
+    if (seen.has(form)) continue;
+    seen.add(form);
+    const full = benchmarks.byId.get(form);
+    if (full) return full;
+    const key = benchmarks.byBare.get(form);
+    if (key) {
+      const bare = benchmarks.byId.get(key);
+      if (bare) return bare;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve an `adv` ref to scores via the catalogue's `canonical_model_id`,
+ * falling back to the served ref itself when models.dev knows nothing about
+ * it.
  *
- * Two tiers: the exact normalised canonical id, then the bare model part
- * when it is unique across the index (`zhipuai/…` vs `z-ai/…`). Both tiers
- * mark anything needing normalisation `≈`. Null when the catalogue never
- * heard of the model, carries no canonical id, or nothing matches — and null
- * is blank in the row, never a 0, never a sibling model's number.
+ * Tiers: the exact normalised canonical id, then its suffix chain, then the
+ * served ref's own chain for refs with no canonical id (and as a second
+ * chance when the canonical id matches nothing). Every tier past the first
+ * marks `≈`. A variant group with a reasoning member resolves to it instead
+ * of the matched entry, also marked. Null when nothing matches — and null is
+ * blank in the row, never a 0, never a sibling model's number.
  */
 export function scoresFor(
   catalogue: Catalogue,
@@ -209,19 +369,31 @@ export function scoresFor(
   ref: string,
 ): ResolvedBenchmark | null {
   const canonical = catalogue.get(ref)?.canonicalModelId;
-  if (!canonical || !canonical.trim()) return null;
-  const full = benchmarks.byId.get(normalizeId(canonical));
-  if (full) {
-    return {
-      ...full.scores,
-      openrouterId: full.id,
-      normalised: full.id.toLowerCase() !== canonical.toLowerCase(),
-    };
+  let entry: BenchmarkEntry | null = null;
+  let lookup = ref;
+  if (canonical && canonical.trim()) {
+    entry = resolveSuffixes(benchmarks, canonical);
+    if (entry) lookup = canonical;
   }
-  const key = benchmarks.byBare.get(bareOf(canonical));
-  const bare = key ? benchmarks.byId.get(key) : undefined;
-  if (!bare) return null;
-  return { ...bare.scores, openrouterId: bare.id, normalised: true };
+  if (!entry) {
+    entry = resolveSuffixes(benchmarks, ref);
+    lookup = ref;
+  }
+  if (!entry) return null;
+  // A variant group that names a reasoning variant speaks through it: the
+  // drafter and reviewer reason, so the reasoning number is what describes
+  // the model in use. Anything else keeps the matched entry.
+  let normalised = entry.id.toLowerCase() !== lookup.toLowerCase();
+  const key = normalizeId(entry.id);
+  const group = benchmarks.variants.get(baseKeyOf(key));
+  if (group && group[0] !== key) {
+    const preferred = benchmarks.byId.get(group[0]!);
+    if (preferred) {
+      entry = preferred;
+      normalised = true;
+    }
+  }
+  return { ...entry.scores, sourceId: entry.id, source: entry.source, normalised };
 }
 
 /**
@@ -255,29 +427,48 @@ export interface LoadedScores {
   /** ISO fetch time, null when there is no cache. */
   at: string | null;
   ageMs: number | null;
+  /** The AA Intelligence Index version that measured these, null when unknown. */
+  indexVersion: string | null;
+}
+
+/** One serial row: scores plus the provenance the old cache never kept. */
+interface SerialEntry extends BenchmarkScores {
+  source?: unknown;
+  name?: unknown;
 }
 
 /**
  * The cache, or an empty one. A malformed file is no scores, never a throw —
- * the picker renders blanks and carries on.
+ * the picker renders blanks and carries on. Reads caches written before
+ * `source` and `indexVersion` existed: those rows are the relay's.
  */
 export async function loadScores(file: string = benchmarksFile()): Promise<LoadedScores> {
+  const empty = (): LoadedScores => ({
+    scores: emptyBenchmarks(),
+    at: null,
+    ageMs: null,
+    indexVersion: null,
+  });
   let raw: string;
   try {
     raw = await readFile(file, "utf8");
   } catch {
-    return { scores: emptyBenchmarks(), at: null, ageMs: null };
+    return empty();
   }
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
-    return { scores: emptyBenchmarks(), at: null, ageMs: null };
+    return empty();
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { scores: emptyBenchmarks(), at: null, ageMs: null };
+    return empty();
   }
-  const { at, scores } = value as { at?: unknown; scores?: unknown };
+  const { at, scores, indexVersion } = value as {
+    at?: unknown;
+    scores?: unknown;
+    indexVersion?: unknown;
+  };
   const entries: BenchmarkEntry[] = [];
   if (scores && typeof scores === "object" && !Array.isArray(scores)) {
     for (const [id, s] of Object.entries(scores as Record<string, unknown>)) {
@@ -294,7 +485,13 @@ export async function loadScores(file: string = benchmarksFile()): Promise<Loade
         entry.agentic === undefined
       )
         continue;
-      entries.push({ id, scores: entry });
+      const serial = s as SerialEntry;
+      entries.push({
+        id,
+        scores: entry,
+        source: serial.source === "aa" ? "aa" : "openrouter",
+        ...(typeof serial.name === "string" && serial.name ? { name: serial.name } : {}),
+      });
     }
   }
   const benchmarks = buildIndex(entries);
@@ -305,7 +502,12 @@ export async function loadScores(file: string = benchmarksFile()): Promise<Loade
   } catch {
     /* read it, could not stat it: no age to report, not a failure */
   }
-  return { scores: benchmarks, at: stamp, ageMs };
+  return {
+    scores: benchmarks,
+    at: stamp,
+    ageMs,
+    indexVersion: typeof indexVersion === "string" && indexVersion ? indexVersion : null,
+  };
 }
 
 /** True when there is no cache, its date is unreadable, or it is past the window. */
@@ -319,13 +521,42 @@ export function isStale(at: string | null, now = Date.now()): boolean {
 export interface FetchedScores {
   scores: Benchmarks;
   at: string;
-  /** OpenRouter entries carrying at least one index. */
+  /** Entries carrying at least one index. */
   count: number;
+  /** The AA Intelligence Index version, when the fetch carried one. */
+  indexVersion: string | null;
 }
 
 /**
- * One keyless GET, then the cache is rewritten. Throws on network failure or
- * an unparseable payload — callers report it and keep the old cache.
+ * Rewrite the cache from a resolved index. One writer for every fetch path,
+ * so the relay-only and the merged refreshes cannot drift apart. Caches
+ * written by older versions load fine: they just have no source or version.
+ */
+export async function saveScores(
+  scores: Benchmarks,
+  at: string,
+  file: string = benchmarksFile(),
+  indexVersion: string | null = null,
+): Promise<void> {
+  const serial: Record<string, BenchmarkScores & { source?: string; name?: string }> = {};
+  for (const entry of scores.byId.values()) {
+    serial[entry.id] = {
+      ...entry.scores,
+      ...(entry.source === "aa" ? { source: "aa" as const } : {}),
+      ...(entry.name ? { name: entry.name } : {}),
+    };
+  }
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(
+    file,
+    `${JSON.stringify({ at, scores: serial, ...(indexVersion ? { indexVersion } : {}) }, null, 2)}\n`,
+  );
+}
+
+/**
+ * The relay on its own: one keyless GET, then the cache is rewritten. Throws
+ * on network failure or an unparseable payload — callers report it and keep
+ * the old cache.
  */
 export async function fetchBenchmarks(
   url: string = OPENROUTER_MODELS_URL,
@@ -346,16 +577,34 @@ export async function fetchBenchmarks(
   if (!res.ok) throw new Error(`benchmark fetch failed: HTTP ${res.status}`);
   const scores = parseBenchmarks(await res.text());
   const at = new Date().toISOString();
-  const serial: Record<string, BenchmarkScores> = {};
-  for (const entry of scores.byId.values()) serial[entry.id] = entry.scores;
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify({ at, scores: serial }, null, 2)}\n`);
-  return { scores, at, count: scores.byId.size };
+  await saveScores(scores, at, file);
+  return { scores, at, count: scores.byId.size, indexVersion: null };
+}
+
+/** How many of these refs resolve, and from which source. */
+export interface ScoredSplit {
+  total: number;
+  aa: number;
+  openrouter: number;
+}
+
+export function countScoredBySource(
+  refs: string[],
+  catalogue: Catalogue,
+  scores: Benchmarks,
+): ScoredSplit {
+  let aa = 0;
+  let openrouter = 0;
+  for (const ref of refs) {
+    const r = scoresFor(catalogue, scores, ref);
+    if (!r) continue;
+    if (r.source === "aa") aa++;
+    else openrouter++;
+  }
+  return { total: aa + openrouter, aa, openrouter };
 }
 
 /** How many of these refs resolve to a score. What the refresh notice reports. */
 export function countScored(refs: string[], catalogue: Catalogue, scores: Benchmarks): number {
-  let n = 0;
-  for (const ref of refs) if (scoresFor(catalogue, scores, ref)) n++;
-  return n;
+  return countScoredBySource(refs, catalogue, scores).total;
 }

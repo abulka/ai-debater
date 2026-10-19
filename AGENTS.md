@@ -144,13 +144,13 @@ supersede rule.
 
 | Key | Action |
 | --- | --- |
-| Ctrl+P | Settings — pick a saved **pair**, a drafter, a reviewer, or the subject |
+| Ctrl+P | Settings — pick a saved **pair**, a drafter, a reviewer, the subject, or the benchmarks key |
 | ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it. A pair that belongs to a run is not stored here and goes when the run does |
 | ↑↓ · Enter | Settings: on **drafter** or **reviewer**, open the model picker |
 | P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
 | A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30). **Press twice**, refused above 40 matches, and it says so |
-| B | Picker: refresh the benchmark cache — one keyless GET, free, so it asks nothing twice. Auto-refreshes in the background past 7 days |
+| B | Picker: refresh the benchmark cache — the relay plus AA direct when a key is stored, merged AA-first. Auto-refreshes in the background past 7 days |
 | V | Picker: cycle the view — provider groups, intelligence-ranked, value (output ≤ ceiling, intelligence-ranked) |
 | H | Picker: hide models with no benchmark, in every view |
 | ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |

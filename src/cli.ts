@@ -30,12 +30,13 @@ import { loadConfig } from "./config.ts";
 import type { FamilyCheck } from "./config.ts";
 import { loadCatalogue } from "./catalogue.ts";
 import {
-  fetchBenchmarks,
+  countScoredBySource,
   isStale,
   loadScores,
   scoresFor,
   type Benchmarks,
 } from "./benchmarks.ts";
+import { refreshAllBenchmarks } from "./artificialanalysis.ts";
 import { listModels } from "./models.ts";
 import { loadPairs } from "./pairs.ts";
 import { pingModel } from "./probe.ts";
@@ -762,12 +763,14 @@ async function cmdPing(flags: Map<string, string | true>, positional: string[]) 
 
 /**
  * `adv benchmarks [--refresh] [<ref>]` — Artificial Analysis indices for the
- * models `opencode models` lists, relayed keyless via OpenRouter.
+ * models `opencode models` lists.
  *
- * No model call, one GET at most, and only with `--refresh`: without it the
- * command reads the cache the picker's `B` and auto-refresh keep. A ref
- * prints its three indices and the OpenRouter id they came from, so a `≈`
- * guess can be checked; without one, every listed model that resolves.
+ * No model call, and network only with `--refresh`: without it the command
+ * reads the cache the picker's `B` and auto-refresh keep. With a key stored
+ * (TUI settings), a refresh reads AA direct and the relay fills the gaps;
+ * without one it is the relay alone, exactly as before. A ref prints its
+ * three indices and the id they came from, so a `≈` guess can be checked;
+ * without one, every listed model that resolves.
  */
 async function cmdBenchmarks(flags: Map<string, string | true>, positional: string[]) {
   const repo = repoOf(flags);
@@ -776,13 +779,36 @@ async function cmdBenchmarks(flags: Map<string, string | true>, positional: stri
   const { catalogue } = await loadCatalogue();
   let scores: Benchmarks;
   let at: string | null;
+  let indexVersion: string | null;
   if (flags.has("refresh")) {
-    const fetched = await fetchBenchmarks();
-    scores = fetched.scores;
-    at = fetched.at;
-    console.log(`  fetched ${fetched.count} scored models`);
+    try {
+      const refreshed = await refreshAllBenchmarks();
+      scores = refreshed.scores;
+      at = refreshed.at;
+      indexVersion = refreshed.indexVersion;
+      const quota =
+        refreshed.quota?.remaining !== null && refreshed.quota?.remaining !== undefined
+          ? ` · quota ${refreshed.quota.remaining}/${refreshed.quota.limit ?? "?"}`
+          : "";
+      console.log(
+        `  fetched ${refreshed.aaCount + refreshed.orCount} scored models` +
+          (refreshed.aaOk && refreshed.orOk
+            ? ` (${refreshed.aaCount} AA + ${refreshed.orCount} relay)`
+            : refreshed.aaOk
+              ? " (AA only — relay unreachable)"
+              : refreshed.aaKey
+                ? " (relay only — AA unreachable)"
+                : " (relay only — no AA key stored)") +
+          (indexVersion ? ` · AA Intelligence Index v${indexVersion}` : "") +
+          quota,
+      );
+      for (const w of refreshed.warnings) console.log(`  ! ${w}`);
+    } catch (err) {
+      console.log(`  ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
   } else {
-    ({ scores, at } = await loadScores());
+    ({ scores, at, indexVersion } = await loadScores());
   }
   if (scores.byId.size === 0) {
     console.log("  no benchmark cache — run `adv benchmarks --refresh` to fetch it");
@@ -790,6 +816,9 @@ async function cmdBenchmarks(flags: Map<string, string | true>, positional: stri
   }
 
   const age = at ? ` · fetched ${at.slice(0, 10)}${isStale(at) ? " (stale — --refresh)" : ""}` : "";
+  const version = indexVersion ? ` · AA Intelligence Index v${indexVersion}` : "";
+  const via = (r: NonNullable<ReturnType<typeof scoresFor>>) =>
+    r.source === "aa" ? "Artificial Analysis" : "OpenRouter relay";
   const num = (n: number | undefined) => (n === undefined ? "—" : String(Math.round(n * 10) / 10));
 
   if (ref) {
@@ -800,24 +829,29 @@ async function cmdBenchmarks(flags: Map<string, string | true>, positional: stri
     }
     console.log(`  ${ref}`);
     console.log(`    intelligence ${num(r.intelligence)} · coding ${num(r.coding)} · agentic ${num(r.agentic)}`);
-    console.log(`    via ${r.openrouterId}${r.normalised ? " (≈ normalised match)" : ""}${age}`);
-    console.log(`    Artificial Analysis indices, relayed by OpenRouter`);
+    console.log(`    via ${r.sourceId} (${via(r)})${r.normalised ? " ≈ normalised match" : ""}${age}`);
     return;
   }
 
   const listing = await listModels(repo).catch(() => [] as string[]);
+  const split = countScoredBySource(listing, catalogue, scores);
   const rows = listing
     .map((m) => ({ ref: m, r: scoresFor(catalogue, scores, m) }))
     .filter((row): row is { ref: string; r: NonNullable<ReturnType<typeof scoresFor>> } => row.r !== null)
     .sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
-  console.log(`  ${rows.length} of ${listing.length} listed models scored${age}`);
+  console.log(
+    `  ${rows.length} of ${listing.length} listed models scored` +
+      (split.aa > 0 ? ` (${split.aa} AA + ${split.openrouter} relay)` : "") +
+      `${age}${version}`,
+  );
   for (const { ref: m, r } of rows) {
     console.log(
       `    ${m}  I${num(r.intelligence)} C${num(r.coding)} A${num(r.agentic)}` +
-        `${r.normalised ? " ≈" : ""}`,
+        `${r.normalised ? " ≈" : ""}` +
+        `${r.source === "aa" ? "" : " · relay"}`,
     );
   }
-  console.log(`  Artificial Analysis indices, relayed by OpenRouter (attribution: artificialanalysis.ai)`);
+  console.log(`  Artificial Analysis indices (attribution: artificialanalysis.ai)`);
 }
 
 /* ------------------------------------------------------------------ */

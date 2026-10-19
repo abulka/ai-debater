@@ -26,15 +26,16 @@ import { familyClash, familyOf, listModels, orderedModels, providerOf, rankModel
 import type { PickerView } from "./models.ts";
 import { costOf, cannotUseTools, formatCost, loadCatalogue, type Catalogue } from "./catalogue.ts";
 import {
-  countScored,
+  countScoredBySource,
   emptyBenchmarks,
-  fetchBenchmarks,
   formatResolved,
   isStale,
   loadScores,
   scoresFor,
   type Benchmarks,
 } from "./benchmarks.ts";
+import { loadAAKey, saveAAKey } from "./aa-key.ts";
+import { refreshAllBenchmarks, verifyAAKey } from "./artificialanalysis.ts";
 import { CEILING_STEP, DEFAULT_CEILING, loadCeiling, roundCeiling, saveCeiling } from "./prefs.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
 import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES } from "./providers.ts";
@@ -99,6 +100,7 @@ type Phase =
   | "start"
   | "clarify"
   | "settings"
+  | "aakey"
   | "pick"
   | "providers"
   | "pairs"
@@ -569,6 +571,7 @@ function Settings({
   selection,
   saved,
   pair,
+  aaKey,
 }: {
   cfg: Config;
   mode: Mode;
@@ -576,6 +579,8 @@ function Settings({
   saved: string | null;
   /** The name of the saved pair these two models are, or null when unnamed. */
   pair: string | null;
+  /** Whether an Artificial Analysis key is stored — the picker's benchmark source. */
+  aaKey: boolean;
 }) {
   const rows: { label: string; value: string }[] = [
     // Matched by model, not by position: a pair saved under another name is
@@ -584,6 +589,10 @@ function Settings({
     { label: "drafter", value: cfg.models.drafter.ref },
     { label: "reviewer", value: cfg.models.reviewer.ref },
     { label: "subject", value: mode === "answer" ? "general question" : "this repository" },
+    {
+      label: "benchmarks",
+      value: aaKey ? "artificialanalysis.ai · key set" : "artificialanalysis.ai · no key — OpenRouter relay",
+    },
     { label: "back", value: "" },
   ];
   const clash = familyClash(cfg.models);
@@ -597,7 +606,7 @@ function Settings({
         <Box key={r.label}>
           <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
           <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
-            {r.label.padEnd(10)}
+            {r.label.padEnd(11)}
           </Text>
           <Text>{r.value}</Text>
         </Box>
@@ -732,8 +741,9 @@ function Pick({
   const start = Math.max(0, Math.min(cursor - 5, Math.max(0, rows.length - PICK_HEIGHT)));
   const marked = items.length === 0;
   // Counted over the view's own items, so the number stays true when the
-  // filter, the view, or H narrows what is on screen.
-  const scored = countScored(
+  // filter, the view, or H narrows what is on screen. Split by source when
+  // AA is in the merge, so a screen mixing two sources says so.
+  const split = countScoredBySource(
     items.map((i) => i.ref),
     catalogue,
     benchmarks,
@@ -825,7 +835,9 @@ function Pick({
         <Text dimColor>
           {marked
             ? "nothing to choose"
-            : `${items.length} model(s) · ${scored} scored · view: ${view}` +
+            : `${items.length} model(s) · ${split.total} scored` +
+              `${split.aa > 0 ? ` (${split.aa} AA + ${split.openrouter} relay)` : ""}` +
+              ` · view: ${view}` +
               `${view === "value" ? ` ≤ $${ceiling.toFixed(2)}` : ""}` +
               `${hideUnscored ? " · hiding unscored" : ""}`}
         </Text>
@@ -1111,6 +1123,39 @@ function Pairs({
               ["Esc", "back"],
             )}
           />
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+/** The Artificial Analysis key prompt. Typing is handled by the app; this draws the field. */
+function AAKey({ value, busy, notice }: { value: string; busy: boolean; notice: string | null }) {
+  // Masked but confirmable: a paste you cannot check is a paste you redo.
+  const shown = value
+    ? `${"•".repeat(Math.max(0, value.length - 4))}${value.slice(-4)}`
+    : "paste the key, then Enter…";
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="benchmarks key" />
+      </Box>
+      <Text dimColor>
+        an artificialanalysis.ai key, so the picker reads scores direct instead of the OpenRouter relay.
+      </Text>
+      <Text dimColor>one verification request, then only a few per weekly refresh — inside the free 100/day.</Text>
+      <Box marginTop={1}>
+        <Text inverse>{` ${shown} `}</Text>
+        {busy && <Text dimColor> verifying…</Text>}
+      </Box>
+      {notice && (
+        <Box marginTop={1}>
+          <Text color={THEME.warn}>{notice}</Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text>
+          <Line spans={hints(["Enter", "save & verify"], ["Ctrl+U", "clear"], ["Esc", "cancel"])} />
         </Text>
       </Box>
     </Box>
@@ -1741,6 +1786,12 @@ function App({ repo }: { repo: string }) {
   const [pairName, setPairName] = useState("");
   const [pairAsk, setPairAsk] = useState<{ ask: "delete" | "overwrite"; pair: Pair } | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  /** An AA key is stored: the picker reads scores direct, the relay fills gaps. */
+  const [aaKeySet, setAAKeySet] = useState(false);
+  /** The key being typed. Masked on screen, never logged, verified before saving. */
+  const [aaKeyInput, setAAKeyInput] = useState("");
+  /** A verification request in flight: the keystroke handler stands aside. */
+  const [aaKeyBusy, setAAKeyBusy] = useState(false);
   const [panel, setPanel] = useState<Panel | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1911,9 +1962,12 @@ function App({ repo }: { repo: string }) {
     // they do not wait for it. Neither throws.
     void loadCatalogue().then((r) => setCatalogue(r.catalogue));
     void loadProbes().then(setProbes);
+    // Whether an AA key is stored decides the benchmark source. Never throws.
+    void loadAAKey().then((k) => setAAKeySet(!!k));
     // Benchmarks likewise. A stale cache refreshes in the background once the
-    // stored scores are on screen — the fetch is keyless and free, so unlike
-    // a ping it needs no keypress, only a week-old cache.
+    // stored scores are on screen — keyed or keyless, the refresh is a few
+    // requests against a weekly cache, so unlike a ping it needs no keypress,
+    // only a week-old cache.
     void loadScores().then((r) => {
       setBenchmarks(r.scores);
       if (isStale(r.at)) void refreshBenchmarks(true);
@@ -1921,7 +1975,8 @@ function App({ repo }: { repo: string }) {
   }
 
   /**
-   * Refresh the benchmark cache: one keyless GET, then the rows re-render.
+   * Refresh the benchmark cache: the relay plus AA direct when a key is
+   * stored, then the rows re-render merged, AA first.
    *
    * Silent when automatic (a stale cache on opening settings): the old scores
    * stay until the new ones land, and a failed fetch keeps them with nothing
@@ -1933,9 +1988,30 @@ function App({ repo }: { repo: string }) {
     benchFetching.current = true;
     try {
       if (!silent) setNotice("refreshing benchmarks…");
-      const r = await fetchBenchmarks();
+      const r = await refreshAllBenchmarks();
       setBenchmarks(r.scores);
-      setNotice(`benchmarks updated · ${r.count} models scored · fetched ${r.at.slice(0, 10)}`);
+      const total = r.aaCount + r.orCount;
+      const scope =
+        r.aaOk && r.orOk
+          ? `${total} scored (${r.aaCount} AA + ${r.orCount} relay)`
+          : r.aaOk
+            ? `${total} scored (AA only — relay unreachable)`
+            : r.aaKey
+              ? `${total} scored (relay only — AA unreachable)`
+              : `${total} scored (relay only — no AA key)`;
+      const parts = [
+        scope,
+        ...(r.indexVersion ? [`AA Intelligence Index v${r.indexVersion}`] : []),
+        ...(r.quota?.remaining !== null && r.quota?.remaining !== undefined
+          ? [`quota ${r.quota.remaining}/${r.quota.limit ?? "?"}`]
+          : []),
+        `fetched ${r.at.slice(0, 10)}`,
+      ];
+      if (!silent)
+        setNotice(
+          `benchmarks updated · ${parts.join(" · ")}` +
+            (r.warnings.length ? ` · ! ${r.warnings[0]}` : ""),
+        );
     } catch (err) {
       if (!silent) setNotice(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2004,8 +2080,10 @@ function App({ repo }: { repo: string }) {
     setPhase("settings");
   }
 
-  /* Settings: choose a pair, a model, or the subject. Every change is written
-     to the repository's .adv/ and to the user config. */
+  /* Settings: choose a pair, a model, the subject, or the benchmarks key.
+     Every change but the key is written to the repository's .adv/ and to the
+     user config; the key lives in the user's config dir alone, never in a
+     repo. */
   useInput(
     (_input, key) => {
       if (!cfg) return;
@@ -2018,7 +2096,7 @@ function App({ repo }: { repo: string }) {
         return;
       }
       if (key.downArrow) {
-        setSettingsSel((s) => Math.min(4, s + 1));
+        setSettingsSel((s) => Math.min(5, s + 1));
         return;
       }
       if (!key.return) return;
@@ -2040,9 +2118,91 @@ function App({ repo }: { repo: string }) {
         void persist(cfg, nextMode).then(() => setSaved(`saved mode: ${nextMode}`));
         return;
       }
+      if (settingsSel === 4) {
+        // A fresh field every visit: a key left on screen is a key photographed.
+        setAAKeyInput("");
+        setNotice(null);
+        setPhase("aakey");
+        return;
+      }
       setPhase("start");
     },
     { isActive: phase === "settings" },
+  );
+
+  /**
+   * Verify, then store. A 401 means the key is wrong and nothing is saved; a
+   * 429 proves the key and spends the window, so it is saved and the reset
+   * is what gets reported. Anything else leaves the old state alone.
+   */
+  async function commitAAKey() {
+    const key = aaKeyInput.trim();
+    if (!key) {
+      setNotice("paste a key first — Esc cancels");
+      return;
+    }
+    setAAKeyBusy(true);
+    try {
+      const v = await verifyAAKey(key);
+      await saveAAKey(key);
+      setAAKeySet(true);
+      const quota =
+        v.quota.remaining !== null && v.quota.remaining !== undefined
+          ? ` · quota ${v.quota.remaining}/${v.quota.limit ?? "?"}`
+          : "";
+      const version = v.version ? ` · AA Intelligence Index v${v.version}` : "";
+      setSaved(`benchmarks key saved · AA ${v.tier ?? "free"}${version}${quota}`);
+      setPhase("settings");
+      // A fresh key means fresh scores: the relay-only cache is now the fallback.
+      void refreshBenchmarks(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("(429)")) {
+        await saveAAKey(key).catch(() => {});
+        setAAKeySet(true);
+        setSaved("benchmarks key saved · quota spent — refresh after the window resets");
+        setPhase("settings");
+      } else {
+        setNotice(msg);
+      }
+    } finally {
+      setAAKeyBusy(false);
+    }
+  }
+
+  /**
+   * The key prompt. Esc cancels back to settings; the key is never left on
+   * screen behind anything. Typing clears a rejection so a corrected paste
+   * is not haunted by the last one.
+   */
+  useInput(
+    (input, key) => {
+      if (aaKeyBusy) return;
+      if (key.escape) {
+        setPhase("settings");
+        return;
+      }
+      // Ctrl+U clears, readline-style — a pasted key with a stray character
+      // is easier to redo than to edit blind behind bullets.
+      if (key.ctrl && input === "u") {
+        setAAKeyInput("");
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setAAKeyInput((v) => v.slice(0, -1));
+        return;
+      }
+      if (key.return) {
+        void commitAAKey();
+        return;
+      }
+      if (key.ctrl || key.meta) return;
+      if (input) {
+        setNotice(null);
+        setAAKeyInput((v) => v + input);
+      }
+    },
+    { isActive: phase === "aakey" },
   );
 
   /**
@@ -2365,9 +2525,10 @@ function App({ repo }: { repo: string }) {
         void sweep();
         return;
       }
-      // `B` refreshes the benchmark cache: one keyless GET, free, so unlike
-      // `P`/`T`/`A` it asks nothing twice. Uppercase like the rest, so
-      // lowercase keeps typing into the filter.
+      // `B` refreshes the benchmark cache: the relay plus AA direct when a
+      // key is stored, merged AA-first. Unlike `P`/`T`/`A` it asks nothing
+      // twice — a few requests against a weekly cache. Uppercase like the
+      // rest, so lowercase keeps typing into the filter.
       if (input === "B") {
         setSweepArmed(null);
         void refreshBenchmarks(false);
@@ -3353,8 +3514,17 @@ function App({ repo }: { repo: string }) {
     content = <Setup repo={repo} selection={setupSelection} />;
   } else if (phase === "settings" && cfg) {
     content = (
-      <Settings cfg={cfg} mode={mode} selection={settingsSel} saved={saved} pair={currentPairName} />
+      <Settings
+        cfg={cfg}
+        mode={mode}
+        selection={settingsSel}
+        saved={saved}
+        pair={currentPairName}
+        aaKey={aaKeySet}
+      />
     );
+  } else if (phase === "aakey") {
+    content = <AAKey value={aaKeyInput} busy={aaKeyBusy} notice={notice} />;
   } else if (phase === "pick") {
     content = (
       <Pick

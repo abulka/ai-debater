@@ -4,15 +4,20 @@ import os from "node:os";
 import path from "node:path";
 import {
   bareOf,
+  baseKeyOf,
   buildIndex,
+  countScoredBySource,
   countScored,
   formatBenchmarks,
   formatResolved,
   isStale,
   loadScores,
+  mergeIndexes,
   normalizeId,
   parseBenchmarks,
+  saveScores,
   scoresFor,
+  suffixesOf,
   STALE_AFTER_MS,
 } from "./benchmarks.ts";
 import { parseCatalogue } from "./catalogue.ts";
@@ -87,10 +92,12 @@ describe("parseBenchmarks", () => {
     expect(b.byId.get("z-ai/glm-5-3-flash")).toEqual({
       id: "z-ai/glm-5.3-flash",
       scores: { intelligence: 41.8, coding: 71.5, agentic: 50.9 },
+      source: "openrouter",
     });
     expect(b.byId.get("anthropic/claude-haiku-5-5")).toEqual({
       id: "anthropic/claude-haiku-5.5",
       scores: { intelligence: 43.4 },
+      source: "openrouter",
     });
     expect(b.byId.has("reflection/beam-1-0-501b-a23b")).toBe(false);
     expect(b.byId.has("x/y")).toBe(false);
@@ -129,14 +136,39 @@ describe("bareOf", () => {
     expect(bareOf("openrouter/qwen/qwen3.8-27b")).toBe("qwen/qwen3-8-27b");
     expect(bareOf("a/b:batch")).toBe("b");
   });
+
+  test("a bare slug is itself — AA ids have no namespace to strip", () => {
+    expect(bareOf("glm-5.3-flash")).toBe("glm-5-3-flash");
+  });
+});
+
+describe("suffixesOf", () => {
+  test("full id down to the bare model part, longest first", () => {
+    expect(suffixesOf("togetherai/deepseek-ai/DeepSeek-V4.1-Flash")).toEqual([
+      "togetherai/deepseek-ai/deepseek-v4-1-flash",
+      "deepseek-ai/deepseek-v4-1-flash",
+      "deepseek-v4-1-flash",
+    ]);
+    expect(suffixesOf("glm-5.3-flash")).toEqual(["glm-5-3-flash"]);
+  });
+});
+
+describe("baseKeyOf", () => {
+  test("strips effort and mode suffixes, keeps namespaces, never empties", () => {
+    expect(baseKeyOf("claude-opus-4-5-thinking")).toBe("claude-opus-4-5");
+    expect(baseKeyOf("gpt-6-sol-low")).toBe("gpt-6-sol");
+    expect(baseKeyOf("a/b-reasoning-medium")).toBe("a/b");
+    expect(baseKeyOf("anthropic/claude-haiku-4-5")).toBe("anthropic/claude-haiku-4-5");
+    expect(baseKeyOf("max")).toBe("max");
+  });
 });
 
 describe("buildIndex", () => {
   test("a bare part owned by one model resolves, a shared one does not", () => {
     const b = buildIndex([
-      { id: "z-ai/glm-5.3-flash", scores: { intelligence: 42 } },
-      { id: "x-ai/grok-4.5", scores: { intelligence: 50 } },
-      { id: "x-ai/grok-4.5:batch", scores: { intelligence: 50 } },
+      { id: "z-ai/glm-5.3-flash", scores: { intelligence: 42 }, source: "openrouter" as const },
+      { id: "x-ai/grok-4.5", scores: { intelligence: 50 }, source: "openrouter" as const },
+      { id: "x-ai/grok-4.5:batch", scores: { intelligence: 50 }, source: "openrouter" as const },
     ]);
     expect(b.byBare.get("glm-5-3-flash")).toBe("z-ai/glm-5-3-flash");
     expect(b.byBare.get("grok-4-5")).toBe("x-ai/grok-4-5");
@@ -144,8 +176,8 @@ describe("buildIndex", () => {
 
   test("two providers serving one model name refuse tier 2", () => {
     const b = buildIndex([
-      { id: "z-ai/glm-5.3-flash", scores: { intelligence: 42 } },
-      { id: "other/glm-5.3-flash", scores: { intelligence: 42 } },
+      { id: "z-ai/glm-5.3-flash", scores: { intelligence: 42 }, source: "openrouter" as const },
+      { id: "other/glm-5.3-flash", scores: { intelligence: 42 }, source: "openrouter" as const },
     ]);
     expect(b.byBare.has("glm-5-3-flash")).toBe(false);
     // The full ids still resolve: only the bare shortcut refuses.
@@ -161,7 +193,8 @@ describe("scoresFor", () => {
       intelligence: 41.8,
       coding: 71.5,
       agentic: 50.9,
-      openrouterId: "z-ai/glm-5.3-flash",
+      sourceId: "z-ai/glm-5.3-flash",
+      source: "openrouter",
       normalised: false,
     });
   });
@@ -171,7 +204,7 @@ describe("scoresFor", () => {
     const b = parseBenchmarks(SONNET_PAYLOAD);
     const r = scoresFor(c, b, "opencode-go/sonnet-5-5");
     expect(r?.normalised).toBe(true);
-    expect(r?.openrouterId).toBe("anthropic/claude-sonnet-5.5");
+    expect(r?.sourceId).toBe("anthropic/claude-sonnet-5.5");
     expect(r?.intelligence).toBe(56);
   });
 
@@ -179,7 +212,7 @@ describe("scoresFor", () => {
     const c = parseCatalogue(CATALOGUE);
     const b = parseBenchmarks(PAYLOAD);
     const r = scoresFor(c, b, "opencode-go/glm-namespace");
-    expect(r?.openrouterId).toBe("z-ai/glm-5.3-flash");
+    expect(r?.sourceId).toBe("z-ai/glm-5.3-flash");
     expect(r?.normalised).toBe(true);
     expect(r?.coding).toBe(71.5);
   });
@@ -191,8 +224,8 @@ describe("scoresFor", () => {
       }),
     );
     const b = buildIndex([
-      { id: "z-ai/glm-5.3-flash", scores: { intelligence: 42 } },
-      { id: "other/glm-5.3-flash", scores: { intelligence: 43 } },
+      { id: "z-ai/glm-5.3-flash", scores: { intelligence: 42 }, source: "openrouter" as const },
+      { id: "other/glm-5.3-flash", scores: { intelligence: 43 }, source: "openrouter" as const },
     ]);
     expect(scoresFor(c, b, "prov/m")).toBeNull();
   });
@@ -206,6 +239,177 @@ describe("scoresFor", () => {
     // has scores nowhere in the relay.
     expect(scoresFor(c, b, "opencode-go/beam-free")).toBeNull();
   });
+
+  test("tier 3: a ref with no canonical id resolves through its own model part", () => {
+    const c = parseCatalogue(CATALOGUE);
+    const b = buildIndex([
+      { id: "z-ai/beam-free", scores: { intelligence: 7 }, source: "openrouter" as const },
+    ]);
+    const r = scoresFor(c, b, "opencode-go/beam-free");
+    expect(r?.intelligence).toBe(7);
+    expect(r?.sourceId).toBe("z-ai/beam-free");
+    expect(r?.normalised).toBe(true);
+  });
+
+  test("tier 4: extra namespaces strip down to the model", () => {
+    const c = parseCatalogue(
+      JSON.stringify({
+        prov: { id: "prov", models: { m: { canonical_model_id: "togetherai/deepseek-ai/DeepSeek-V4.1-Flash" } } },
+      }),
+    );
+    const b = buildIndex([
+      { id: "deepseek/deepseek-v4.1-flash", scores: { intelligence: 39 }, source: "openrouter" as const },
+    ]);
+    const r = scoresFor(c, b, "prov/m");
+    // The canonical's own chain ends in the bare model part; the index holds
+    // it under one namespace, and the suffix still finds it.
+    expect(r?.intelligence).toBe(39);
+    expect(r?.normalised).toBe(true);
+  });
+
+  test("a bare AA slug resolves a ref whose canonical names the same model", () => {
+    const c = parseCatalogue(CATALOGUE);
+    const b = buildIndex([
+      { id: "glm-5-3-flash", scores: { intelligence: 42 }, source: "aa" as const, name: "GLM 5.3 Flash" },
+    ]);
+    const r = scoresFor(c, b, "opencode-go/glm-5.3-flash");
+    expect(r?.intelligence).toBe(42);
+    expect(r?.source).toBe("aa");
+    expect(r?.sourceId).toBe("glm-5-3-flash");
+    expect(r?.normalised).toBe(true);
+  });
+});
+
+describe("variant preference", () => {
+  const catalogueOf = (canonical: string) =>
+    parseCatalogue(
+      JSON.stringify({ prov: { id: "prov", models: { m: { canonical_model_id: canonical } } } }),
+    );
+
+  test("a reasoning sibling wins over the matched base, marked", () => {
+    const b = buildIndex([
+      {
+        id: "claude-opus-4-5",
+        scores: { intelligence: 23.7 },
+        source: "aa" as const,
+        name: "Claude Opus 4.5 (Non-reasoning)",
+      },
+      {
+        id: "claude-opus-4-5-thinking",
+        scores: { intelligence: 29.1 },
+        source: "aa" as const,
+        name: "Claude Opus 4.5 (Reasoning)",
+      },
+    ]);
+    const r = scoresFor(catalogueOf("anthropic/claude-opus-4-5"), b, "prov/m");
+    expect(r?.intelligence).toBe(29.1);
+    expect(r?.sourceId).toBe("claude-opus-4-5-thinking");
+    expect(r?.normalised).toBe(true);
+  });
+
+  test("non-reasoning never wins by containing the word reasoning", () => {
+    const b = buildIndex([
+      {
+        id: "deepseek-v4-1-flash",
+        scores: { intelligence: 39.5 },
+        source: "aa" as const,
+        name: "DeepSeek V4.1 Flash (Max)",
+      },
+      {
+        id: "deepseek-v4-1-flash-non-reasoning",
+        scores: { intelligence: 24.7 },
+        source: "aa" as const,
+        name: "DeepSeek V4.1 Flash (Non-reasoning)",
+      },
+    ]);
+    const r = scoresFor(catalogueOf("deepseek/deepseek-v4.1-flash"), b, "prov/m");
+    expect(r?.intelligence).toBe(39.5);
+    expect(r?.sourceId).toBe("deepseek-v4-1-flash");
+  });
+
+  test("no reasoning variant: the base wins, deterministically", () => {
+    const b = buildIndex([
+      {
+        id: "gemini-3-5-flash-medium",
+        scores: { intelligence: 33.6 },
+        source: "aa" as const,
+        name: "Gemini 3.5 Flash (Medium)",
+      },
+      {
+        id: "gemini-3-5-flash",
+        scores: { intelligence: 32.6 },
+        source: "aa" as const,
+        name: "Gemini 3.5 Flash",
+      },
+    ]);
+    const r = scoresFor(catalogueOf("google/gemini-3.5-flash"), b, "prov/m");
+    expect(r?.intelligence).toBe(32.6);
+    expect(r?.sourceId).toBe("gemini-3-5-flash");
+  });
+
+  test("nameless entries never trigger an override", () => {
+    const b = buildIndex([
+      { id: "m-base", scores: { intelligence: 10 }, source: "openrouter" as const },
+      { id: "m-base-max", scores: { intelligence: 20 }, source: "openrouter" as const },
+    ]);
+    const r = scoresFor(catalogueOf("prov/m-base"), b, "prov/m");
+    expect(r?.intelligence).toBe(10);
+    // Still a namespace-stripped match, so still marked — just not overridden.
+    expect(r?.normalised).toBe(true);
+  });
+});
+
+describe("mergeIndexes", () => {
+  const aa = (id: string, intelligence: number) =>
+    ({ id, scores: { intelligence }, source: "aa" as const, name: `${id} (Max)` });
+  const or = (id: string, intelligence: number) =>
+    ({ id, scores: { intelligence }, source: "openrouter" as const });
+
+  test("AA wins ties; the relay fills what AA never heard of", () => {
+    const merged = mergeIndexes(
+      buildIndex([aa("deepseek-v4-1-flash", 39.5), aa("glm-5-3-flash", 41.8)]),
+      buildIndex([or("deepseek/deepseek-v4.1-flash", 24.7), or("anthropic/claude-haiku-4-5", 16.9)]),
+    );
+    // Same model under a namespace: the relay's copy is dropped.
+    expect(merged.byId.get("deepseek/deepseek-v4-1-flash")).toBeUndefined();
+    expect(merged.byId.get("deepseek-v4-1-flash")?.source).toBe("aa");
+    // Retired from AA, alive on the relay: kept.
+    expect(merged.byId.get("anthropic/claude-haiku-4-5")?.source).toBe("openrouter");
+  });
+
+  test("an identical key keeps AA, never a dropped-key blank", () => {
+    const merged = mergeIndexes(
+      buildIndex([aa("same-model", 50)]),
+      buildIndex([or("same-model", 10)]),
+    );
+    expect(merged.byId.get("same-model")?.scores.intelligence).toBe(50);
+  });
+});
+
+describe("countScoredBySource", () => {
+  test("splits the resolved rows by provenance", () => {
+    const c = parseCatalogue(CATALOGUE);
+    const merged = mergeIndexes(
+      buildIndex([
+        {
+          id: "glm-5-3-flash",
+          scores: { intelligence: 42 },
+          source: "aa" as const,
+          name: "GLM 5.3 Flash",
+        },
+      ]),
+      parseBenchmarks(PAYLOAD),
+    );
+    const split = countScoredBySource(
+      ["opencode-go/glm-5.3-flash", "opencode-go/haiku-5-5", "opencode-go/beam-free"],
+      c,
+      merged,
+    );
+    // glm resolves through AA (the relay's copy is dropped as covered);
+    // haiku is relay-only; beam is nowhere.
+    expect(split).toEqual({ total: 2, aa: 1, openrouter: 1 });
+    expect(countScored(["opencode-go/glm-5.3-flash"], c, merged)).toBe(1);
+  });
 });
 
 describe("formatBenchmarks", () => {
@@ -217,10 +421,10 @@ describe("formatBenchmarks", () => {
 
   test("a normalised match carries ≈ so the guess is visible", () => {
     expect(
-      formatResolved({ intelligence: 56, openrouterId: "anthropic/claude-sonnet-5.5", normalised: true }),
+      formatResolved({ intelligence: 56, sourceId: "anthropic/claude-sonnet-5.5", source: "openrouter", normalised: true }),
     ).toBe("≈I56");
     expect(
-      formatResolved({ intelligence: 56, openrouterId: "a/b", normalised: false }),
+      formatResolved({ intelligence: 56, sourceId: "a/b", source: "openrouter", normalised: false }),
     ).toBe("I56");
     expect(formatResolved(null)).toBe("");
   });
@@ -257,12 +461,44 @@ describe("cache", () => {
     );
     const loaded = await loadScores(file);
     expect(loaded.at).toBe("2026-10-19T00:00:00.000Z");
+    expect(loaded.indexVersion).toBeNull();
     expect(loaded.scores.byId.get("z-ai/glm-5-3-flash")).toEqual({
       id: "z-ai/glm-5.3-flash",
       scores: { intelligence: 41.8, coding: 71.5 },
+      source: "openrouter",
     });
     // The bare shortcut survives the round trip too.
     expect(loaded.scores.byBare.get("glm-5-3-flash")).toBe("z-ai/glm-5-3-flash");
+  });
+
+  test("round-trips sources and the index version", async () => {
+    const dir = await tmp();
+    const file = path.join(dir, "benchmarks.json");
+    const merged = mergeIndexes(
+      buildIndex([
+        {
+          id: "glm-5-3-flash",
+          scores: { intelligence: 41.8 },
+          source: "aa",
+          name: "GLM 5.3 Flash (Max)",
+        },
+      ]),
+      parseBenchmarks(PAYLOAD),
+    );
+    await saveScores(merged, "2026-10-19T00:00:00.000Z", file, "4.3");
+    const loaded = await loadScores(file);
+    expect(loaded.indexVersion).toBe("4.3");
+    expect(loaded.scores.byId.get("glm-5-3-flash")).toEqual({
+      id: "glm-5-3-flash",
+      scores: { intelligence: 41.8 },
+      source: "aa",
+      name: "GLM 5.3 Flash (Max)",
+    });
+    // The relay's copy of the same model was dropped in the merge.
+    expect(loaded.scores.byId.get("z-ai/glm-5-3-flash")).toBeUndefined();
+    // Variant and bare maps survive the round trip.
+    expect(loaded.scores.variants.get("glm-5-3-flash")).toEqual(["glm-5-3-flash"]);
+    expect(loaded.scores.byBare.get("glm-5-3-flash")).toBe("glm-5-3-flash");
   });
 });
 
