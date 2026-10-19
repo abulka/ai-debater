@@ -1,6 +1,6 @@
 import { Box, Static, Text, render, useApp, useInput } from "ink";
 import path from "node:path";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
 import type { Config } from "./config.ts";
 import type { AuditRecord, Claims, Gate, Review } from "./contracts.ts";
@@ -227,7 +227,25 @@ function useWheelScroll(onScroll: (rows: number) => void, active = true) {
 }
 
 /** Terminal height for a scrollable pane, leaving room for the chrome. */
-const paneHeight = (chrome: number) => Math.max(6, (process.stdout.rows ?? 24) - chrome);
+const paneHeight = (chrome: number, rows: number) => Math.max(6, rows - chrome);
+
+/**
+ * The live terminal width. `process.stdout.columns` is read during render, so
+ * a component that measures must also re-render when it changes — otherwise
+ * Ink resizes Yoga and repaints the committed tree, still carrying the old
+ * width, and every row padded to the old width wraps once in the new one.
+ * Ink's own `resize` listener is registered first (at `render()`), so Yoga is
+ * already at the new size when this notifies; the re-render lands framed
+ * right. Worst case during a drag is one stale frame, immediately corrected.
+ */
+const subscribeResize = (cb: () => void) => {
+  process.stdout.on("resize", cb);
+  return () => {
+    process.stdout.off("resize", cb);
+  };
+};
+const useTerminalWidth = () => useSyncExternalStore(subscribeResize, () => process.stdout.columns ?? 100);
+const useTerminalRows = () => useSyncExternalStore(subscribeResize, () => process.stdout.rows ?? 24);
 
 /* ------------------------------------------------------------------ *
  * One scrollable pane, used by the panels and by the result view. The
@@ -269,7 +287,8 @@ function Scroller({
   onClose: () => void;
   onKey?: (input: string) => boolean;
 }) {
-  const height = paneHeight(8);
+  const termRows = useTerminalRows();
+  const height = paneHeight(8, termRows);
   const [offset, setOffset] = useState(0);
 
   useWheelScroll((rows) => by(rows));
@@ -601,7 +620,8 @@ const COST_W = 14;
 const BADGE_W = 16;
 
 /** Pads or trims to an exact column count, so a badge column stays aligned. */
-const pad = (s: string, n: number): string => (s.length >= n ? s : s + " ".repeat(n - s.length));
+const pad = (s: string, n: number): string =>
+  s.length > n ? s.slice(0, n) : s.length >= n ? s : s + " ".repeat(n - s.length);
 
 /**
  * Shorten a ref from the middle, never the end.
@@ -646,7 +666,7 @@ function Pick({
   const { rows, items, favourite } = list;
   const cursor = items[index]?.row ?? 0;
   /**
-   * The real terminal width, with no floor.
+   * The live terminal width, with no floor.
    *
    * There used to be a `Math.max(60, columns - 2)` here, which made every row
    * 60 columns wide on a terminal narrower than that — so a row that fitted
@@ -655,8 +675,14 @@ function Pick({
    * because Ink re-measures on the next render, not because the arithmetic was
    * right. One column is left spare because a row that exactly fills the width
    * wraps on some terminals for reasons that are not worth chasing.
+   *
+   * A read of `process.stdout.columns` during render also goes stale: nothing
+   * re-rendered on `resize`, so Ink repainted the committed tree — padded to
+   * the old width — inside the new Yoga frame, and each row wrapped once on
+   * the trailing column. The hook above subscribes, so a resize re-renders at
+   * the true width with no keypress needed.
    */
-  const cols = process.stdout.columns ?? 100;
+  const cols = useTerminalWidth();
   const width = Math.max(24, cols - 1);
   // The badge columns yield before the ref does. Holding them at 14 and 16 on a
   // 44-column terminal leaves nine characters of model name and a price you
@@ -693,7 +719,7 @@ function Pick({
               <Box key={`g${absolute}`}>
                 {/* Truncated like a row, for the same reason: a header that
                     wraps is two rows and the window counts lines. */}
-                <Text dimColor>
+                <Text dimColor wrap="truncate">
                   {`  ${row.label}${row.note ? ` — ${row.note}` : ""}`.slice(0, width)}
                 </Text>
               </Box>
@@ -705,7 +731,7 @@ function Pick({
             // `opencode` are different bills and look identical otherwise.
             return (
               <Box key={`p${row.provider}`}>
-                <Text dimColor>
+                <Text dimColor wrap="truncate">
                   {`  ${row.provider} · ${row.count} · ${keyed.has(row.provider) ? "key set" : "NO KEY"}`.slice(0, width)}
                 </Text>
               </Box>
@@ -735,11 +761,11 @@ function Pick({
                   is in them. */}
               <Text dimColor={!selected}>{favourite.has(m) ? "★ " : "  "}</Text>
               <Text color={accent}>{selected ? "❯ " : "  "}</Text>
-              <Text color={accent} bold={selected} dimColor={dead && !selected}>
+              <Text color={accent} bold={selected} dimColor={dead && !selected} wrap="truncate">
                 {pad(shorten(m, refWidth - 1), refWidth)}
               </Text>
-              <Text color={accent} dimColor={!selected && !dead}>{pad(cost, costW)}</Text>
-              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead}>
+              <Text color={accent} dimColor={!selected && !dead} wrap="truncate">{pad(cost, costW)}</Text>
+              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead} wrap="truncate">
                 {pad(status, badgeW)}
               </Text>
             </Box>
@@ -938,7 +964,7 @@ function Pairs({
   /** The file is being read; an empty list is not yet an answer. */
   loading: boolean;
 }) {
-  const width = Math.max(40, (process.stdout.columns ?? 100) - 6);
+  const width = Math.max(8, useTerminalWidth() - 6);
   const height = 14;
   const start = Math.max(0, Math.min(index - 6, Math.max(0, rows.length - height)));
   const at = rows[index];
@@ -961,7 +987,7 @@ function Pairs({
           // the task is clipped to what is left. One element is one row: a
           // wrapped row moves every cursor below it, which is the scroll bug the
           // panes are built to avoid.
-          const detail = !models
+          const fullDetail = !models
             ? ""
             : `  ${models.drafter.ref} -> ${models.reviewer.ref}` +
               (row.kind === "recent" ? `  [run ${row.recent.run}]` : "") +
@@ -969,9 +995,14 @@ function Pairs({
                 ? `  [${row.pair.lastUsedAt ? "used" : "never used"}]`
                 : "") +
               (row.kind === "saved" && row.warnings.length ? "  !" : "");
+          // Both halves are clipped, each from its own budget: a long detail
+          // alone used to push the row past the pane even with the label at
+          // its ten-character floor, and a row that fills the width wraps.
+          const maxDetail = Math.max(10, width - 1 - 4 - 10);
+          const detail = fullDetail.length > maxDetail ? shorten(fullDetail, maxDetail) : fullDetail;
           const label =
             row.kind === "saved" ? row.pair.name : row.kind === "recent" ? row.recent.task : "save current as…";
-          const room = Math.max(10, width - 4 - detail.length - 1);
+          const room = Math.max(8, width - 4 - detail.length - 1);
           const text = label.length > room ? `${label.slice(0, room - 1)}…` : label;
           return (
             <Box key={row.key}>
@@ -1112,7 +1143,7 @@ function Runs({
   height: number;
   tagged: Set<string>;
 }) {
-  const width = Math.max(40, (process.stdout.columns ?? 100) - 6);
+  const width = Math.max(8, useTerminalWidth() - 6);
   const window = runs.slice(offset, offset + height);
   return (
     <Box flexDirection="column">
@@ -1128,19 +1159,25 @@ function Runs({
           const selected = at === index;
           const marked = tagged.has(r.dir);
           const label = r.mode === "answer" ? "question" : "task";
-          const text = r.task.length > width - 34 ? `${r.task.slice(0, width - 37)}…` : r.task;
+          // The row must never exceed the pane: a row that exactly fills the
+          // width wraps on some terminals, and the window counts lines — the
+          // old `width - 34` guessed the prefix and overflowed by five on long
+          // tasks. Measured from the real prefix, with one spare column.
+          const head = `${r.name}   ${r.state.padEnd(8)}${label} · `;
+          const room = Math.max(8, width - 1 - 4 - head.length);
+          const text = r.task.length > room ? `${r.task.slice(0, room - 1)}…` : r.task;
           return (
             <Box key={r.dir}>
               <Text color={marked ? THEME.warn : undefined}>{marked ? "● " : "  "}</Text>
               <Text color={selected ? THEME.accent : undefined}>{selected ? "❯ " : "  "}</Text>
-              <Text color={selected ? THEME.accent : undefined} bold={selected}>
+              <Text color={selected ? THEME.accent : undefined} bold={selected} wrap="truncate">
                 {r.name}
               </Text>
-              <Text color={selected ? THEME.accent : undefined}>
+              <Text color={selected ? THEME.accent : undefined} wrap="truncate">
                 {"   "}
                 {r.state.padEnd(8)}
               </Text>
-              <Text color={selected ? THEME.accent : undefined} dimColor={!selected}>
+              <Text color={selected ? THEME.accent : undefined} dimColor={!selected} wrap="truncate">
                 {label} · {text}
               </Text>
             </Box>
@@ -1321,9 +1358,9 @@ function Log({ lines, label }: { lines: StyledLine[]; label: string | null }) {
   );
 }
 
-/** Wrap text to the terminal width, clipping to a few lines so a question fits. */
-function wrapText(text: string, maxLines: number): string[] {
-  const width = Math.max(40, (process.stdout.columns ?? 100) - 4);
+/** Wrap text to the given width, clipping to a few lines so a question fits. */
+function wrapText(text: string, maxLines: number, width: number): string[] {
+  const room = Math.max(8, width);
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let line = "";
@@ -1384,8 +1421,9 @@ function GateView({
     refuted ? `${refuted} refuted claim${refuted === 1 ? "" : "s"}` : "",
   ].filter(Boolean);
 
+  const wrapW = Math.max(8, useTerminalWidth() - 4);
   const detail: string[] = [];
-  for (const line of item.detail) detail.push(...wrapText(line, 2));
+  for (const line of item.detail) detail.push(...wrapText(line, 2, wrapW));
   const clippedDetail = detail.slice(0, 4);
 
   return (
@@ -1417,7 +1455,7 @@ function GateView({
       </Box>
 
       <Box flexDirection="column">
-        {wrapText(item.title, 4).map((line, i) => (
+        {wrapText(item.title, 4, wrapW).map((line, i) => (
           <Text key={i} bold>
             {line}
           </Text>
@@ -2427,7 +2465,7 @@ function App({ repo }: { repo: string }) {
    * same arithmetic the panes use, because an index that can walk past the
    * visible rows is a row you cannot see you are about to delete.
    */
-  const runsHeight = paneHeight(11);
+  const runsHeight = paneHeight(11, useTerminalRows());
 
   // Only while the list is the screen: otherwise a wheel notch on a result
   // would move a cursor nobody can see.
