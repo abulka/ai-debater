@@ -56,6 +56,7 @@ import {
   type PairRow,
 } from "./pairs.ts";
 import {
+  advDataRoot,
   appendDecisions,
   deleteRuns,
   deletionSummary,
@@ -93,6 +94,7 @@ import {
   type StyledLine,
 } from "./markdown.ts";
 import { THEME } from "./theme.ts";
+import { exportModelsMd } from "./export-models.ts";
 import {
   altScreenEnabled,
   cappedLines,
@@ -771,7 +773,19 @@ function Pick({
   // `- 5` leaves a spare column so a truncated ref never runs straight into the
   // price with no gap, which is what it looked like at 58 columns.
   const refWidth = Math.max(8, width - 5 - costW - badgeW - benchW);
-  const start = Math.max(0, Math.min(cursor - 5, Math.max(0, rows.length - height)));
+  // The window is sticky: it stays put until the cursor would leave it, then
+  // follows — down pins the cursor to the last line, and reversing back up
+  // walks the cursor through the visible rows to the top before the window
+  // moves again. A pure function of the cursor cannot do this: without memory
+  // of where the window was, it cannot know which way the cursor came from.
+  // The ref holds the previous render's answer, clamped into range first so a
+  // narrowed list or a resized terminal can never strand it past the end.
+  const startRef = useRef(0);
+  const maxStart = Math.max(0, rows.length - height);
+  const prev = Math.min(Math.max(0, startRef.current), maxStart);
+  const start =
+    cursor < prev ? cursor : cursor >= prev + height ? Math.min(cursor - height + 1, maxStart) : prev;
+  startRef.current = start;
   const marked = items.length === 0;
   // Counted over the view's own items, so the number stays true when the
   // filter, the view, or H narrows what is on screen. Split by source when
@@ -890,7 +904,7 @@ function Pick({
       </Box>
       <Box>
         <Text dimColor wrap="truncate">
-          {`V view · H hide unscored · L ${providerLock ? `unlock (locked to: ${providerLock})` : "lock to selected provider"} · B refresh benchmarks · A ping visible · P ping · T tools ping · ? providers` +
+          {`V view · H hide unscored · L ${providerLock ? `unlock (locked to: ${providerLock})` : "lock to selected provider"} · B refresh benchmarks · A ping visible · P ping · T tools ping · Y export · ? providers` +
             `${view === "value" ? " · < > value ceiling" : ""}`}
         </Text>
       </Box>
@@ -1101,7 +1115,14 @@ function Pairs({
   loading: boolean;
 }) {
   const width = Math.max(8, useTerminalWidth() - 6);
-  const start = Math.max(0, Math.min(index - 6, Math.max(0, rows.length - height)));
+  // Sticky like the picker: the window holds while the cursor walks its rows,
+  // and follows only at an edge — down pins to the last line, up to the top.
+  const startRef = useRef(0);
+  const maxStart = Math.max(0, rows.length - height);
+  const prev = Math.min(Math.max(0, startRef.current), maxStart);
+  const start =
+    index < prev ? index : index >= prev + height ? Math.min(index - height + 1, maxStart) : prev;
+  startRef.current = start;
   const at = rows[index];
 
   return (
@@ -1868,6 +1889,12 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
    * Empty until the first fetch lands — rows render blank, never `?`.
    */
   const [benchmarks, setBenchmarks] = useState<Benchmarks>(emptyBenchmarks());
+  /** When the benchmark cache was fetched, and which index measured it — the
+     export names its provenance, so it keeps both next to the scores. */
+  const [benchMeta, setBenchMeta] = useState<{ at: string | null; indexVersion: string | null }>({
+    at: null,
+    indexVersion: null,
+  });
   /** One fetch at a time: settings can be opened twice before it lands. */
   const benchFetching = useRef(false);
   const [authed, setAuthed] = useState<Map<string, "env" | "stored">>(new Map());
@@ -2070,6 +2097,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     // only a week-old cache.
     void loadScores().then((r) => {
       setBenchmarks(r.scores);
+      setBenchMeta({ at: r.at, indexVersion: r.indexVersion });
       if (isStale(r.at)) void refreshBenchmarks(true);
     });
   }
@@ -2091,6 +2119,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (!silent) setNotice("refreshing benchmarks…");
       const r = await refreshAllBenchmarks();
       setBenchmarks(r.scores);
+      setBenchMeta({ at: r.at, indexVersion: r.indexVersion });
       const total = r.aaCount + r.orCount;
       const scope =
         r.aaOk && r.orOk
@@ -2575,6 +2604,39 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     );
   }
 
+  /**
+   * `Y` — the visible list as a Markdown table, for a second opinion elsewhere.
+   * Clipboard first, `models.md` in the data dir always (the copy that works in
+   * every terminal). Nothing here spends a model call: it only formats what the
+   * picker already knows.
+   */
+  async function exportVisible() {
+    const md = exportModelsMd({
+      refs: modelRows.items.map((i) => i.ref),
+      total: allModels.length,
+      view,
+      filter,
+      providerLock,
+      ceiling,
+      hideUnscored,
+      subject: mode,
+      catalogue,
+      benchmarks,
+      probes,
+      favourites: modelRows.favourite,
+      scoresAt: benchMeta.at,
+      indexVersion: benchMeta.indexVersion,
+    });
+    const file = path.join(advDataRoot(), "models.md");
+    const result = await copyMarkdown(md, file);
+    // The full path in both branches: `models.md` alone never says where, and
+    // the notice is the only thing that does. Truncated to one row like the
+    // rest of the chrome.
+    const n = modelRows.items.length;
+    if (result.via === "file") setNotice(`no clipboard here — the markdown is in ${file}`);
+    else setNotice(`exported ${n} models to the clipboard · also ${file}`);
+  }
+
   /** The provider pane scrolls and closes itself; `Scroller` owns its keys. */
   /* Model picker. */
   useInput(
@@ -2652,6 +2714,14 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (input === "n" && pingArmed !== null) {
         setPingArmed(null);
         setNotice(null);
+        return;
+      }
+      // `Y` exports the visible list — the table for a second opinion. Uppercase
+      // like the rest, so lowercase keeps typing into the filter. Disarms
+      // first: an export is not a confirmation.
+      if (input === "Y") {
+        setPingArmed(null);
+        void exportVisible();
         return;
       }
       // `B` refreshes the benchmark cache: OpenRouter plus Artificial Analysis

@@ -157,6 +157,7 @@ supersede rule.
 | ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |
 | < > | Value view: move the output-cost ceiling in $0.10 steps, saved to `~/.config/adv/picker.json` |
 | ? | Picker: what each provider bills to, whether a key is present, what the ★ ✓ ✗ marks mean, and every failure a ping has found |
+| Y | Picker: export the visible list as a Markdown table with a legend — for a second opinion in another LLM — to the clipboard and `~/.local/share/adv/models.md` (overwritten each time) |
 | Tab | Switch subject: **this repository** or a **general question** |
 | Enter | Run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |

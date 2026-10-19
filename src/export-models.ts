@@ -1,0 +1,123 @@
+import { costOf, cannotUseTools, formatCost } from "./catalogue.ts";
+import type { Catalogue } from "./catalogue.ts";
+import { scoresFor } from "./benchmarks.ts";
+import type { Benchmarks } from "./benchmarks.ts";
+import { providerOf } from "./models.ts";
+import type { PickerView } from "./models.ts";
+import { probeBadge } from "./probe.ts";
+import type { ProbeCache } from "./probe.ts";
+import type { Mode } from "./runner.ts";
+
+/**
+ * Export the picker's visible list as a Markdown table, for pasting into
+ * another LLM for a second opinion.
+ *
+ * The rows are what is on screen — after the filter, the lock, the view and
+ * `H` — in screen order, with the context that makes them interpretable
+ * (what was filtered, where the scores came from and when) and a legend at
+ * the bottom, because a table of numbers without provenance is a rumour.
+ * Pipes are escaped so a ref can never break the table.
+ */
+export interface ModelsExportInput {
+  /** The visible refs, in screen order. */
+  refs: string[];
+  /** The catalogue size, for "N of M shown". */
+  total: number;
+  view: PickerView;
+  filter: string;
+  providerLock: string | null;
+  ceiling: number;
+  hideUnscored: boolean;
+  subject: Mode;
+  catalogue: Catalogue;
+  benchmarks: Benchmarks;
+  probes: ProbeCache;
+  favourites: Set<string>;
+  /** ISO fetch time of the benchmark cache, null when there is none. */
+  scoresAt: string | null;
+  /** AA Intelligence Index version, null when unknown. */
+  indexVersion: string | null;
+  /** Now, overridable for tests. */
+  exportedAt?: string;
+}
+
+const cell = (text: string): string => text.replace(/\|/g, "\\|");
+
+const num = (v: number | undefined): string => (v === undefined ? "" : String(Math.round(v)));
+
+export function exportModelsMd(input: ModelsExportInput): string {
+  const {
+    refs,
+    total,
+    view,
+    filter,
+    providerLock,
+    ceiling,
+    hideUnscored,
+    subject,
+    catalogue,
+    benchmarks,
+    probes,
+    favourites,
+    scoresAt,
+    indexVersion,
+    exportedAt = new Date().toISOString(),
+  } = input;
+
+  const context: string[] = [
+    `exported ${exportedAt}`,
+    `${refs.length} of ${total} models shown`,
+    `view: ${view}`,
+  ];
+  if (filter.trim()) context.push(`filter: "${filter.trim()}"`);
+  if (providerLock) context.push(`locked to provider: ${providerLock}`);
+  if (view === "value") context.push(`value ceiling: $${ceiling.toFixed(2)}/M output`);
+  if (hideUnscored) context.push("hiding unscored");
+  context.push(`subject: ${subject === "answer" ? "general question" : "this repository"}`);
+  context.push(
+    scoresAt
+      ? `benchmark scores fetched ${scoresAt}${indexVersion ? ` (AA Intelligence Index v${indexVersion})` : ""}`
+      : "no benchmark cache",
+  );
+
+  const header =
+    "| model | provider | price in/out | intelligence | coding | agentic | scores from | ping | notes |";
+  const divider = "| --- | --- | --- | --- | --- | --- | --- | --- | --- |";
+  const rows = refs.map((ref) => {
+    const price = formatCost(costOf(catalogue, ref));
+    const resolved = scoresFor(catalogue, benchmarks, ref);
+    const badge = probeBadge(probes, ref);
+    const notes: string[] = [];
+    if (favourites.has(ref)) notes.push("★ favourite");
+    if (cannotUseTools(catalogue, ref, subject)) notes.push("no tool calls");
+    return (
+      `| ${cell(ref)} | ${cell(providerOf(ref))} | ${cell(price)} | ` +
+      `${cell(num(resolved?.intelligence))} | ${cell(num(resolved?.coding))} | ` +
+      `${cell(num(resolved?.agentic))} | ` +
+      `${cell(
+        resolved
+          ? `${resolved.source === "aa" ? "Artificial Analysis" : "OpenRouter"}${
+              resolved.normalised ? " ≈" : ""
+            }`
+          : "",
+      )} | ` +
+      `${cell(badge ? `${badge.badge}${badge.stale ? " (stale)" : ""}` : "not tested")} | ` +
+      `${cell(notes.join("; "))} |`
+    );
+  });
+
+  return (
+    `# model shortlist\n\n` +
+    context.map((c) => `- ${c}\n`).join("") +
+    `\n${header}\n${divider}\n` +
+    rows.map((r) => `${r}\n`).join("") +
+    `\n## legend\n\n` +
+    `- model: the ref as \`opencode models\` lists it, provider first.\n` +
+    `- price in/out: US$ per million tokens. \`free\` costs nothing; \`?\` means the catalogue is silent — unknown, never free.\n` +
+    `- intelligence / coding / agentic: benchmark scores, higher is better. Blank means unscored, not zero.\n` +
+    `- scores from: who measured it. \`≈\` means the id needed normalising to match and is the weaker claim.\n` +
+    `- ping: a real model call made from here. \`✓\` reachable (\`T\` also reached for a tool); \`✗\` failed; \`not tested\` means what it says.\n` +
+    `- ★ favourite: OpenCode's own mark — a model you use, not a quality verdict.\n` +
+    `- no tool calls: the catalogue says this model cannot call tools, so it cannot be a repository agent.\n`
+  );
+}
