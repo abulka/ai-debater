@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { exportModelsMd } from "./export-models.ts";
 import type { Catalogue } from "./catalogue.ts";
-import { emptyBenchmarks } from "./benchmarks.ts";
+import { buildIndex, emptyBenchmarks } from "./benchmarks.ts";
 import type { ProbeCache } from "./probe.ts";
 
 const catalogue: Catalogue = new Map([
@@ -11,6 +11,18 @@ const catalogue: Catalogue = new Map([
   ],
   ["openrouter/free-model", { cost: { kind: "free" } }],
   ["mystery/model", { cost: { kind: "unknown" }, toolCall: false }],
+  [
+    "tiered/model",
+    {
+      cost: {
+        kind: "priced",
+        input: 0.1,
+        output: 0.5,
+        tiered: true,
+        tier: { input: 0.5, output: 2.5, overTokens: 100000 },
+      },
+    },
+  ],
 ]);
 
 const base = {
@@ -19,6 +31,7 @@ const base = {
   filter: "",
   providerLock: null as string | null,
   ceiling: 0.8,
+  taskCeiling: 0.5,
   hideUnscored: false,
   subject: "plan" as const,
   catalogue,
@@ -35,7 +48,7 @@ describe("exportModelsMd", () => {
     const md = exportModelsMd({ ...base, refs: ["openrouter/free-model", "opencode-go/glm-5.3-flash"] });
     const lines = md.split("\n");
     expect(lines).toContain(
-      "| model | provider | price in/out | intelligence | coding | agentic | scores from | ping | notes |",
+      "| model | provider | price in/out | task $/task | intelligence | coding | agentic | scores from | ping | notes |",
     );
     const rows = lines.filter((l) => l.startsWith("| openrouter/") || l.startsWith("| opencode-go/"));
     expect(rows).toHaveLength(2);
@@ -87,5 +100,22 @@ describe("exportModelsMd", () => {
     });
     expect(md).toContain("★ favourite");
     expect(md).toContain("✓");
+  });
+
+  test("task cost and tiered prices travel with their rows", () => {
+    const md = exportModelsMd({
+      ...base,
+      refs: ["tiered/model", "opencode-go/glm-5.3-flash"],
+      benchmarks: buildIndex([
+        { id: "tiered/model", scores: { intelligence: 43 }, source: "aa", taskCost: 0.1678 },
+        { id: "opencode-go/glm-5.3-flash", scores: { intelligence: 42 }, source: "aa" },
+      ]),
+    });
+    // Both prices and the threshold, not the row's magnitude shorthand.
+    expect(md).toContain("$0.10/$0.50 to 100k tokens, then $0.50/$2.50");
+    // Measured task cost on the AA row, blank on the one without.
+    const tiered = md.split("\n").find((l) => l.startsWith("| tiered/model"))!;
+    expect(tiered).toContain("| $0.17 |");
+    expect(md).toContain("measured dollars per Artificial Analysis Intelligence Index task");
   });
 });

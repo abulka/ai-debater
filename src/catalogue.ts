@@ -34,7 +34,19 @@ import path from "node:path";
 /** What a model costs. `unknown` is a real answer and is never rendered "free". */
 export type Cost =
   | { kind: "free" }
-  | { kind: "priced"; input: number; output: number; tiered: boolean }
+  | {
+      kind: "priced";
+      input: number;
+      output: number;
+      tiered: boolean;
+      /**
+       * The first long-context tier, when the catalogue names one: the prices
+       * past the threshold, and the threshold itself in prompt tokens. Haiku
+       * 5.5 is 5x past 100k — the row shows the magnitude, the export and the
+       * `?` pane show the numbers, because a 14-wide column cannot hold both.
+       */
+      tier?: { input: number; output: number; overTokens: number };
+    }
   | { kind: "unknown" };
 
 export interface CatalogueEntry {
@@ -94,6 +106,25 @@ const cost = (raw: unknown): Cost => {
   const c = raw as { input?: unknown; output?: unknown; tiers?: unknown };
   if (typeof c.input !== "number" || typeof c.output !== "number") return { kind: "unknown" };
   if (c.input === 0 && c.output === 0) return { kind: "free" };
+  // The first context tier, when there is one. models.dev carries the whole
+  // list; the row only has room for the magnitude, so one tier is enough —
+  // the export spells out the rest.
+  let tier: { input: number; output: number; overTokens: number } | undefined;
+  if (Array.isArray(c.tiers) && c.tiers.length > 0) {
+    const t = c.tiers[0] as { input?: unknown; output?: unknown; tier?: unknown };
+    const size =
+      t.tier && typeof t.tier === "object" && !Array.isArray(t.tier)
+        ? (t.tier as { type?: unknown; size?: unknown })
+        : null;
+    if (
+      typeof t.input === "number" &&
+      typeof t.output === "number" &&
+      size?.type === "context" &&
+      typeof size.size === "number"
+    ) {
+      tier = { input: t.input, output: t.output, overTokens: size.size };
+    }
+  }
   return {
     kind: "priced",
     input: c.input,
@@ -101,6 +132,7 @@ const cost = (raw: unknown): Cost => {
     // Long inputs bill at a higher rate. A run that crosses the threshold costs
     // more than the number on the row, so the row says so.
     tiered: Array.isArray(c.tiers) && c.tiers.length > 0,
+    ...(tier ? { tier } : {}),
   };
 };
 
@@ -188,11 +220,47 @@ const usd = (n: number): string => `$${n.toFixed(n < 0.01 ? 4 : 2)}`;
 /**
  * The row badge. `?` for unknown, deliberately — a catalogue with no cost entry
  * is not a free model, and rendering it as one costs real money at 3am.
+ * A tiered price shows the bump magnitude (`+5x`): the base price alone is the
+ * number a long session will not pay.
  */
 export function formatCost(c: Cost): string {
   if (c.kind === "free") return "free";
   if (c.kind === "unknown") return "?";
-  return `${usd(c.input)}/${usd(c.output)}${c.tiered ? "+" : ""}`;
+  if (!c.tiered) return `${usd(c.input)}/${usd(c.output)}`;
+  const ratio = c.tier && c.output > 0 ? c.tier.output / c.output : NaN;
+  const mag = Number.isFinite(ratio) && ratio > 1.05 ? `+${ratio >= 9.95 ? Math.round(ratio) : Math.round(ratio * 10) / 10}x` : "+";
+  return `${usd(c.input)}/${usd(c.output)}${mag}`;
+}
+
+/** Which tier of a tiered price the picker shows and filters on. */
+export type PriceBasis = "low" | "high";
+
+/** 100000 prompt tokens reads as "100k", never as six digits in a sentence. */
+export const formatTokens = (n: number): string =>
+  n >= 1000 && n % 1000 === 0 ? `${n / 1000}k` : String(n);
+
+/**
+ * The price cell on the chosen basis. `low` is the base price with the bump
+ * magnitude (`$0.10/$0.50+5x`); `high` is the above-threshold price a long
+ * session actually pays (`$0.50/$2.50+`). Untiered prices read the same
+ * either way. The `+` always means tiered — the export lists both prices
+ * and the threshold, because no 16-wide cell can.
+ */
+export function formatCostBasis(c: Cost, basis: PriceBasis = "low"): string {
+  if (c.kind !== "priced" || basis === "low" || !c.tier) return formatCost(c);
+  return `${usd(c.tier.input)}/${usd(c.tier.output)}+`;
+}
+
+/**
+ * Both prices and the threshold, for the export and the `?` pane — the places
+ * with room. The row only carries the magnitude.
+ */
+export function formatCostFull(c: Cost): string {
+  if (c.kind !== "priced" || !c.tier) return formatCost(c);
+  return (
+    `${usd(c.input)}/${usd(c.output)} to ${formatTokens(c.tier.overTokens)} tokens, ` +
+    `then ${usd(c.tier.input)}/${usd(c.tier.output)}`
+  );
 }
 
 /** `null` when the catalogue has never heard of the model. */

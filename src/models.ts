@@ -254,12 +254,16 @@ export interface RankOptions {
   hideUnscored?: boolean;
   /** Output $/M ceiling for the value view. `prefs.ts` owns the default. */
   ceiling?: number;
+  /** Measured $/task ceiling for the taskcost view. `Infinity` filters nothing. */
+  taskCeiling?: number;
   favourites?: string[];
   /** Show only this provider. Composes with the filter, the ceiling and the views. */
   providerLock?: string;
   scoreOf: (ref: string) => ModelScore;
   /** Output $/M, `undefined` when the catalogue is silent. Not "free": free is 0. */
   outputOf: (ref: string) => number | undefined;
+  /** Measured $/task, `undefined` when AA never measured it. The taskcost view ranks on this. */
+  taskCostOf?: (ref: string) => number | undefined;
 }
 
 const scoredOnly = (scoreOf: (ref: string) => ModelScore, refs: string[]): string[] =>
@@ -293,46 +297,64 @@ const byIntelligenceDesc =
 /**
  * What the picker lists, and in what order. `provider` is the grouped list
  * the picker has always shown; the flat views rank by benchmark instead.
+ * `value` is cheap per token (output $/M under a ceiling); `taskcost` is
+ * cheap per measured task. Two different cheapnesses — a terse model at a
+ * high per-token price can win the second while losing the first — so they
+ * are two views, and `V` toggles between them, rather than one view with a
+ * hidden sort state.
  */
-export type PickerView = "provider" | "intelligence" | "value";
+export type PickerView = "provider" | "intelligence" | "value" | "taskcost";
 
 /**
- * A flat, score-ordered list for the intelligence and value views.
+ * A flat, score-ordered list for the intelligence, value and taskcost views.
  *
- * Scored rows come first, highest intelligence first; unscored rows follow
- * alphabetically — findable, never ranked above a measured one. The value
- * view keeps only models with a known output cost at or under the ceiling:
- * an unknown cost cannot be called cheap. Ties break alphabetically, so the
- * order is stable between refreshes.
+ * Every flat view ranks by intelligence, highest first; unscored rows follow
+ * alphabetically — findable, never ranked above a measured one. The views
+ * differ only in what they filter on: value keeps models with a known output
+ * cost at or under the ceiling, taskcost keeps models with a measured task
+ * at or under theirs. In both, an unknown cost cannot be called cheap, so
+ * unmeasured rows are excluded rather than trailing last — the `?` pane says
+ * where the measurement comes from when the view is empty for it.
+ * Ties break alphabetically, so the order is stable between refreshes.
  */
 export function rankModels(
   refs: string[],
-  view: "intelligence" | "value",
+  view: "intelligence" | "value" | "taskcost",
   opts: RankOptions,
 ): ModelList {
   const {
     filter = "",
     hideUnscored = false,
     ceiling = 0.8,
+    taskCeiling = Number.POSITIVE_INFINITY,
     favourites = [],
     providerLock,
     scoreOf,
     outputOf,
+    taskCostOf = () => undefined,
   } = opts;
   const pool = providerLock ? refs.filter((ref) => providerOf(ref) === providerLock) : refs;
   const visible = visibleRefs(pool, filter, hideUnscored, scoreOf);
+  // Each flat view filters on its own cheapness: output $/M under a ceiling,
+  // or measured $/task under one. An unknown cost cannot be called cheap, so
+  // unmeasured rows never pass a ceiling — the same rule in both views.
   const inView =
     view === "value"
       ? visible.filter((ref) => {
           const out = outputOf(ref);
           return out !== undefined && out <= ceiling;
         })
-      : visible;
-  const scored = inView.filter((ref) => scoreOf(ref) !== null).sort(byIntelligenceDesc(scoreOf));
-  const unscored = hideUnscored
+      : view === "taskcost"
+        ? visible.filter((ref) => {
+            const t = taskCostOf(ref);
+            return t !== undefined && t <= taskCeiling;
+          })
+        : visible;
+  const ranked = inView.filter((ref) => scoreOf(ref) !== null).sort(byIntelligenceDesc(scoreOf));
+  const unranked = hideUnscored
     ? []
     : inView.filter((ref) => scoreOf(ref) === null).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const ordered = [...scored, ...unscored];
+  const ordered = [...ranked, ...unranked];
 
   const rows: ModelRow[] = [];
   const items: { row: number; ref: string }[] = [];

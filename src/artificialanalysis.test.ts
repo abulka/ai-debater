@@ -30,6 +30,10 @@ const AA_PAYLOAD = JSON.stringify({
         artificial_analysis_economics_index: 47.2,
       },
       pricing: { price_1m_input_tokens: 2, price_1m_output_tokens: 10 },
+      artificial_analysis_intelligence_index_cost: {
+        total_cost: 20.69,
+        cost_per_task: { total_cost: 0.1678 },
+      },
     },
     {
       // No index values at all: not an entry.
@@ -57,7 +61,21 @@ describe("parseAAPayload", () => {
       scores: { intelligence: 40.8 },
       source: "aa",
       name: "Claude Sonnet 5.5 (Medium, Default Fallback)",
+      taskCost: 0.1678,
     });
+  });
+
+  test("a cost without scores is not an entry — there is nothing to rank it by", () => {
+    const raw = JSON.stringify({
+      data: [
+        {
+          slug: "costly-ghost",
+          evaluations: { artificial_analysis_intelligence_index: null },
+          artificial_analysis_intelligence_index_cost: { cost_per_task: { total_cost: 0.5 } },
+        },
+      ],
+    });
+    expect(parseAAPayload(raw)).toEqual([]);
   });
 
   test("broken JSON, arrays, and scalars are no entries", () => {

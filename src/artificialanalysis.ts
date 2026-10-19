@@ -100,10 +100,11 @@ export function parseAAPayload(raw: string): BenchmarkEntry[] {
   const entries: BenchmarkEntry[] = [];
   for (const item of data) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const { slug, name, evaluations } = item as {
+    const { slug, name, evaluations, artificial_analysis_intelligence_index_cost } = item as {
       slug?: unknown;
       name?: unknown;
       evaluations?: unknown;
+      artificial_analysis_intelligence_index_cost?: unknown;
     };
     if (typeof slug !== "string" || !slug.trim()) continue;
     if (!evaluations || typeof evaluations !== "object" || Array.isArray(evaluations)) continue;
@@ -121,11 +122,25 @@ export function parseAAPayload(raw: string): BenchmarkEntry[] {
     };
     if (scores.intelligence === undefined && scores.coding === undefined && scores.agentic === undefined)
       continue;
+    // Measured $/task for one Intelligence Index task. The free tier exposes
+    // `total_cost` under `cost_per_task`; the per-input/answer split is Pro.
+    // Absent on older payloads — then the entry simply has no task cost.
+    const costBlock =
+      artificial_analysis_intelligence_index_cost &&
+      typeof artificial_analysis_intelligence_index_cost === "object" &&
+      !Array.isArray(artificial_analysis_intelligence_index_cost)
+        ? (artificial_analysis_intelligence_index_cost as Record<string, unknown>)
+        : null;
+    const perTask =
+      costBlock && costBlock["cost_per_task"] && typeof costBlock["cost_per_task"] === "object"
+        ? finite((costBlock["cost_per_task"] as Record<string, unknown>)["total_cost"])
+        : undefined;
     entries.push({
       id: slug,
       scores,
       source: "aa",
       ...(typeof name === "string" && name ? { name } : {}),
+      ...(perTask !== undefined ? { taskCost: perTask } : {}),
     });
   }
   return entries;

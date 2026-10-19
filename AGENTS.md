@@ -151,11 +151,12 @@ supersede rule.
 | P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
 | A | Picker: ping every model shown — the list after the filter, the lock, the view and H. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown, and it says how to narrow |
 | B | Picker: refresh the benchmark cache — OpenRouter plus Artificial Analysis direct when a key is stored, merged Artificial-Analysis-first, and the notice says which of those it got. Auto-refreshes in the background past 7 days |
-| V | Picker: cycle the view — provider groups, intelligence-ranked, value (output ≤ ceiling, intelligence-ranked) |
+| V | Picker: cycle the view — provider groups, intelligence-ranked, value (cheap per output token under the ceiling), taskcost (cheap per measured task under its own ceiling). Both cheap views rank by intelligence |
+| C | Picker: toggle the price basis — base price or the above-threshold price a long session pays. Cells and the value-view ceiling move together; the count line says `price: high tier` when high |
 | H | Picker: hide models with no benchmark, in every view |
 | L | Picker: lock to the selected provider — the view, the filter and H all still apply inside it, and so does A. Press again to clear |
 | ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |
-| < > | Value view: move the output-cost ceiling in $0.10 steps, saved to `~/.config/adv/picker.json` |
+| < > | Cheap views: move the active ceiling — value in $0.10 steps, taskcost geometrically (×1.5 / ÷1.5). Capped at the dearest measured cost, so `>` past everything is a no-op. Saved to `~/.config/adv/picker.json` |
 | ? | Picker: what each provider bills to, whether a key is present, what the ★ ✓ ✗ marks mean, and every failure a ping has found |
 | Y | Picker: export the visible list as a Markdown table with a legend — for a second opinion in another LLM — to the clipboard and `~/.local/share/adv/models.md` (overwritten each time) |
 | Tab | Switch subject: **this repository** or a **general question** |

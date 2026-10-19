@@ -25,11 +25,12 @@ import {
 } from "./gate-model.ts";
 import { familyClash, familyOf, listModels, orderedModels, providerOf, rankModels } from "./models.ts";
 import type { PickerView } from "./models.ts";
-import { costOf, cannotUseTools, formatCost, loadCatalogue, type Catalogue } from "./catalogue.ts";
+import { costOf, cannotUseTools, formatCostBasis, loadCatalogue, type Catalogue, type PriceBasis } from "./catalogue.ts";
 import {
   countScoredBySource,
   emptyBenchmarks,
   formatResolved,
+  formatTaskCost,
   isStale,
   loadScores,
   scoresFor,
@@ -37,7 +38,7 @@ import {
 } from "./benchmarks.ts";
 import { loadAAKey, saveAAKey } from "./aa-key.ts";
 import { refreshAllBenchmarks, verifyAAKey } from "./artificialanalysis.ts";
-import { CEILING_STEP, DEFAULT_CEILING, loadCeiling, roundCeiling, saveCeiling } from "./prefs.ts";
+import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_TASK_CEILING, loadCeiling, loadTaskCeiling, roundCeiling, saveCeiling, saveTaskCeiling, stepCeiling } from "./prefs.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
 import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES } from "./providers.ts";
 import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, probeHint, type ProbeCache } from "./probe.ts";
@@ -665,15 +666,25 @@ function Settings({
 /** Above this a ping-all is refused by name rather than silently costing 100 calls. */
 const PING_MAX = 40;
 
-/** Fixed badge columns, so every row's price and status line up. */
-const COST_W = 14;
+/** Fixed badge columns, so every row's status lines up. */
 const BADGE_W = 16;
+/**
+ * The price column sizes to its content, capped. Prices vary in length
+ * (`free` beside `$10.00/$50.00+1.5x`), and a fixed width either wastes the
+ * ref or truncates a badge mid-text — `$10.00/$50.00+1.` was the latter.
+ * Below 8 the `price` label does not fit; past 20 the catalogue is wrong,
+ * not the column.
+ */
+const COST_MIN_W = 8;
+const COST_MAX_W = 20;
 /**
  * The benchmark column. 14 fits `I100 C100 A100` without truncating a digit;
  * `formatBenchmarks` rounds so a typical row reads `I56 C78 A62`. Yields
  * before the ref does, and vanishes entirely below ~70 columns.
  */
 const BENCH_W = 14;
+/** Measured $/task, e.g. `$0.17`. Yields after the benchmarks, before the ref. */
+const TASK_W = 8;
 
 /** Pads or trims to an exact column count, so a badge column stays aligned. */
 const pad = (s: string, n: number): string =>
@@ -713,6 +724,8 @@ function Pick({
   notice,
   providerLock,
   aaKey,
+  priceBasis,
+  taskCeiling,
 }: {
   role: "drafter" | "reviewer";
   list: ReturnType<typeof orderedModels>;
@@ -734,6 +747,10 @@ function Pick({
   providerLock: string | null;
   /** Whether an Artificial Analysis key is stored — without one the scores are OpenRouter-only. */
   aaKey: boolean;
+  /** Which tier of a tiered price the rows show: base (`low`) or the above-threshold price (`high`). */
+  priceBasis: PriceBasis;
+  /** Measured $/task ceiling for the taskcost view's count line. */
+  taskCeiling: number;
 }) {
   const { rows, items, favourite } = list;
   const cursor = items[index]?.row ?? 0;
@@ -760,19 +777,39 @@ function Pick({
   // 44-column terminal leaves nine characters of model name and a price you
   // cannot use — the ref is the thing being chosen, so it gets the floor.
   // Benchmarks yield first of all: newest, least essential, and blank on two
-  // thirds of rows. Below ~70 columns the column is gone rather than the ref.
-  let costW = COST_W;
+  // thirds of rows. Task cost yields second: it matters more than a score, but
+  // a missing column never misleads while a missing ref would. Below ~70
+  // columns both are gone rather than the ref.
+  //
+  // The task column only exists in the taskcost view. Elsewhere ~70% of rows
+  // are blank — AA publishes a measured task for about a quarter of its index
+  // — and a mostly-blank column is noise. The Y export still carries it
+  // everywhere, with the legend saying which rows can have one.
+  //
+  // Price sizes to the longest cell on screen: a fixed width truncates
+  // `$10.00/$50.00+1.5x` mid-badge, and padding to a constant wastes the ref
+  // when every price is short.
+  const needCost = items.reduce(
+    (m, i) => Math.max(m, formatCostBasis(costOf(catalogue, i.ref), priceBasis).length),
+    0,
+  );
+  let costW = Math.min(COST_MAX_W, Math.max(COST_MIN_W, needCost));
   let badgeW = BADGE_W;
   let benchW = BENCH_W;
+  let taskW = view === "taskcost" ? TASK_W : 0;
   const spare = width - 4 - 24;
-  if (spare < costW + badgeW + benchW) benchW = 0;
+  if (spare < costW + badgeW + benchW + taskW) benchW = 0;
+  if (spare < costW + badgeW + taskW) taskW = 0;
   if (spare < costW + badgeW) {
     costW = Math.max(9, Math.floor(spare * 0.45));
     badgeW = Math.max(9, spare - costW);
   }
-  // `- 5` leaves a spare column so a truncated ref never runs straight into the
-  // price with no gap, which is what it looked like at 58 columns.
-  const refWidth = Math.max(8, width - 5 - costW - badgeW - benchW);
+  // `- 7` leaves the leading four plus a two-space structural gap after the
+  // price: tier badges vary in length (`+5x` beside `+1.5x`), and an
+  // exact-fill cell otherwise touches the next column with no gap at all.
+  // The other columns pad short, so the price is the only boundary that
+  // needs it.
+  const refWidth = Math.max(8, width - 7 - costW - badgeW - benchW - taskW);
   // The window is sticky: it stays put until the cursor would leave it, then
   // follows — down pins the cursor to the last line, and reversing back up
   // walks the cursor through the visible rows to the top before the window
@@ -795,6 +832,12 @@ function Pick({
     catalogue,
     benchmarks,
   );
+  // In the taskcost view the scored count is the wrong denominator — most
+  // scored rows have no measured task — so the line says how many do.
+  const measured =
+    view === "taskcost"
+      ? items.filter((i) => scoresFor(catalogue, benchmarks, i.ref)?.taskCost !== undefined).length
+      : 0;
 
   return (
     <Box flexDirection="column">
@@ -806,7 +849,16 @@ function Pick({
         <Text>{filter || "type to filter…"}</Text>
         <Text inverse> </Text>
       </Box>
-      <Box marginTop={1} flexDirection="column">
+      <Box marginTop={1}>
+        {/* Column labels, in the rows' own widths — positional columns with no
+            header is how a $/task figure stopped meaning anything. Skips the
+            columns the width yielded, exactly as the rows below do, so the
+            labels always sit over their column. */}
+        <Text dimColor wrap="truncate">
+          {`${" ".repeat(4)}${pad("model", refWidth)}${pad("price", costW)}  ${taskW > 0 ? pad("$/task", taskW) : ""}${pad("ping", badgeW)}${benchW > 0 ? pad("score", benchW) : ""}`.slice(0, width)}
+        </Text>
+      </Box>
+      <Box flexDirection="column">
         {rows.slice(start, start + height).map((row, i) => {
           const absolute = start + i;
 
@@ -840,11 +892,14 @@ function Pick({
           const badge = pinging.has(m)
             ? "… pinging"
             : (probeBadge(probes, m)?.badge ?? probeHint(probes, m));
-          const cost = dead ? "—" : formatCost(costOf(catalogue, m));
+          const cost = dead ? "—" : formatCostBasis(costOf(catalogue, m), priceBasis);
           // Benchmarks are context, not a verdict: no colour encodes a score,
           // and the `≈` marks a match that needed normalisation. Blank on most
           // rows, which is why the column vanishes before the ref does.
           const bench = benchW > 0 ? formatResolved(scoresFor(catalogue, benchmarks, m)) : "";
+          // Measured $/task, AA rows only. Blank means unmeasured, never free —
+          // an OpenRouter row never has one, however cheap its list price.
+          const task = taskW > 0 ? formatTaskCost(scoresFor(catalogue, benchmarks, m)?.taskCost) : "";
           const note = noteForModel(m);
           // Truncated, not wrapped: a row that spills is two rows, and the
           // window here counts lines. The full sentence is in `?`.
@@ -865,6 +920,15 @@ function Pick({
                 {pad(shorten(m, refWidth - 1), refWidth)}
               </Text>
               <Text color={accent} dimColor={!selected && !dead} wrap="truncate">{pad(cost, costW)}</Text>
+              {/* The gap the badge cannot eat: `pad` leaves none when the cell
+                  is exactly full, which a `+1.5x` price is. Two spaces —
+                  everything reads crammed at one. */}
+              <Text>{"  "}</Text>
+              {taskW > 0 && (
+                <Text color={accent} dimColor={!selected} wrap="truncate">
+                  {pad(task, taskW)}
+                </Text>
+              )}
               <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead} wrap="truncate">
                 {pad(status, badgeW)}
               </Text>
@@ -881,19 +945,36 @@ function Pick({
       <Box marginTop={1}>
         {/* Truncated, not wrapped: these lines are the content's chrome, counted
             as one row each by the viewport budget, and a wrap would take a row
-            from the list. */}
-        <Text dimColor wrap="truncate">
-          {marked
-            ? "nothing to choose"
-            : `${items.length} model(s) · ${index + 1} of ${items.length}` +
-              ` · ${split.total} scored` +
-              `${split.aa > 0 ? ` (${split.aa} Artificial Analysis + ${split.openrouter} OpenRouter)` : ""}` +
-              ` · view: ${view}` +
-              `${providerLock ? ` · locked to: ${providerLock}` : ""}` +
-              `${view === "value" ? ` ≤ $${ceiling.toFixed(2)}` : ""}` +
-              `${hideUnscored ? " · hiding unscored" : ""}` +
-              `${!aaKey ? " · OpenRouter scores only — key: settings → benchmarks" : ""}`}
-        </Text>
+            from the list. The view rides in the accent colour: it is the mode,
+            and the mode should read at a glance. */}
+        <Line
+          wrap="truncate"
+          spans={
+            marked
+              ? [{ text: "nothing to choose", dim: true }]
+              : [
+                  {
+                    text:
+                      `${items.length} model(s) · ${index + 1} of ${items.length}` +
+                      ` · ${split.total} scored` +
+                      `${split.aa > 0 ? ` (${split.aa} Artificial Analysis + ${split.openrouter} OpenRouter)` : ""}` +
+                      `${view === "taskcost" ? ` · ${measured} with task cost` : ""} · `,
+                    dim: true,
+                  },
+                  { text: `view: ${view}`, color: THEME.accent },
+                  {
+                    text:
+                      `${providerLock ? ` · locked to: ${providerLock}` : ""}` +
+                      `${view === "value" ? ` ≤ $${ceiling.toFixed(2)}` : ""}` +
+                      `${view === "taskcost" ? ` ≤ $${taskCeiling.toFixed(2)}/task` : ""}` +
+                      `${priceBasis === "high" ? " · price: high tier" : ""}` +
+                      `${hideUnscored ? " · hiding unscored" : ""}` +
+                      `${!aaKey ? " · OpenRouter scores only — key: settings → benchmarks" : ""}`,
+                    dim: true,
+                  },
+                ]
+          }
+        />
       </Box>
       {/* Two hint lines, not one: the picker answers to fourteen keys and one
           line fits eight. Both truncate — the budget counts two rows. */}
@@ -904,8 +985,8 @@ function Pick({
       </Box>
       <Box>
         <Text dimColor wrap="truncate">
-          {`V view · H hide unscored · L ${providerLock ? `unlock (locked to: ${providerLock})` : "lock to selected provider"} · B refresh benchmarks · A ping visible · P ping · T tools ping · Y export · ? providers` +
-            `${view === "value" ? " · < > value ceiling" : ""}`}
+          {`V view · C price basis · H hide unscored · L ${providerLock ? `unlock (locked to: ${providerLock})` : "lock to selected provider"} · B refresh benchmarks · A ping visible · P ping · T tools ping · Y export · ? providers` +
+            `${view === "value" ? " · < > value ceiling" : view === "taskcost" ? " · < > task ceiling" : ""}`}
         </Text>
       </Box>
       {notice && (
@@ -1014,6 +1095,36 @@ function providerLines(
   lines.push([
     {
       text: "I intelligence · C coding · A agentic — Artificial Analysis indices, relayed keyless via OpenRouter (attribution: artificialanalysis.ai).",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "V cycles provider · intelligence · value (cheap per output token, under the ceiling) · taskcost (cheap per measured task, under its own ceiling). < > move the ceiling of the cheap view on screen.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "C toggles the price basis: low shows the base price, high the above-threshold price a long session pays. The value view filters on the shown price.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "task $ is measured dollars per Intelligence Index task — verbosity and the tokenizer baked in, AA rows only. OpenRouter rows never have one.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "a price ending +Nx jumps to Nx past its long-context threshold — Haiku 5.5 is $0.10/$0.50 to 100k tokens, then $0.50/$2.50. The Y export lists both.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "on the high basis the cell shows the above-threshold price instead, still marked + — a model that reads $0.50/$2.50+ never bills its base price to a long session.",
       dim: true,
     },
   ]);
@@ -1801,20 +1912,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       process.stdout.write(next ? MOUSE_ON : MOUSE_OFF);
       setMouseAccepting(next);
       setMouseReporting(next);
-      // The log is the channel that exists on every screen; the notice is the
-      // one next to the pane. A toggle with no feedback is a toggle you press
-      // twice to find out what it did. (No scrollback on the alternate screen,
-      // so the second mode promises selection, not scrolling back.)
-      addLog(
-        next
-          ? "mouse: the pane scrolls with the wheel again"
-          : "mouse: the terminal has it — drag to select text; Ctrl+T takes it back",
-      );
-      setNotice(
-        next
-          ? "the mouse scrolls the pane again"
-          : "the mouse is the terminal's — drag to select; Ctrl+T takes it back",
-      );
+      // No log line, no notice: either one takes rows from the content and the
+      // whole frame shifts. The pinned bottom line flips synchronously and
+      // names the mode on every screen — that is the feedback, and it moves
+      // nothing. (No scrollback on the alternate screen, so the second mode
+      // promises selection, not scrolling back.)
       return;
     }
     // Past runs, from any settled screen: hopping between runs should not cost
@@ -1866,6 +1968,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
   /** What the picker lists: grouped providers, or a flat score-ordered view. */
   const [view, setView] = useState<PickerView>("provider");
+  /** Which tier of a tiered list price the picker shows and the value view filters on. */
+  const [priceBasis, setPriceBasis] = useState<PriceBasis>("low");
   /** Drop models with no benchmark from every view. Off: they sort last. */
   const [hideUnscored, setHideUnscored] = useState(false);
   /** The provider the picker is locked to, or null for every provider. `L`
@@ -1874,6 +1978,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [providerLock, setProviderLock] = useState<string | null>(null);
   /** Output $/M ceiling for the value view. Personal, in `prefs.ts`. */
   const [ceiling, setCeiling] = useState(DEFAULT_CEILING);
+  /** Measured $/task ceiling for the taskcost view. Personal, like the value one. */
+  const [taskCeiling, setTaskCeiling] = useState(DEFAULT_TASK_CEILING);
   /**
    * What is knowable about a model without calling one, and what a call once
    * said. All three are read on demand when the picker opens: the catalogue is a
@@ -2085,6 +2191,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     // It never throws, so this is not worth a try.
     void readOpenCodeModels().then(setOpenCode);
     void loadCeiling().then(setCeiling);
+    void loadTaskCeiling().then(setTaskCeiling);
     // The catalogue and our own probe record do not depend on the listing, so
     // they do not wait for it. Neither throws.
     void loadCatalogue().then((r) => setCatalogue(r.catalogue));
@@ -2481,10 +2588,38 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     return (ref: string): number | undefined => {
       const c = costOf(catalogue, ref);
       // Free is a price (0), unknown is not a price at all: the value view
-      // cannot call an unknown cost cheap.
-      return c.kind === "priced" ? c.output : c.kind === "free" ? 0 : undefined;
+      // cannot call an unknown cost cheap. On the high basis a tiered model
+      // filters on the price a long session pays, not the base price.
+      if (c.kind === "free") return 0;
+      if (c.kind !== "priced") return undefined;
+      return priceBasis === "high" && c.tier ? c.tier.output : c.output;
     };
-  }, [catalogue]);
+  }, [catalogue, priceBasis]);
+  /** Measured $/task, AA rows only — the taskcost view filters on this. */
+  const taskCostOf = useMemo(() => {
+    return (ref: string): number | undefined =>
+      scoresFor(catalogue, benchmarks, ref)?.taskCost;
+  }, [catalogue, benchmarks]);
+  /**
+   * The dearest measured cost on screen. A ceiling past everything is a
+   * no-op, not a number in the thousands — `<`/`>` stop here.
+   */
+  const maxOutput = useMemo(() => {
+    let max: number | undefined;
+    for (const ref of allModels) {
+      const out = outputOf(ref);
+      if (out !== undefined && (max === undefined || out > max)) max = out;
+    }
+    return max;
+  }, [allModels, outputOf]);
+  const maxTask = useMemo(() => {
+    let max: number | undefined;
+    for (const ref of allModels) {
+      const t = taskCostOf(ref);
+      if (t !== undefined && (max === undefined || t > max)) max = t;
+    }
+    return max;
+  }, [allModels, taskCostOf]);
   const modelRows = useMemo(() => {
     if (view === "provider") {
       return orderedModels(allModels, openCode.favourites, openCode.recents, filter, {
@@ -2496,12 +2631,14 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       filter,
       hideUnscored,
       ceiling,
+      taskCeiling,
       favourites: openCode.favourites,
       ...(providerLock ? { providerLock } : {}),
       scoreOf,
       outputOf,
+      taskCostOf,
     });
-  }, [allModels, openCode, filter, view, hideUnscored, ceiling, scoreOf, outputOf, providerLock]);
+  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, outputOf, taskCostOf, providerLock, priceBasis]);
 
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
@@ -2618,6 +2755,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       filter,
       providerLock,
       ceiling,
+      taskCeiling,
       hideUnscored,
       subject: mode,
       catalogue,
@@ -2734,11 +2872,25 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         void refreshBenchmarks(false);
         return;
       }
-      // `V` cycles the view, `H` hides the unscored. Uppercase like the rest;
-      // the cursor resets because each view is a different list.
+      // `C` toggles the price basis: the base price (`low`) or the
+      // above-threshold price (`high`) a long session pays. Both the cells
+      // and the value view's ceiling move together, so the filter always
+      // means "at or under the shown price". The cursor resets because the
+      // value view's membership can change with it.
+      if (input === "C") {
+        setPingArmed(null);
+        setPriceBasis((b) => (b === "low" ? "high" : "low"));
+        setPickIndex(0);
+        return;
+      }
+      // `V` cycles the view — provider, intelligence, value, taskcost — `H`
+      // hides the unscored. Uppercase like the rest; the cursor resets because
+      // each view is a different list.
       if (input === "V") {
         setPingArmed(null);
-        setView((v) => (v === "provider" ? "intelligence" : v === "intelligence" ? "value" : "provider"));
+        setView((v) =>
+          v === "provider" ? "intelligence" : v === "intelligence" ? "value" : v === "value" ? "taskcost" : "provider",
+        );
         setPickIndex(0);
         return;
       }
@@ -2760,13 +2912,28 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setPickIndex(0);
         return;
       }
-      // `<`/`>` move the value ceiling, in the value view only. No ref
+      // `<`/`>` move the ceiling of the cheap view on screen. Value steps
+      // additively ($0.10 — output prices cluster near a dollar); taskcost
+      // steps geometrically (×1.5 — task costs span cents to dollars, and an
+      // additive stride cannot resolve the $0.01–$0.15 cluster). No ref
       // contains either, so nothing is lost to the filter anywhere else.
-      if ((input === "<" || input === ">") && view === "value") {
+      // Neither ceiling passes the dearest measured cost: past everything is
+      // a no-op, not a number in the thousands.
+      if ((input === "<" || input === ">") && (view === "value" || view === "taskcost")) {
         setPingArmed(null);
-        const next = roundCeiling(Math.max(0, ceiling + (input === ">" ? CEILING_STEP : -CEILING_STEP)));
-        setCeiling(next);
-        void saveCeiling(next);
+        const dir = input === ">" ? 1 : -1;
+        if (view === "value") {
+          const next = Math.min(
+            roundCeiling(Math.max(0, ceiling + dir * CEILING_STEP)),
+            maxOutput ?? Number.POSITIVE_INFINITY,
+          );
+          setCeiling(next);
+          void saveCeiling(next);
+        } else {
+          const next = Math.min(stepCeiling(taskCeiling, dir), maxTask ?? Number.POSITIVE_INFINITY);
+          setTaskCeiling(next);
+          void saveTaskCeiling(next);
+        }
         return;
       }
       // Paging before the control swallow below: Ctrl+F/B move a page and
@@ -3806,6 +3973,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         notice={notice}
         providerLock={providerLock}
         aaKey={aaKeySet}
+        priceBasis={priceBasis}
+        taskCeiling={taskCeiling}
       />
     );
   } else if (phase === "providers") {

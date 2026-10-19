@@ -339,4 +339,47 @@ describe("rankModels", () => {
     ]);
     expect(models(rankModels(locked, "intelligence", { ...qOpts, providerLock: "nope" }))).toEqual([]);
   });
+
+  test("taskcost view filters on task, ranks on intelligence like value does", () => {
+    const trefs = ["p/dumb-cheap", "p/smart-mid", "p/unscored-cheap", "p/smart-unmeasured"];
+    const tScore = (ref: string) => {
+      if (ref.endsWith("smart-mid")) return { intelligence: 90 };
+      if (ref.endsWith("dumb-cheap")) return { intelligence: 40 };
+      return null;
+    };
+    const tTask = (ref: string) => {
+      if (ref.endsWith("smart-mid")) return 0.8;
+      if (ref.endsWith("dumb-cheap")) return 0.05;
+      if (ref.endsWith("unscored-cheap")) return 0.05;
+      return undefined;
+    };
+    const tOpts = { ...opts, scoreOf: tScore, taskCostOf: tTask };
+    // Cheapest task does not come first: intelligence ranks, the ceiling filters.
+    expect(models(rankModels(trefs, "taskcost", { ...tOpts, taskCeiling: 1 }))).toEqual([
+      "p/smart-mid",
+      "p/dumb-cheap",
+      "p/unscored-cheap",
+    ]);
+    // The ceiling bites the smart one: $0.80 a task is over $0.20.
+    expect(models(rankModels(trefs, "taskcost", { ...tOpts, taskCeiling: 0.2 }))).toEqual([
+      "p/dumb-cheap",
+      "p/unscored-cheap",
+    ]);
+    // Unmeasured is never cheap, however smart — and without a task-cost
+    // source the view is empty, not alphabetical. (The `?` pane says why.)
+    expect(models(rankModels(trefs, "taskcost", opts))).toEqual([]);
+    // The lock composes, and H drops the unscored tail.
+    expect(
+      models(
+        rankModels(["q/smart-mid", "q/dumb-cheap", "p/dumb-cheap"], "taskcost", {
+          ...tOpts,
+          taskCeiling: 1,
+          providerLock: "q",
+        }),
+      ),
+    ).toEqual(["q/smart-mid", "q/dumb-cheap"]);
+    expect(
+      models(rankModels(trefs, "taskcost", { ...tOpts, taskCeiling: 1, hideUnscored: true })),
+    ).toEqual(["p/smart-mid", "p/dumb-cheap"]);
+  });
 });

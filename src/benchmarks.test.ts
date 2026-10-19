@@ -10,6 +10,7 @@ import {
   countScored,
   formatBenchmarks,
   formatResolved,
+  formatTaskCost,
   isStale,
   loadScores,
   mergeIndexes,
@@ -428,6 +429,13 @@ describe("formatBenchmarks", () => {
     ).toBe("I56");
     expect(formatResolved(null)).toBe("");
   });
+
+  test("task cost reads in dollars, negligible reads as negligible rather than $0.0000", () => {
+    expect(formatTaskCost(0.1678)).toBe("$0.17");
+    expect(formatTaskCost(2.01)).toBe("$2.01");
+    expect(formatTaskCost(0.00004)).toBe("<$0.01");
+    expect(formatTaskCost(undefined)).toBe("");
+  });
 });
 
 describe("cache", () => {
@@ -481,6 +489,7 @@ describe("cache", () => {
           scores: { intelligence: 41.8 },
           source: "aa",
           name: "GLM 5.3 Flash (Max)",
+          taskCost: 0.12,
         },
       ]),
       parseBenchmarks(PAYLOAD),
@@ -493,6 +502,7 @@ describe("cache", () => {
       scores: { intelligence: 41.8 },
       source: "aa",
       name: "GLM 5.3 Flash (Max)",
+      taskCost: 0.12,
     });
     // The relay's copy of the same model was dropped in the merge.
     expect(loaded.scores.byId.get("z-ai/glm-5-3-flash")).toBeUndefined();

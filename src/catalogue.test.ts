@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { cannotUseTools, costOf, formatCost, parseCatalogue, splitRef, toolsOf } from "./catalogue.ts";
+import {
+  cannotUseTools,
+  costOf,
+  formatCost,
+  formatCostBasis,
+  formatCostFull,
+  parseCatalogue,
+  splitRef,
+  toolsOf,
+} from "./catalogue.ts";
 
 /** A catalogue shaped like the real one, including a `null` model entry. */
 const FIXTURE = JSON.stringify({
@@ -128,8 +137,81 @@ describe("formatCost", () => {
     expect(formatCost({ kind: "priced", input: 0.1, output: 0.5, tiered: true })).toBe("$0.10/$0.50+");
   });
 
+  test("a known tier shows the bump magnitude — the base price is not the price of a long run", () => {
+    // Haiku 5.5: $0.10/$0.50 to 100k tokens, then $0.50/$2.50.
+    const haiku = {
+      kind: "priced" as const,
+      input: 0.1,
+      output: 0.5,
+      tiered: true,
+      tier: { input: 0.5, output: 2.5, overTokens: 100000 },
+    };
+    expect(formatCost(haiku)).toBe("$0.10/$0.50+5x");
+    expect(formatCostFull(haiku)).toBe("$0.10/$0.50 to 100k tokens, then $0.50/$2.50");
+    // Untiered prices are unchanged by the full form.
+    expect(
+      formatCostFull({ kind: "priced", input: 0.1, output: 0.5, tiered: false }),
+    ).toBe("$0.10/$0.50");
+  });
+
+  test("even the longest realistic badge fits the picker's price column", () => {
+    // This exact string once rendered as `$10.00/$50.00+1.` — truncated
+    // mid-badge by a fixed-width column. The column sizes to content now,
+    // capped at 20.
+    const big = {
+      kind: "priced" as const,
+      input: 10,
+      output: 50,
+      tiered: true,
+      tier: { input: 15, output: 75, overTokens: 200000 },
+    };
+    const badge = formatCostBasis(big, "low");
+    expect(badge).toBe("$10.00/$50.00+1.5x");
+    expect(badge.length).toBeLessThanOrEqual(20);
+  });
+
+  test("a context tier is parsed off the catalogue's tier list", () => {
+    const c = parseCatalogue(
+      JSON.stringify({
+        anthropic: {
+          models: {
+            "claude-haiku-5-5": {
+              cost: {
+                input: 0.1,
+                output: 0.5,
+                tiers: [{ input: 0.5, output: 2.5, tier: { type: "context", size: 100000 } }],
+              },
+            },
+          },
+        },
+      }),
+    );
+    expect(costOf(c, "anthropic/claude-haiku-5-5")).toEqual({
+      kind: "priced",
+      input: 0.1,
+      output: 0.5,
+      tiered: true,
+      tier: { input: 0.5, output: 2.5, overTokens: 100000 },
+    });
+  });
+
   test("a sub-cent price keeps enough decimals to mean something", () => {
     expect(formatCost({ kind: "priced", input: 0.003, output: 0.03, tiered: false })).toBe("$0.0030/$0.03");
+  });
+
+  test("the high basis shows the price a long session pays, still marked tiered", () => {
+    const haiku = {
+      kind: "priced" as const,
+      input: 0.1,
+      output: 0.5,
+      tiered: true,
+      tier: { input: 0.5, output: 2.5, overTokens: 100000 },
+    };
+    expect(formatCostBasis(haiku, "low")).toBe("$0.10/$0.50+5x");
+    expect(formatCostBasis(haiku, "high")).toBe("$0.50/$2.50+");
+    // Untiered prices read the same on either basis.
+    const flat = { kind: "priced" as const, input: 0.15, output: 0.6, tiered: false };
+    expect(formatCostBasis(flat, "high")).toBe("$0.15/$0.60");
   });
 });
 

@@ -76,9 +76,9 @@ describe("screen budgets", () => {
     expect(scrollerHeight(40, true)).toBe(34);
   });
   test("picker grows with the terminal", () => {
-    // 50 rows -> 49 usable -> 41 model rows, not 12.
-    expect(pickListHeight(contentRows(50), false)).toBe(41);
-    expect(pickListHeight(contentRows(50), true)).toBe(39);
+    // 50 rows -> 49 usable -> 40 model rows, not 12.
+    expect(pickListHeight(contentRows(50), false)).toBe(40);
+    expect(pickListHeight(contentRows(50), true)).toBe(38);
   });
   test("pairs subtract warnings", () => {
     expect(pairsListHeight(40, 0, false)).toBe(34);

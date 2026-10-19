@@ -64,6 +64,13 @@ export interface BenchmarkEntry {
   source: "aa" | "openrouter";
   /** The source's display name, for variant preference. Absent on old caches. */
   name?: string;
+  /**
+   * Measured dollars per Intelligence Index task, AA only. The OpenRouter
+   * relay never carries this. Verbosity and the tokenizer are already inside
+   * it — it is what the benchmark run actually cost, not a price-list
+   * projection — which is why the picker ranks on it rather than on t/s.
+   */
+  taskCost?: number;
 }
 
 /**
@@ -268,7 +275,8 @@ export function buildIndex(entries: BenchmarkEntry[]): Benchmarks {
       (e) =>
         e.scores.intelligence === first.scores.intelligence &&
         e.scores.coding === first.scores.coding &&
-        e.scores.agentic === first.scores.agentic,
+        e.scores.agentic === first.scores.agentic &&
+        e.taskCost === first.taskCost,
     );
     if (same) byId.set(key, first);
   }
@@ -328,6 +336,8 @@ export interface ResolvedBenchmark extends BenchmarkScores {
   source: "aa" | "openrouter";
   /** True when `-`/`.` normalisation was needed to match. A guess, marked. */
   normalised: boolean;
+  /** Measured $/task, when the entry carried one. Blank in the row, never 0. */
+  taskCost?: number;
 }
 
 /**
@@ -393,7 +403,13 @@ export function scoresFor(
       normalised = true;
     }
   }
-  return { ...entry.scores, sourceId: entry.id, source: entry.source, normalised };
+  return {
+    ...entry.scores,
+    sourceId: entry.id,
+    source: entry.source,
+    normalised,
+    ...(entry.taskCost !== undefined ? { taskCost: entry.taskCost } : {}),
+  };
 }
 
 /**
@@ -418,6 +434,18 @@ export function formatResolved(r: ResolvedBenchmark | null): string {
   return text ? (r.normalised ? `≈${text}` : text) : "";
 }
 
+/**
+ * Measured $/task for the row. Blank when unmeasured — an OpenRouter row
+ * never has one, however cheap its list price, and blank is never 0.
+ * Below half a cent the digits are noise, so the cell says what it means:
+ * negligible, not zero.
+ */
+export function formatTaskCost(v: number | undefined): string {
+  if (v === undefined) return "";
+  if (v < 0.005) return "<$0.01";
+  return `$${v.toFixed(2)}`;
+}
+
 /* ------------------------------------------------------------------ */
 
 export const benchmarksFile = (): string => path.join(advDataRoot(), "benchmarks.json");
@@ -435,6 +463,7 @@ export interface LoadedScores {
 interface SerialEntry extends BenchmarkScores {
   source?: unknown;
   name?: unknown;
+  taskCost?: unknown;
 }
 
 /**
@@ -491,6 +520,7 @@ export async function loadScores(file: string = benchmarksFile()): Promise<Loade
         scores: entry,
         source: serial.source === "aa" ? "aa" : "openrouter",
         ...(typeof serial.name === "string" && serial.name ? { name: serial.name } : {}),
+        ...(finite(serial.taskCost) !== undefined ? { taskCost: finite(serial.taskCost)! } : {}),
       });
     }
   }
@@ -538,12 +568,13 @@ export async function saveScores(
   file: string = benchmarksFile(),
   indexVersion: string | null = null,
 ): Promise<void> {
-  const serial: Record<string, BenchmarkScores & { source?: string; name?: string }> = {};
+  const serial: Record<string, BenchmarkScores & { source?: string; name?: string; taskCost?: number }> = {};
   for (const entry of scores.byId.values()) {
     serial[entry.id] = {
       ...entry.scores,
       ...(entry.source === "aa" ? { source: "aa" as const } : {}),
       ...(entry.name ? { name: entry.name } : {}),
+      ...(entry.taskCost !== undefined ? { taskCost: entry.taskCost } : {}),
     };
   }
   await mkdir(path.dirname(file), { recursive: true });

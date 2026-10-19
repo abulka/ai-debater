@@ -1,6 +1,6 @@
-import { costOf, cannotUseTools, formatCost } from "./catalogue.ts";
+import { costOf, cannotUseTools, formatCostFull } from "./catalogue.ts";
 import type { Catalogue } from "./catalogue.ts";
-import { scoresFor } from "./benchmarks.ts";
+import { scoresFor, formatTaskCost } from "./benchmarks.ts";
 import type { Benchmarks } from "./benchmarks.ts";
 import { providerOf } from "./models.ts";
 import type { PickerView } from "./models.ts";
@@ -27,6 +27,8 @@ export interface ModelsExportInput {
   filter: string;
   providerLock: string | null;
   ceiling: number;
+  /** Measured $/task ceiling, for the taskcost view's context line. */
+  taskCeiling: number;
   hideUnscored: boolean;
   subject: Mode;
   catalogue: Catalogue;
@@ -53,6 +55,7 @@ export function exportModelsMd(input: ModelsExportInput): string {
     filter,
     providerLock,
     ceiling,
+    taskCeiling,
     hideUnscored,
     subject,
     catalogue,
@@ -72,6 +75,7 @@ export function exportModelsMd(input: ModelsExportInput): string {
   if (filter.trim()) context.push(`filter: "${filter.trim()}"`);
   if (providerLock) context.push(`locked to provider: ${providerLock}`);
   if (view === "value") context.push(`value ceiling: $${ceiling.toFixed(2)}/M output`);
+  if (view === "taskcost") context.push(`task ceiling: $${taskCeiling.toFixed(2)}/task`);
   if (hideUnscored) context.push("hiding unscored");
   context.push(`subject: ${subject === "answer" ? "general question" : "this repository"}`);
   context.push(
@@ -81,10 +85,10 @@ export function exportModelsMd(input: ModelsExportInput): string {
   );
 
   const header =
-    "| model | provider | price in/out | intelligence | coding | agentic | scores from | ping | notes |";
-  const divider = "| --- | --- | --- | --- | --- | --- | --- | --- | --- |";
+    "| model | provider | price in/out | task $/task | intelligence | coding | agentic | scores from | ping | notes |";
+  const divider = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |";
   const rows = refs.map((ref) => {
-    const price = formatCost(costOf(catalogue, ref));
+    const price = formatCostFull(costOf(catalogue, ref));
     const resolved = scoresFor(catalogue, benchmarks, ref);
     const badge = probeBadge(probes, ref);
     const notes: string[] = [];
@@ -92,6 +96,7 @@ export function exportModelsMd(input: ModelsExportInput): string {
     if (cannotUseTools(catalogue, ref, subject)) notes.push("no tool calls");
     return (
       `| ${cell(ref)} | ${cell(providerOf(ref))} | ${cell(price)} | ` +
+      `${cell(formatTaskCost(resolved?.taskCost))} | ` +
       `${cell(num(resolved?.intelligence))} | ${cell(num(resolved?.coding))} | ` +
       `${cell(num(resolved?.agentic))} | ` +
       `${cell(
@@ -113,7 +118,8 @@ export function exportModelsMd(input: ModelsExportInput): string {
     rows.map((r) => `${r}\n`).join("") +
     `\n## legend\n\n` +
     `- model: the ref as \`opencode models\` lists it, provider first.\n` +
-    `- price in/out: US$ per million tokens. \`free\` costs nothing; \`?\` means the catalogue is silent — unknown, never free.\n` +
+    `- price in/out: US$ per million tokens. \`free\` costs nothing; \`?\` means the catalogue is silent — unknown, never free. A tiered price lists both: base to the threshold, then the long-context price (Haiku 5.5: $0.10/$0.50 to 100k tokens, then $0.50/$2.50).\n` +
+    `- task $/task: measured dollars per Artificial Analysis Intelligence Index task — what the benchmark run actually cost, verbosity and tokenizer included. Higher is dearer, blank is unmeasured (never 0), and only Artificial Analysis rows have one: the OpenRouter relay never carries it.\n` +
     `- intelligence / coding / agentic: benchmark scores, higher is better. Blank means unscored, not zero.\n` +
     `- scores from: who measured it. \`≈\` means the id needed normalising to match and is the weaker claim.\n` +
     `- ping: a real model call made from here. \`✓\` reachable (\`T\` also reached for a tool); \`✗\` failed; \`not tested\` means what it says.\n` +
