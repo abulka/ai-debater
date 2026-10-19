@@ -148,7 +148,7 @@ supersede rule.
 | ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it. A pair that belongs to a run is not stored here and goes when the run does |
 | ↑↓ · Enter | Settings: on **drafter** or **reviewer**, open the model picker |
-| P · T | Picker: **ping** the highlighted model — `P` one word, `T` forces a tool call. The only keys in `adv` that spend a model call, and both uppercase so `p` still types into the filter |
+| P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
 | A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30). **Press twice**, refused above 40 matches, and it says so |
 | ? | Picker: what each provider bills to, whether a key is present, and every failure a ping has found |
 | Tab | Switch subject: **this repository** or a **general question** |
@@ -406,15 +406,37 @@ spike/              M0
   `familyCheck: "require"` — measuring "an extra pass" while claiming
   cross-family review. The catalogue family is display-only; the comparison is
   made prefix-tolerant instead. Do not "fix" this by trusting the catalogue.
-- **A ping is a real model call and nothing fires one on its own.** `p`, `P`, `A`
+- **A ping is a real model call and nothing fires one on its own.** `P`, `T`, `A`
   and `adv ping` are the only callers. There is deliberately no background sweep
   on launch: an earlier draft proposed one and it was dropped, because a tool
   that spends calls the reader did not ask for is a different tool. `A` needs two
   presses and is refused above 40 targets by name, because a single keypress
   cannot tell a deliberate `A` from a slipped Shift and forty calls is real money.
-  `p` and `P` cost one call each and say so in the footer, which is why they do
-  not ask twice. The cost is that `p`, `P`, `A` and `?` cannot be typed into the
-  filter — acceptable because every ref is lowercase.
+  The command keys are uppercase (`P`, `T`, `A`) so lowercase `p` still types
+  into the filter — `p` as a ping key made a letter untypeable for no gain, since
+  every one of the 651 refs is lowercase anyway.
+- **The two ping depths are the row's job, not the footer's.** `P` asks for one
+  word; `T` asks the drafter agent to read a file, and the verdict comes from
+  whether the event stream shows a tool call — not from what the model said. The
+  badge therefore carries which depth answered (`✓ 4.2s` vs `✓ 7.4s T`), an
+  untested row says `P to test`, and a cheaply-tested one says `T? try tools`. A
+  footer can say "ping+tools" once; it cannot say, per row, that the stronger
+  question is still open on this one. **`loadProbes` must preserve `depth`** —
+  `recordProbe` reads the whole file and writes one entry back, so a field the
+  reader drops is a field every subsequent write erases. That bug silently
+  un-marked every `T`.
+- **A model row must never exceed the terminal's real width.** The picker lays
+  out marks + ref + price + status, and every part is truncated rather than
+  allowed to wrap, because the window counts lines. Two bugs lived here: a
+  `Math.max(60, columns - 2)` floor made every row 60 wide on a narrower
+  terminal, so rows that fitted at 100 columns wrapped into two visual rows at
+  58 and the list looked double-spaced — and it looked *fine* on re-entering the
+  screen, because Ink re-measures on the next render rather than on resize. And
+  the price and status columns must yield before the ref does: held at 14 and 16
+  on a 44-column terminal they left nine characters of model name.
+- **The whole row lights up, not just the ref.** The price and status sit in
+  fixed columns 60 characters to the right; a cursor on the ref alone left the
+  reader guessing which price belonged to which model.
 - **A failure writes `state: "failed"` plus the error.** A run left at
   `created` means the process died before it could record anything — that is
   different from a run parked at the gate, and used to be indistinguishable.

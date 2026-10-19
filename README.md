@@ -104,7 +104,7 @@ Bare `adv` opens the interactive TUI for the current directory (`adv --dir
 | ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it |
 | ↑↓ · Enter | Settings: on **drafter** or **reviewer**, open the model picker |
-| P · T | Picker: **ping** the highlighted model — `P` is one word, `T` forces a tool call. A real model call; the badge is `✓ 3.5s` or `✗ no credit` |
+| P · T | Picker: **ping** the highlighted model. `P` asks one word — does this account reach it? `T` asks it to read a file — does it also use tools? The row says which ran |
 | A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30 models). Press twice; refused above 40 |
 | ? | Picker: what each provider bills to, whether a key is present, and every failure a ping found |
 | Tab | Switch subject: **this repository** or a **general question** |
@@ -161,8 +161,10 @@ a real call can answer:
 - **`P` settles it.** One real call, classified into what actually happened: no
   credit, no access, blocked, throttled, app-only, or fine. Results are cached
   for a week (a day for failures, since credit can be added at any time) and
-  always shown with their age. `T` forces a tool call, which is the only thing
-  that catches a model that answers but cannot work as an agent.
+  always shown with their age. `T` goes further — it asks the drafter agent to
+  read a file and judges from whether a tool call actually happened — which is
+  the only thing that catches a model that answers but cannot work as an agent.
+  The row shows which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T`.
 
 One verdict is worth knowing about, because it looks like the opposite of a
 fault: **`✗ app only`**. OpenCode's free tier refuses calls that come from a

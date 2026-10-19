@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ago, classify, failedProbes, isFresh, loadProbes, probeBadge, probeCoverage, recordProbe, SHORT, tail, type VerdictKind } from "./probe.ts";
+import { ago, classify, failedProbes, isFresh, loadProbes, probeBadge, probeCoverage, probeHint, recordProbe, SHORT, tail, type VerdictKind } from "./probe.ts";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -156,6 +156,25 @@ describe("the probe cache", () => {
     expect(loaded["groq/groq/compound-mini"]?.verdict.kind).toBe("no-access");
   });
 
+  test("depth survives a read", async () => {
+    // `recordProbe` reads the whole file and writes one entry back, so a field
+    // the reader drops is a field every later write erases.
+    const file = path.join(await tmp(), "probes.json");
+    await recordProbe("a/b", { kind: "ok", detail: "replied", ms: 1000 }, file, "full");
+    await recordProbe("c/d", { kind: "ok", detail: "replied", ms: 1000 }, file, "cheap");
+    const loaded = await loadProbes(file);
+    expect(loaded["a/b"]?.depth).toBe("full");
+    expect(loaded["c/d"]?.depth).toBe("cheap");
+  });
+
+  test("a record written before depths existed reads as cheap, which is what it was", async () => {
+    const file = path.join(await tmp(), "probes.json");
+    await Bun.write(file, JSON.stringify({
+      "old/model": { at: new Date().toISOString(), verdict: { kind: "ok", detail: "replied", ms: 900 } },
+    }));
+    expect((await loadProbes(file))["old/model"]?.depth).toBeUndefined();
+  });
+
   test("a malformed file is no probes, never a throw", async () => {
     const dir = await tmp();
     const file = path.join(dir, "probes.json");
@@ -230,6 +249,27 @@ describe("probeBadge", () => {
 
   test("a fresh success shows the duration", () => {
     expect(probeBadge(cache, "ok/model")?.badge).toBe("✓ 3.2s");
+  });
+
+  test("the badge carries which depth answered — that is what P and T differ by", () => {
+    const withDepth = {
+      "cheap/model": { at: new Date().toISOString(), verdict: { kind: "ok" as const, detail: "", ms: 4200 }, depth: "cheap" as const },
+      "full/model": { at: new Date().toISOString(), verdict: { kind: "ok" as const, detail: "", ms: 7400 }, depth: "full" as const },
+    };
+    expect(probeBadge(withDepth, "cheap/model")?.badge).toBe("✓ 4.2s");
+    expect(probeBadge(withDepth, "full/model")?.badge).toBe("✓ 7.4s T");
+  });
+
+  test("an untested row says so, and a cheaply-tested one offers the stronger test", () => {
+    const cheapOnly = {
+      "m": { at: new Date().toISOString(), verdict: { kind: "ok" as const, detail: "", ms: 4200 }, depth: "cheap" as const },
+    };
+    expect(probeHint({}, "m")).toBe("P to test");
+    expect(probeHint(cheapOnly, "m")).toBe("T? try tools");
+    // Once the stronger test has run, or once something failed, there is nothing
+    // left to offer.
+    expect(probeHint({ "m": { ...cheapOnly.m, depth: "full" } }, "m")).toBe("");
+    expect(probeHint({ "m": { ...cheapOnly.m, verdict: { kind: "no-credit", detail: "" } } }, "m")).toBe("");
   });
 
   test("a stale success shows its age, never a bare tick", () => {

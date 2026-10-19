@@ -235,7 +235,7 @@ export async function pingModel(ref: string, opts: PingOptions): Promise<Verdict
     if (verdict.kind === "ok") verdict = { kind: "failed", detail: tail(String(err)) };
   }
 
-  if (opts.record !== false) await recordProbe(ref, verdict);
+  if (opts.record !== false) await recordProbe(ref, verdict, probesFile(), opts.kind);
   return verdict;
 }
 
@@ -261,6 +261,12 @@ export const PRUNE_MS = 30 * 24 * 60 * 60 * 1000;
 export interface ProbeRecord {
   at: string;
   verdict: Verdict;
+  /**
+   * Which depth produced this. `full` supersedes `cheap`: it proves more, so a
+   * record from it replaces one from `cheap` rather than being a second opinion
+   * beside it.
+   */
+  depth?: "cheap" | "full";
 }
 
 export type ProbeCache = Record<string, ProbeRecord>;
@@ -273,10 +279,19 @@ export async function loadProbes(file: string = probesFile()): Promise<ProbeCach
     const out: ProbeCache = {};
     for (const [ref, value] of Object.entries(raw as Record<string, unknown>)) {
       if (!value || typeof value !== "object") continue;
-      const v = value as { at?: unknown; verdict?: { kind?: unknown; detail?: unknown; ms?: unknown } };
+      const v = value as {
+        at?: unknown;
+        depth?: unknown;
+        verdict?: { kind?: unknown; detail?: unknown; ms?: unknown };
+      };
       if (typeof v.at !== "string" || typeof v.verdict?.kind !== "string") continue;
       out[ref] = {
         at: v.at,
+        // Depth must survive the read. `recordProbe` reads the whole file before
+        // writing one entry back, so a field the reader drops is a field that
+        // every subsequent write erases — which is exactly how `depth` came to
+        // be missing from every record and the row never showed its `T`.
+        ...(v.depth === "cheap" || v.depth === "full" ? { depth: v.depth } : {}),
         verdict: {
           kind: v.verdict.kind as VerdictKind,
           detail: typeof v.verdict.detail === "string" ? v.verdict.detail : "",
@@ -294,10 +309,11 @@ export async function recordProbe(
   ref: string,
   verdict: Verdict,
   file: string = probesFile(),
+  depth: "cheap" | "full" = "cheap",
 ): Promise<void> {
   const cache = await loadProbes(file);
   const at = new Date().toISOString();
-  cache[ref] = { at, verdict };
+  cache[ref] = { at, verdict, depth };
   const cutoff = Date.now() - PRUNE_MS;
   for (const [key, rec] of Object.entries(cache)) {
     const when = Date.parse(rec.at);
@@ -360,6 +376,11 @@ export const isUsable = (v: Verdict): boolean => v.kind === "ok" || v.kind === "
  * A badge always carries its age. `✓` on its own claims a fact about a model
  * that may have changed since the run — which is the entire reason the ping
  * exists — and a reader has no way to see how old it is.
+ *
+ * It also carries **which depth answered**, because that is the difference
+ * between `P` and `T` and the footer cannot keep saying it: `✓ 2.6s` is "it
+ * replies", `✓ 5.6s T` is "it replies *and* reached for a tool". A cheap-only
+ * pass shows `T?`, so the row itself says the stronger question is still open.
  */
 export function probeBadge(
   cache: ProbeCache,
@@ -370,11 +391,29 @@ export function probeBadge(
   if (!rec) return null;
   const age = ago(rec, now);
   const stale = !isFresh(rec, now);
+  // A record written before depths were recorded is treated as cheap: that is
+  // what it was.
+  const full = rec.depth === "full";
   if (rec.verdict.kind === "ok") {
     const how = rec.verdict.ms ? `${(rec.verdict.ms / 1000).toFixed(1)}s` : "ok";
-    return { badge: stale ? `✓ ${age} ago` : `✓ ${how}`, stale, rec };
+    const mark = stale ? `${age} ago` : `${how}${full ? " T" : ""}`;
+    return { badge: `✓ ${mark}`, stale, rec };
   }
   return { badge: `✗ ${SHORT[rec.verdict.kind] ?? rec.verdict.kind}`, stale, rec };
+}
+
+/**
+ * The hint for a row nobody has pinged, or has only tested cheaply.
+ *
+ * The picker's blank status column was doing no work: the reader could not tell
+ * an untested model from a clean one, and the footer had to carry the difference
+ * between `P` and `T` in two words. Both live in the row now.
+ */
+export function probeHint(cache: ProbeCache, ref: string): string {
+  const rec = cache[ref];
+  if (!rec) return "P to test";
+  if (rec.depth === "full" || rec.verdict.kind !== "ok") return "";
+  return "T? try tools";
 }
 
 /** Every failure on record, newest first — what the provider pane spells out. */

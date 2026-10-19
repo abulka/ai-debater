@@ -26,7 +26,7 @@ import { familyClash, familyOf, listModels, orderedModels, providerOf } from "./
 import { costOf, cannotUseTools, formatCost, loadCatalogue, type Catalogue } from "./catalogue.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
 import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES } from "./providers.ts";
-import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, type ProbeCache } from "./probe.ts";
+import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, probeHint, type ProbeCache } from "./probe.ts";
 import { readOpenCodeModels } from "./opencode-state.ts";
 import {
   deletePair,
@@ -596,6 +596,10 @@ function Settings({
 /** Above this a sweep is refused by name rather than silently costing 100 calls. */
 const SWEEP_MAX = 40;
 
+/** Fixed badge columns, so every row's price and status line up. */
+const COST_W = 14;
+const BADGE_W = 16;
+
 /** Pads or trims to an exact column count, so a badge column stays aligned. */
 const pad = (s: string, n: number): string => (s.length >= n ? s : s + " ".repeat(n - s.length));
 
@@ -641,9 +645,32 @@ function Pick({
   const height = 12;
   const { rows, items, favourite } = list;
   const cursor = items[index]?.row ?? 0;
-  const width = Math.max(60, (process.stdout.columns ?? 100) - 2);
-  // The ref column takes what is left after the marks and the two badge columns.
-  const refWidth = Math.max(18, width - 2 - 2 - 14 - 22);
+  /**
+   * The real terminal width, with no floor.
+   *
+   * There used to be a `Math.max(60, columns - 2)` here, which made every row
+   * 60 columns wide on a terminal narrower than that — so a row that fitted
+   * perfectly at 100 columns wrapped into two visual rows at 58, and the list
+   * looked double-spaced. It looked fine again on re-entering the screen only
+   * because Ink re-measures on the next render, not because the arithmetic was
+   * right. One column is left spare because a row that exactly fills the width
+   * wraps on some terminals for reasons that are not worth chasing.
+   */
+  const cols = process.stdout.columns ?? 100;
+  const width = Math.max(24, cols - 1);
+  // The badge columns yield before the ref does. Holding them at 14 and 16 on a
+  // 44-column terminal leaves nine characters of model name and a price you
+  // cannot use — the ref is the thing being chosen, so it gets the floor.
+  let costW = COST_W;
+  let badgeW = BADGE_W;
+  const spare = width - 4 - 24;
+  if (spare < costW + badgeW) {
+    costW = Math.max(9, Math.floor(spare * 0.45));
+    badgeW = Math.max(9, spare - costW);
+  }
+  // `- 5` leaves a spare column so a truncated ref never runs straight into the
+  // price with no gap, which is what it looked like at 58 columns.
+  const refWidth = Math.max(8, width - 5 - costW - badgeW);
   const start = Math.max(0, Math.min(cursor - 5, Math.max(0, rows.length - height)));
   const marked = items.length === 0;
 
@@ -664,7 +691,11 @@ function Pick({
           if (row.kind === "group") {
             return (
               <Box key={`g${absolute}`}>
-                <Text dimColor>{`  ${row.label}${row.note ? ` — ${row.note}` : ""}`}</Text>
+                {/* Truncated like a row, for the same reason: a header that
+                    wraps is two rows and the window counts lines. */}
+                <Text dimColor>
+                  {`  ${row.label}${row.note ? ` — ${row.note}` : ""}`.slice(0, width)}
+                </Text>
               </Box>
             );
           }
@@ -675,7 +706,7 @@ function Pick({
             return (
               <Box key={`p${row.provider}`}>
                 <Text dimColor>
-                  {`  ${row.provider} · ${row.count} · ${keyed.has(row.provider) ? "key set" : "NO KEY"}`}
+                  {`  ${row.provider} · ${row.count} · ${keyed.has(row.provider) ? "key set" : "NO KEY"}`.slice(0, width)}
                 </Text>
               </Box>
             );
@@ -686,12 +717,16 @@ function Pick({
           const dead = cannotUseTools(catalogue, m, subject);
           const badge = pinging.has(m)
             ? "… pinging"
-            : (probeBadge(probes, m)?.badge ?? "");
+            : (probeBadge(probes, m)?.badge ?? probeHint(probes, m));
           const cost = dead ? "—" : formatCost(costOf(catalogue, m));
           const note = noteForModel(m);
           // Truncated, not wrapped: a row that spills is two rows, and the
           // window here counts lines. The full sentence is in `?`.
-          const tail = (badge || (note ? "· note" : "")).slice(0, 21);
+          const status = (badge || (note ? "· note" : "")).slice(0, badgeW - 1);
+          // The whole row lights up, not just the ref. With the price and status
+          // in fixed columns 60 characters away, a cursor on the ref alone left
+          // the reader guessing which price belonged to which model.
+          const accent = selected ? THEME.accent : undefined;
           return (
             <Box key={m}>
               {/* Marks, not colour: a monochrome terminal loses decoration and
@@ -699,12 +734,14 @@ function Pick({
                   columns of two, so a row starts at the same offset whatever
                   is in them. */}
               <Text dimColor={!selected}>{favourite.has(m) ? "★ " : "  "}</Text>
-              <Text color={selected ? THEME.accent : undefined}>{selected ? "❯ " : "  "}</Text>
-              <Text color={selected ? THEME.accent : undefined} bold={selected} dimColor={dead}>
-                {pad(shorten(m, refWidth), refWidth)}
+              <Text color={accent}>{selected ? "❯ " : "  "}</Text>
+              <Text color={accent} bold={selected} dimColor={dead && !selected}>
+                {pad(shorten(m, refWidth - 1), refWidth)}
               </Text>
-              <Text dimColor>{pad(cost, 14)}</Text>
-              <Text color={dead ? THEME.warn : undefined}>{pad(tail, 22)}</Text>
+              <Text color={accent} dimColor={!selected && !dead}>{pad(cost, costW)}</Text>
+              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead}>
+                {pad(status, badgeW)}
+              </Text>
             </Box>
           );
         })}
@@ -714,7 +751,7 @@ function Pick({
         <Text dimColor>
           {marked
             ? "nothing to choose"
-            : `${items.length} model(s) · P ping · T ping+tools · A sweep · ? providers`}
+            : `${items.length} model(s) · P replies? · T replies AND uses a tool? · A sweep · ? providers`}
         </Text>
       </Box>
       <Box>
