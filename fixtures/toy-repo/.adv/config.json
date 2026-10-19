@@ -4,8 +4,8 @@
   "familyCheck": "warn",
   "models": {
     "drafter": {
-      "ref": "opencode-go/muse-spark-1.3-contributor",
-      "family": "muse"
+      "ref": "opencode-go/claude-haiku-5-5",
+      "family": "claude"
     },
     "reviewer": {
       "ref": "opencode-go/deepseek-v4.1-flash",

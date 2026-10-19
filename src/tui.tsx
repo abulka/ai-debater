@@ -330,13 +330,22 @@ function Scroller({
 
   useInput((input, key) => {
     // The control pairs first: Ctrl+D and Ctrl+U are how a Mac pages a document,
-    // and the swallow below would otherwise eat them.
+    // Ctrl+F and Ctrl+B match the picker's paging keys, and the swallow below
+    // would otherwise eat all four.
     if (key.ctrl && input === "d") {
       by(half);
       return;
     }
     if (key.ctrl && input === "u") {
       by(-half);
+      return;
+    }
+    if (key.ctrl && input === "f") {
+      by(height);
+      return;
+    }
+    if (key.ctrl && input === "b") {
+      by(-height);
       return;
     }
     // Ctrl/meta combos belong to the app (Ctrl+R past runs, Ctrl+C quit). A
@@ -379,7 +388,7 @@ function Scroller({
       <Box marginTop={1}>
         <Text dimColor>
           {lines.length === 0 ? "empty" : `${offset + 1}–${Math.min(lines.length, offset + height)} of ${lines.length}`}
-          {` · ↑↓ line · space/b page · ${escLabel}`}
+          {` · ↑↓ line · space/b/^F/^B page · ${escLabel}`}
         </Text>
       </Box>
       <Box>
