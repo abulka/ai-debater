@@ -32,6 +32,18 @@ export async function listModels(repo: string): Promise<string[]> {
 export const providerOf = (ref: string): string => ref.split("/")[0] ?? ref;
 
 /**
+ * The pinned reference rows: DeepSeek V4.1 Flash in all its servings
+ * (`opencode-go/deepseek-v4.1-flash`, `deepseek/deepseek-v4-1-flash`, the
+ * `-free` and dated variants). The picker paints these yellow so one model's
+ * line is findable at a glance while comparing the rest — a visual anchor,
+ * not a verdict, and the name on the row still says what it is.
+ */
+export function isReferenceRow(ref: string): boolean {
+  const m = ref.toLowerCase();
+  return m.includes("deepseek") && m.includes("flash") && /v4[.-]1/.test(m);
+}
+
+/**
  * Providers the reader subscribed to sort first, then the long tail.
  *
  * `opencode-go` is the subscription thirty models live behind;

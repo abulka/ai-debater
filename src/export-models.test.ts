@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { exportModelsMd } from "./export-models.ts";
 import type { Catalogue } from "./catalogue.ts";
 import { buildIndex, emptyBenchmarks } from "./benchmarks.ts";
+import { buildAcdIndex } from "./aicodingdaily.ts";
 import type { ProbeCache } from "./probe.ts";
 
 const catalogue: Catalogue = new Map([
@@ -48,7 +49,7 @@ describe("exportModelsMd", () => {
     const md = exportModelsMd({ ...base, refs: ["openrouter/free-model", "opencode-go/glm-5.3-flash"] });
     const lines = md.split("\n");
     expect(lines).toContain(
-      "| model | provider | price in/out | task $/task | intelligence | coding | agentic | scores from | ping | notes |",
+      "| model | provider | price in/out | task $/task | intelligence | coding | agentic | D points | ACD $/task | scores from | ping | notes |",
     );
     const rows = lines.filter((l) => l.startsWith("| openrouter/") || l.startsWith("| opencode-go/"));
     expect(rows).toHaveLength(2);
@@ -84,6 +85,30 @@ describe("exportModelsMd", () => {
     // No tool calls is a plan-mode verdict, and ? is unknown, never free.
     expect(md).toContain("no tool calls");
     expect(md).toContain("unknown, never free");
+  });
+
+  test("AI Coding Daily rides its own columns, with the harness in the notes", () => {
+    const md = exportModelsMd({
+      ...base,
+      refs: ["anthropic/claude-opus-5-5", "opencode-go/glm-5.3-flash"],
+      acd: buildAcdIndex([
+        { id: "opus-5-5", points: 67.41, costPerPrompt: 0.79, effort: "High", harness: "Claude Code" },
+      ]),
+      acdAt: "2026-10-20",
+    });
+    const opus = md.split("\n").find((l) => l.startsWith("| anthropic/claude-opus-5-5"))!;
+    // Two different scales, two different columns: D points beside I/C/A,
+    // prompt-$ beside task-$.
+    expect(opus).toContain("| 67 |");
+    expect(opus).toContain("| $0.79 |");
+    // The ceiling row's method travels with it, marked when normalised.
+    expect(opus).toContain("ACD High via Claude Code ≈");
+    // Unmeasured rows stay blank, never 0.
+    const glm = md.split("\n").find((l) => l.startsWith("| opencode-go/glm-5.3-flash"))!;
+    expect(glm).not.toContain("ACD");
+    expect(md).toContain("- AI Coding Daily scores fetched 2026-10-20");
+    expect(md).toContain("a different scale from intelligence/coding/agentic");
+    expect(md).toContain("measured on different tasks. The taskcost view filters on one or the other");
   });
 
   test("favourites and ping verdicts travel with their rows", () => {

@@ -152,9 +152,10 @@ supersede rule.
 | models browser | Home's first row: the same model list — Enter does nothing, Esc home. Everything else (filter, views, ping, export) works as in the picker |
 | P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
 | A | Picker: ping every model shown — the list after the filter, the lock, the view and H. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown, and it says how to narrow |
-| B | Picker: refresh the benchmark cache — OpenRouter plus Artificial Analysis direct when a key is stored, merged Artificial-Analysis-first, and the notice says which of those it got. Auto-refreshes in the background past 7 days |
+| B | Picker: refresh the benchmark caches — OpenRouter plus Artificial Analysis direct when a key is stored, merged Artificial-Analysis-first, and AI Coding Daily's coding leaderboard alongside on its own cache. Auto-refreshes in the background past 7 days |
 | V | Picker: cycle the view — provider groups, intelligence-ranked, value (cheap per output token under the ceiling), taskcost (cheap per measured task under its own ceiling). Both cheap views rank by intelligence |
 | C | Picker: toggle the price basis — base price or the above-threshold price a long session pays. Cells and the value-view ceiling move together; the count line says `price: high tier` when high |
+| D | Picker: rank the flat views by AI Coding Daily (points for the order, ACD $/task for the taskcost ceiling) instead of Artificial Analysis/OpenRouter — session-only, ignored in the provider view |
 | H | Picker: hide models with no benchmark, in every view |
 | L | Picker: lock to the selected provider — the view, the filter and H all still apply inside it, and so does A. Press again to clear |
 | ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |

@@ -37,6 +37,7 @@ import {
   type Benchmarks,
 } from "./benchmarks.ts";
 import { refreshAllBenchmarks } from "./artificialanalysis.ts";
+import { fetchAcd, formatPromptCost, loadAcd, resolveAcd } from "./aicodingdaily.ts";
 import { listModels } from "./models.ts";
 import { loadPairs } from "./pairs.ts";
 import { pingModel } from "./probe.ts";
@@ -807,6 +808,14 @@ async function cmdBenchmarks(flags: Map<string, string | true>, positional: stri
           quota,
       );
       for (const w of refreshed.warnings) console.log(`  ! ${w}`);
+      // AI Coding Daily rides its own cache: one source failing never blocks
+      // the other, and a restyled page keeps the old cache, never an empty one.
+      try {
+        const acd = await fetchAcd();
+        console.log(`  fetched ${acd.count} AI Coding Daily models · fetched ${acd.at.slice(0, 10)}`);
+      } catch (err) {
+        console.log(`  ! ${err instanceof Error ? err.message : String(err)}`);
+      }
     } catch (err) {
       console.log(`  ${err instanceof Error ? err.message : String(err)}`);
       return;
@@ -827,15 +836,26 @@ async function cmdBenchmarks(flags: Map<string, string | true>, positional: stri
 
   if (ref) {
     const r = scoresFor(catalogue, scores, ref);
-    if (!r) {
+    const a = resolveAcd(catalogue, (await loadAcd()).entries, ref);
+    if (!r && !a) {
       console.log(`  no benchmark data for ${ref}${age}`);
       return;
     }
     console.log(`  ${ref}`);
-    console.log(`    intelligence ${num(r.intelligence)} · coding ${num(r.coding)} · agentic ${num(r.agentic)}`);
-    console.log(`    via ${r.sourceId} (${via(r)})${r.normalised ? " ≈ normalised match" : ""}${age}`);
+    if (r)
+      console.log(`    intelligence ${num(r.intelligence)} · coding ${num(r.coding)} · agentic ${num(r.agentic)}`);
+    if (r) console.log(`    via ${r.sourceId} (${via(r)})${r.normalised ? " ≈ normalised match" : ""}${age}`);
+    if (a)
+      console.log(
+        `    AI Coding Daily ${Math.round(a.points)}/70` +
+          `${a.costPerPrompt !== undefined ? ` · ${formatPromptCost(a.costPerPrompt)}/prompt` : ""}` +
+          `${a.effort ? ` · ${a.effort}` : ""}${a.harness ? ` via ${a.harness}` : ""}` +
+          `${a.normalised ? " ≈ normalised match" : ""}`,
+      );
     return;
   }
+
+  const acdEntries = (await loadAcd()).entries;
 
   const listing = await listModels(repo).catch(() => [] as string[]);
   const split = countScoredBySource(listing, catalogue, scores);
@@ -849,13 +869,16 @@ async function cmdBenchmarks(flags: Map<string, string | true>, positional: stri
       `${age}${version}`,
   );
   for (const { ref: m, r } of rows) {
+    const a = resolveAcd(catalogue, acdEntries, m);
     console.log(
       `    ${m}  I${num(r.intelligence)} C${num(r.coding)} A${num(r.agentic)}` +
-        `${r.normalised ? " ≈" : ""}` +
+        `${a ? ` D${Math.round(a.points)}` : ""}` +
+        `${r.normalised || a?.normalised ? " ≈" : ""}` +
         `${r.source === "aa" ? "" : " · relay"}`,
     );
   }
   console.log(`  Artificial Analysis indices (attribution: artificialanalysis.ai)`);
+  console.log(`  D points: AI Coding Daily coding leaderboard (aicodingdaily.com/leaderboard)`);
 }
 
 /* ------------------------------------------------------------------ */

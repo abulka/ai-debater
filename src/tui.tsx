@@ -23,7 +23,7 @@ import {
   type GateAnswer,
   type GateItem,
 } from "./gate-model.ts";
-import { familyClash, familyOf, listModels, orderedModels, providerOf, rankModels } from "./models.ts";
+import { familyClash, familyOf, isReferenceRow, listModels, orderedModels, providerOf, rankModels } from "./models.ts";
 import type { PickerView } from "./models.ts";
 import { costOf, cannotUseTools, formatCostBasis, loadCatalogue, type Catalogue, type PriceBasis } from "./catalogue.ts";
 import {
@@ -36,6 +36,17 @@ import {
   scoresFor,
   type Benchmarks,
 } from "./benchmarks.ts";
+import {
+  acdScoreOf,
+  acdTaskCostOf,
+  emptyAcd,
+  fetchAcd,
+  formatAcdBadge,
+  formatPromptCost,
+  loadAcd,
+  resolveAcd,
+  type AcdIndex,
+} from "./aicodingdaily.ts";
 import { loadAAKey, saveAAKey } from "./aa-key.ts";
 import { refreshAllBenchmarks, verifyAAKey } from "./artificialanalysis.ts";
 import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_TASK_CEILING, loadCeiling, loadTaskCeiling, roundCeiling, saveCeiling, saveTaskCeiling, stepCeiling } from "./prefs.ts";
@@ -828,6 +839,19 @@ const COST_MAX_W = 20;
 const BENCH_W = 14;
 /** Measured $/task, e.g. `$0.17`. Yields after the benchmarks, before the ref. */
 const TASK_W = 8;
+/**
+ * AI Coding Daily's score, e.g. `D68`. Its own column beside the score —
+ * never appended to it: two scales in one cell read as one number. Yields
+ * with `ACD $/task` as a unit (below), before the score does.
+ */
+const ACD_W = 4;
+/**
+ * AI Coding Daily's measured $/task, e.g. `$0.79` — the same concept as
+ * `$/task` (measured dollars per benchmark task), measured on their 4-project
+ * coding suite instead of the Intelligence Index. Its own column, next to the
+ * `ACD` one: the pair is visibly one source. Blank on all but ~40 rows.
+ */
+const PROMPT_W = 10;
 
 /** Pads or trims to an exact column count, so a badge column stays aligned. */
 const pad = (s: string, n: number): string =>
@@ -859,6 +883,8 @@ function Pick({
   catalogue,
   probes,
   benchmarks,
+  acd,
+  rankAcd,
   view,
   hideUnscored,
   ceiling,
@@ -882,6 +908,8 @@ function Pick({
   catalogue: Catalogue;
   probes: ProbeCache;
   benchmarks: Benchmarks;
+  /** AI Coding Daily's coding leaderboard, resolved per row beside the AA indices. */
+  acd: AcdIndex;
   view: PickerView;
   hideUnscored: boolean;
   ceiling: number;
@@ -893,12 +921,17 @@ function Pick({
   providerLock: string | null;
   /** Whether an Artificial Analysis key is stored — without one the scores are OpenRouter-only. */
   aaKey: boolean;
+  /**
+   * Rank the flat views by AI Coding Daily (`D`): points for the order,
+   * ACD $/task for the taskcost ceiling. Session-only. Inert in the provider
+   * view, which is grouped rather than ranked.
+   */
+  rankAcd: boolean;
   /** Which tier of a tiered price the rows show: base (`low`) or the above-threshold price (`high`). */
   priceBasis: PriceBasis;
   /** Measured $/task ceiling for the taskcost view's count line. */
   taskCeiling: number;
-}) {
-  const { rows, items, favourite } = list;
+}) {  const { rows, items, favourite } = list;
   const cursor = items[index]?.row ?? 0;
   /**
    * The live terminal width, with no floor.
@@ -922,10 +955,10 @@ function Pick({
   // The badge columns yield before the ref does. Holding them at 14 and 16 on a
   // 44-column terminal leaves nine characters of model name and a price you
   // cannot use — the ref is the thing being chosen, so it gets the floor.
-  // Benchmarks yield first of all: newest, least essential, and blank on two
-  // thirds of rows. Task cost yields second: it matters more than a score, but
-  // a missing column never misleads while a missing ref would. Below ~70
-  // columns both are gone rather than the ref.
+  // The ACD pair yields first of all: newest, blank on all but ~40 rows, and
+  // one source reads as one block. The score yields second, $/task third — a
+  // missing column never misleads while a missing ref would. Below ~70
+  // columns all three are gone rather than the ref.
   //
   // The task column only exists in the taskcost view. Elsewhere ~70% of rows
   // are blank — AA publishes a measured task for about a quarter of its index
@@ -943,19 +976,47 @@ function Pick({
   let badgeW = BADGE_W;
   let benchW = BENCH_W;
   let taskW = view === "taskcost" ? TASK_W : 0;
+  let acdW = ACD_W;
+  let promptW = PROMPT_W;
+  // Every column boundary carries a single space (two after the price, which
+  // was the first crammed boundary and keeps its wider gap): an exact-fill
+  // cell otherwise touches the next column, and `pad` leaves no gap at exact
+  // fill — that was the `prompt $ping` collision. The header below carries
+  // the same separators, so labels always sit over their column.
+  //
+  // Yield order, narrowest first: the ACD pair as a unit (blank on all but
+  // ~40 rows, and one source reads as one block), then the score, then $/task
+  // — a missing column never misleads while a missing ref would.
   const spare = width - 4 - 24;
+  if (spare < costW + badgeW + benchW + taskW + acdW + promptW) {
+    acdW = 0;
+    promptW = 0;
+  }
   if (spare < costW + badgeW + benchW + taskW) benchW = 0;
   if (spare < costW + badgeW + taskW) taskW = 0;
   if (spare < costW + badgeW) {
     costW = Math.max(9, Math.floor(spare * 0.45));
     badgeW = Math.max(9, spare - costW);
   }
-  // `- 7` leaves the leading four plus a two-space structural gap after the
-  // price: tier badges vary in length (`+5x` beside `+1.5x`), and an
-  // exact-fill cell otherwise touches the next column with no gap at all.
-  // The other columns pad short, so the price is the only boundary that
-  // needs it.
-  const refWidth = Math.max(8, width - 7 - costW - badgeW - benchW - taskW);
+  // Separators after a cell only when a later cell follows: a trailing space
+  // wastes a column the ref could use.
+  const sepTask = taskW > 0 ? 1 : 0;
+  const sepPing = benchW > 0 || acdW > 0 || promptW > 0 ? 1 : 0;
+  const sepBench = benchW > 0 && (acdW > 0 || promptW > 0) ? 1 : 0;
+  const sepAcd = acdW > 0 && promptW > 0 ? 1 : 0;
+  /**
+   * The ranking's column, for the header highlight. Every flat view ranks on
+   * the score — AA's index, or ACD points with `D` — and filters on a cost
+   * (price in value, measured $/task in taskcost). The provider view is
+   * grouped, not ranked, so nothing highlights there.
+   */
+  const sortCol: "score" | "acd" | null = view === "provider" ? null : rankAcd ? "acd" : "score";
+  // `- 7` leaves the leading four plus the two-space structural gap after the
+  // price; every other boundary adds its own single space above.
+  const refWidth = Math.max(
+    8,
+    width - 7 - costW - badgeW - benchW - taskW - acdW - promptW - sepTask - sepPing - sepBench - sepAcd,
+  );
   // The window is sticky: it stays put until the cursor would leave it, then
   // follows — down pins the cursor to the last line, and reversing back up
   // walks the cursor through the visible rows to the top before the window
@@ -979,11 +1040,23 @@ function Pick({
     benchmarks,
   );
   // In the taskcost view the scored count is the wrong denominator — most
-  // scored rows have no measured task — so the line says how many do.
+  // scored rows have no measured task — so the line says how many do. With
+  // `D` the measurement is ACD $/task, not AA $/task; the same switch as the
+  // ranking, so two task definitions never share the count.
   const measured =
     view === "taskcost"
-      ? items.filter((i) => scoresFor(catalogue, benchmarks, i.ref)?.taskCost !== undefined).length
+      ? items.filter(
+          (i) =>
+            (rankAcd
+              ? resolveAcd(catalogue, acd, i.ref)?.costPerPrompt
+              : scoresFor(catalogue, benchmarks, i.ref)?.taskCost) !== undefined,
+        ).length
       : 0;
+  // With `D` the AA/OpenRouter split is the wrong denominator too — the view
+  // ranks by ACD — so the line counts ACD-ranked rows instead.
+  const rankedAcd = rankAcd && view !== "provider"
+    ? items.filter((i) => resolveAcd(catalogue, acd, i.ref) !== null).length
+    : 0;
 
   return (
     <Box flexDirection="column">
@@ -999,10 +1072,35 @@ function Pick({
         {/* Column labels, in the rows' own widths — positional columns with no
             header is how a $/task figure stopped meaning anything. Skips the
             columns the width yielded, exactly as the rows below do, so the
-            labels always sit over their column. */}
-        <Text dimColor wrap="truncate">
-          {`${" ".repeat(4)}${pad("model", refWidth)}${pad("price", costW)}  ${taskW > 0 ? pad("$/task", taskW) : ""}${pad("ping", badgeW)}${benchW > 0 ? pad("score", benchW) : ""}`.slice(0, width)}
-        </Text>
+            labels always sit over their column. The ranking's column rides in
+            green — score, or ACD with `D` — so the sort reads apart from the
+            cyan chrome; the count line still names it in words, so a
+            monochrome terminal loses nothing. */}
+        <Line
+          wrap="truncate"
+          spans={[
+            { text: " ".repeat(4) + pad("model", refWidth) + pad("price", costW) + "  ", dim: true },
+            ...(taskW > 0 ? [{ text: pad("$/task", taskW) + " ", dim: true } as const] : []),
+            { text: pad("ping", badgeW) + (sepPing ? " " : ""), dim: true },
+            ...(benchW > 0
+              ? [
+                  {
+                    text: pad("score", benchW) + (sepBench ? " " : ""),
+                    ...(sortCol === "score" ? { color: THEME.sort } : { dim: true }),
+                  } as const,
+                ]
+              : []),
+            ...(acdW > 0
+              ? [
+                  {
+                    text: pad("ACD", acdW) + (sepAcd ? " " : ""),
+                    ...(sortCol === "acd" ? { color: THEME.sort } : { dim: true }),
+                  } as const,
+                ]
+              : []),
+            ...(promptW > 0 ? [{ text: pad("ACD $/task", promptW), dim: true } as const] : []),
+          ]}
+        />
       </Box>
       <Box flexDirection="column">
         {rows.slice(start, start + height).map((row, i) => {
@@ -1043,9 +1141,18 @@ function Pick({
           // and the `≈` marks a match that needed normalisation. Blank on most
           // rows, which is why the column vanishes before the ref does.
           const bench = benchW > 0 ? formatResolved(scoresFor(catalogue, benchmarks, m)) : "";
+          // AI Coding Daily's score in its own column: appending `D68` to the
+          // score read as one number on a different scale. Blank on all but
+          // ~40 rows — the ACD pair yields as a unit when narrow.
+          const dbadge = acdW > 0 ? formatAcdBadge(resolveAcd(catalogue, acd, m)) : "";
           // Measured $/task, AA rows only. Blank means unmeasured, never free —
           // an OpenRouter row never has one, however cheap its list price.
           const task = taskW > 0 ? formatTaskCost(scoresFor(catalogue, benchmarks, m)?.taskCost) : "";
+          // Measured $/task on AI Coding Daily's suite — the same concept as
+          // $/task (measured dollars per benchmark task), measured on different
+          // tasks. The taskcost view filters on one or the other (`D`
+          // switches), never both.
+          const prompt = promptW > 0 ? formatPromptCost(resolveAcd(catalogue, acd, m)?.costPerPrompt) : "";
           const note = noteForModel(m);
           // Truncated, not wrapped: a row that spills is two rows, and the
           // window here counts lines. The full sentence is in `?`.
@@ -1053,7 +1160,13 @@ function Pick({
           // The whole row lights up, not just the ref. With the price and status
           // in fixed columns 60 characters away, a cursor on the ref alone left
           // the reader guessing which price belonged to which model.
-          const accent = selected ? THEME.accent : undefined;
+          // Reference rows light up yellow instead: DeepSeek V4.1 Flash is the
+          // reader's pinned comparison line, so it reads at a glance. The
+          // cursor keeps its own colour — selection beats reference — and the
+          // name on the row still says what it is, so monochrome loses nothing.
+          const anchor = !selected && isReferenceRow(m);
+          const accent = selected ? THEME.accent : anchor ? THEME.warn : undefined;
+          const dimmed = !selected && !anchor;
           return (
             <Box key={m}>
               {/* Marks, not colour: a monochrome terminal loses decoration and
@@ -1062,25 +1175,48 @@ function Pick({
                   is in them. */}
               <Text dimColor={!selected}>{favourite.has(m) ? "★ " : "  "}</Text>
               <Text color={accent}>{selected ? "❯ " : "  "}</Text>
-              <Text color={accent} bold={selected} dimColor={dead && !selected} wrap="truncate">
+              <Text color={accent} bold={selected} dimColor={dead && !selected && !anchor} wrap="truncate">
                 {pad(shorten(m, refWidth - 1), refWidth)}
               </Text>
-              <Text color={accent} dimColor={!selected && !dead} wrap="truncate">{pad(cost, costW)}</Text>
+              <Text color={accent} dimColor={dimmed && !dead} wrap="truncate">{pad(cost, costW)}</Text>
               {/* The gap the badge cannot eat: `pad` leaves none when the cell
                   is exactly full, which a `+1.5x` price is. Two spaces —
                   everything reads crammed at one. */}
               <Text>{"  "}</Text>
               {taskW > 0 && (
-                <Text color={accent} dimColor={!selected} wrap="truncate">
-                  {pad(task, taskW)}
-                </Text>
+                <>
+                  <Text color={accent} dimColor={dimmed} wrap="truncate">
+                    {pad(task, taskW)}
+                  </Text>
+                  {/* Every boundary carries its space, in rows exactly as in
+                      the header: without it an exact-fill cell touches the
+                      next column — the old `prompt $ping` collision. */}
+                  <Text> </Text>
+                </>
               )}
-              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead} wrap="truncate">
+              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead && !anchor} wrap="truncate">
                 {pad(status, badgeW)}
               </Text>
+              {sepPing && <Text> </Text>}
               {benchW > 0 && (
-                <Text color={accent} dimColor={!selected} wrap="truncate">
-                  {pad(bench, benchW)}
+                <>
+                  <Text color={accent} dimColor={dimmed} wrap="truncate">
+                    {pad(bench, benchW)}
+                  </Text>
+                  {sepBench && <Text> </Text>}
+                </>
+              )}
+              {acdW > 0 && (
+                <>
+                  <Text color={accent} dimColor={dimmed} wrap="truncate">
+                    {pad(dbadge, acdW)}
+                  </Text>
+                  {sepAcd && <Text> </Text>}
+                </>
+              )}
+              {promptW > 0 && (
+                <Text color={accent} dimColor={dimmed} wrap="truncate">
+                  {pad(prompt, promptW)}
                 </Text>
               )}
             </Box>
@@ -1102,17 +1238,24 @@ function Pick({
                   {
                     text:
                       `${items.length} model(s) · ${index + 1} of ${items.length}` +
-                      ` · ${split.total} scored` +
-                      `${split.aa > 0 ? ` (${split.aa} Artificial Analysis + ${split.openrouter} OpenRouter)` : ""}` +
-                      `${view === "taskcost" ? ` · ${measured} with task cost` : ""} · `,
+                      (rankAcd && view !== "provider"
+                        ? ` · ${rankedAcd} ranked with AI Coding Daily`
+                        : ` · ${split.total} scored` +
+                          `${split.aa > 0 ? ` (${split.aa} Artificial Analysis + ${split.openrouter} OpenRouter)` : ""}`) +
+                      `${view === "taskcost" ? ` · ${measured} with ${rankAcd ? "ACD task cost" : "task cost"}` : ""} · `,
                     dim: true,
                   },
                   { text: `view: ${view}`, color: THEME.accent },
+                  // Its own span, with its own leading separator: folded into
+                  // the view span it read `view: intelligencerank: …`.
+                  ...(rankAcd && view !== "provider"
+                    ? [{ text: " · rank: AI Coding Daily", color: THEME.accent } as const]
+                    : []),
                   {
                     text:
                       `${providerLock ? ` · locked to: ${providerLock}` : ""}` +
                       `${view === "value" ? ` ≤ $${ceiling.toFixed(2)}` : ""}` +
-                      `${view === "taskcost" ? ` ≤ $${taskCeiling.toFixed(2)}/task` : ""}` +
+                      `${view === "taskcost" ? ` ≤ $${taskCeiling.toFixed(2)}/task${rankAcd ? " (ACD)" : ""}` : ""}` +
                       `${priceBasis === "high" ? " · price: high tier" : ""}` +
                       `${hideUnscored ? " · hiding unscored" : ""}` +
                       `${!aaKey ? " · OpenRouter scores only — key: settings → benchmarks" : ""}`,
@@ -1122,7 +1265,7 @@ function Pick({
           }
         />
       </Box>
-      {/* Two hint lines, not one: the picker answers to fourteen keys and one
+      {/* Two hint lines, not one: the picker answers to fifteen keys and one
           line fits eight. Both truncate — the budget counts two rows. */}
       <Box>
         <Text dimColor wrap="truncate">
@@ -1133,7 +1276,7 @@ function Pick({
       </Box>
       <Box>
         <Text dimColor wrap="truncate">
-          {`V view · C price basis · H hide unscored · L ${providerLock ? `unlock (locked to: ${providerLock})` : "lock to selected provider"} · B refresh benchmarks · A ping visible · P ping · T tools ping · Y export · ? providers` +
+          {`V view · C price basis · H hide unscored · D rank: ACD · L ${providerLock ? `unlock (locked to: ${providerLock})` : "lock to selected provider"} · B refresh benchmarks · A ping visible · P ping · T tools ping · Y export · ? providers` +
             `${view === "value" ? " · < > value ceiling" : view === "taskcost" ? " · < > task ceiling" : ""}`}
         </Text>
       </Box>
@@ -1261,6 +1404,36 @@ function providerLines(
   lines.push([
     {
       text: "task $ is measured dollars per Intelligence Index task — verbosity and the tokenizer baked in, AA rows only. OpenRouter rows never have one.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "D is AI Coding Daily's coding leaderboard (max 70, best effort per model) — real agent harnesses on multi-file projects, a different scale from I/C/A, in its own column beside the score.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "ACD $/task is their measured cost per task on that 4-project coding suite — the same concept as task $, measured on different tasks. The taskcost view filters on one or the other (D switches), never both.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "D ranks the flat views by AI Coding Daily — points for the order, ACD $/task for the taskcost ceiling — instead of Artificial Analysis. Session-only; ignored in the provider view, which is grouped rather than ranked.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "the green column header is the ranking — score, or ACD with D. Price and measured cost are ceilings (the count line names them), never the order.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "DeepSeek V4.1 Flash rows read yellow — a pinned reference for comparing the rest. The cursor keeps its own colour; the name on the row still says what it is.",
       dim: true,
     },
   ]);
@@ -2140,6 +2313,14 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [priceBasis, setPriceBasis] = useState<PriceBasis>("low");
   /** Drop models with no benchmark from every view. Off: they sort last. */
   const [hideUnscored, setHideUnscored] = useState(false);
+  /**
+   * Rank the flat views by AI Coding Daily instead of AA/OpenRouter: `D`
+   * swaps the source behind `scoreOf` (ACD points) and, in the taskcost view,
+   * behind `taskCostOf` (ACD $/task). Session-only — a restart must not
+   * silently re-rank by another benchmark. The provider view stays inert:
+   * grouped, not ranked.
+   */
+  const [rankAcd, setRankAcd] = useState(false);
   /** The provider the picker is locked to, or null for every provider. `L`
      locks the highlighted model's provider; the view, the filter and `H` all
      still apply inside it. */
@@ -2163,14 +2344,26 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
    * Empty until the first fetch lands — rows render blank, never `?`.
    */
   const [benchmarks, setBenchmarks] = useState<Benchmarks>(emptyBenchmarks());
+  /**
+   * AI Coding Daily's coding leaderboard, same lifecycle as the benchmarks:
+   * read when the picker opens, refreshed in the background past 7 days.
+   * Empty until the first fetch lands — rows render no `D` badge, never `?`.
+   */
+  const [acd, setAcd] = useState<AcdIndex>(emptyAcd());
   /** When the benchmark cache was fetched, and which index measured it — the
      export names its provenance, so it keeps both next to the scores. */
-  const [benchMeta, setBenchMeta] = useState<{ at: string | null; indexVersion: string | null }>({
+  const [benchMeta, setBenchMeta] = useState<{
+    at: string | null;
+    indexVersion: string | null;
+    acdAt: string | null;
+  }>({
     at: null,
     indexVersion: null,
+    acdAt: null,
   });
-  /** One fetch at a time: settings can be opened twice before it lands. */
+  /** One fetch at a time per source: settings can be opened twice before either lands. */
   const benchFetching = useRef(false);
+  const acdFetching = useRef(false);
   const [authed, setAuthed] = useState<Map<string, "env" | "stored">>(new Map());
   /** Refs with a call in flight, so a row can say `…` instead of pretending. */
   const [pinging, setPinging] = useState<Set<string>>(new Set());
@@ -2373,8 +2566,15 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     // only a week-old cache.
     void loadScores().then((r) => {
       setBenchmarks(r.scores);
-      setBenchMeta({ at: r.at, indexVersion: r.indexVersion });
+      setBenchMeta((m) => ({ ...m, at: r.at, indexVersion: r.indexVersion }));
       if (isStale(r.at)) void refreshBenchmarks(true);
+    });
+    // AI Coding Daily likewise, on its own cache and staleness — one source
+    // failing never blocks the other.
+    void loadAcd().then((r) => {
+      setAcd(r.entries);
+      setBenchMeta((m) => ({ ...m, acdAt: r.at }));
+      if (isStale(r.at)) void refreshAcd(true);
     });
     // What settings names, without a visit: the pair the current models are.
     void loadPairs().then(setSavedPairs).catch(() => {});
@@ -2440,7 +2640,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   /**
    * Refresh the benchmark cache: OpenRouter plus Artificial Analysis direct
    * when a key is stored, then the rows re-render merged, Artificial Analysis
-   * first.
+   * first. AI Coding Daily refreshes alongside on its own cache — `refreshAcd`
+   * below — so one source failing never blocks the other.
    *
    * Silent when automatic (a stale cache on opening the model list): the old scores
    * stay until the new ones land, and a failed fetch keeps them with nothing
@@ -2454,7 +2655,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (!silent) setNotice("refreshing benchmarks…");
       const r = await refreshAllBenchmarks();
       setBenchmarks(r.scores);
-      setBenchMeta({ at: r.at, indexVersion: r.indexVersion });
+      setBenchMeta((m) => ({ ...m, at: r.at, indexVersion: r.indexVersion }));
       const total = r.aaCount + r.orCount;
       const scope =
         r.aaOk && r.orOk
@@ -2481,6 +2682,27 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (!silent) setNotice(err instanceof Error ? err.message : String(err));
     } finally {
       benchFetching.current = false;
+    }
+  }
+
+  /**
+   * Refresh AI Coding Daily's coding leaderboard: one keyless page fetch, then
+   * the `D` badges re-render. Same silent/loud contract as the benchmark
+   * refresh — and a failed fetch keeps the old cache with nothing said, so a
+   * restyled page never blanks the column.
+   */
+  async function refreshAcd(silent = false) {
+    if (acdFetching.current) return;
+    acdFetching.current = true;
+    try {
+      const r = await fetchAcd();
+      setAcd(r.entries);
+      setBenchMeta((m) => ({ ...m, acdAt: r.at }));
+      if (!silent) setNotice(`AI Coding Daily updated · ${r.count} models · fetched ${r.at.slice(0, 10)}`);
+    } catch (err) {
+      if (!silent) setNotice(err instanceof Error ? err.message : String(err));
+    } finally {
+      acdFetching.current = false;
     }
   }
 
@@ -2805,7 +3027,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   }
 
   /** The model picker's rows: favourites first, then recents, then the rest. */
-  const scoreOf = useMemo(() => {
+  const aaScoreOf = useMemo(() => {
     // Adapted once per catalogue or cache change, not once per row: the
     // picker calls this hundreds of times a render.
     return (ref: string): { intelligence?: number } | null => {
@@ -2813,6 +3035,15 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       return r ? { intelligence: r.intelligence } : null;
     };
   }, [catalogue, benchmarks]);
+  /**
+   * What the flat views rank on. `D` swaps the source: ACD points instead of
+   * the AA index. The provider view keeps `aaScoreOf` — grouped, not ranked,
+   * so `H` there keeps meaning AA.
+   */
+  const scoreOf = useMemo(
+    () => (rankAcd ? acdScoreOf(catalogue, acd) : aaScoreOf),
+    [rankAcd, catalogue, acd, aaScoreOf],
+  );
   const outputOf = useMemo(() => {
     return (ref: string): number | undefined => {
       const c = costOf(catalogue, ref);
@@ -2825,10 +3056,20 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     };
   }, [catalogue, priceBasis]);
   /** Measured $/task, AA rows only — the taskcost view filters on this. */
-  const taskCostOf = useMemo(() => {
+  const aaTaskCostOf = useMemo(() => {
     return (ref: string): number | undefined =>
       scoresFor(catalogue, benchmarks, ref)?.taskCost;
   }, [catalogue, benchmarks]);
+  /**
+   * What the taskcost view filters on. `D` swaps the source with the ranking:
+   * ACD $/task under the same ceiling — the score and the cheapness switch
+   * together, so two task definitions never share one view. Unused outside
+   * the taskcost view, so the switch is inert elsewhere.
+   */
+  const taskCostOf = useMemo(
+    () => (rankAcd ? acdTaskCostOf(catalogue, acd) : aaTaskCostOf),
+    [rankAcd, catalogue, acd, aaTaskCostOf],
+  );
   /**
    * The dearest measured cost on screen. A ceiling past everything is a
    * no-op, not a number in the thousands — `<`/`>` stop here.
@@ -2852,7 +3093,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const modelRows = useMemo(() => {
     if (view === "provider") {
       return orderedModels(allModels, openCode.favourites, openCode.recents, filter, {
-        ...(hideUnscored ? { hideUnscored: true as const, scoreOf } : {}),
+        ...(hideUnscored ? { hideUnscored: true as const, scoreOf: aaScoreOf } : {}),
         ...(providerLock ? { providerLock } : {}),
       });
     }
@@ -2867,7 +3108,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       outputOf,
       taskCostOf,
     });
-  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, outputOf, taskCostOf, providerLock, priceBasis]);
+  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, providerLock, priceBasis]);
 
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
@@ -2958,6 +3199,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       filter.trim() ? `matching "${filter.trim()}"` : "",
       providerLock ? `locked to ${providerLock}` : "",
       view !== "provider" ? `${view} view` : "",
+      rankAcd && view !== "provider" ? "ranked by AI Coding Daily" : "",
       hideUnscored ? "hiding unscored" : "",
     ]
       .filter(Boolean)
@@ -2989,10 +3231,13 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       subject: mode,
       catalogue,
       benchmarks,
+      acd,
       probes,
       favourites: modelRows.favourite,
       scoresAt: benchMeta.at,
       indexVersion: benchMeta.indexVersion,
+      acdAt: benchMeta.acdAt,
+      rankAcd,
     });
     const file = path.join(advDataRoot(), "models.md");
     const result = await copyMarkdown(md, file);
@@ -3093,14 +3338,16 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         void exportVisible();
         return;
       }
-      // `B` refreshes the benchmark cache: OpenRouter plus Artificial Analysis
-      // direct when a key is stored, merged Artificial-Analysis-first. Unlike
-      // `P`/`T`/`A` it asks nothing twice — a few requests against a weekly
-      // cache. Uppercase like the rest, so lowercase keeps typing into the
+      // `B` refreshes the benchmark caches: OpenRouter plus Artificial Analysis
+      // direct when a key is stored, merged Artificial-Analysis-first — and AI
+      // Coding Daily's coding leaderboard alongside, on its own cache. Unlike
+      // `P`/`T`/`A` it asks nothing twice — a few requests against weekly
+      // caches. Uppercase like the rest, so lowercase keeps typing into the
       // filter.
       if (input === "B") {
         setPingArmed(null);
         void refreshBenchmarks(false);
+        void refreshAcd(false);
         return;
       }
       // `C` toggles the price basis: the base price (`low`) or the
@@ -3128,6 +3375,18 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (input === "H") {
         setPingArmed(null);
         setHideUnscored((h) => !h);
+        setPickIndex(0);
+        return;
+      }
+      // `D` ranks the flat views by AI Coding Daily — points for the order,
+      // ACD $/task for the taskcost ceiling — instead of AA/OpenRouter. Ignored
+      // in the provider view, which is grouped rather than ranked; the state
+      // persists, so coming back restores the D ranking. The cursor resets
+      // because a re-ranked list is a different list.
+      if (input === "D") {
+        if (view === "provider") return;
+        setPingArmed(null);
+        setRankAcd((r) => !r);
         setPickIndex(0);
         return;
       }
@@ -4198,6 +4457,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         catalogue={catalogue}
         probes={probes}
         benchmarks={benchmarks}
+        acd={acd}
         view={view}
         hideUnscored={hideUnscored}
         ceiling={ceiling}
@@ -4207,6 +4467,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         notice={notice}
         providerLock={providerLock}
         aaKey={aaKeySet}
+        rankAcd={rankAcd}
         priceBasis={priceBasis}
         taskCeiling={taskCeiling}
       />
