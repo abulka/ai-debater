@@ -397,6 +397,13 @@ export async function runProposedChecks(
   const tree = await treeIdentity(opts.repo);
   const planSha = sha256(opts.planText);
 
+  // A refused proposal can be a 500-character inline program; the warning is
+  // a sentence on the run log, not a dump. The full argv is in audit.json.
+  const fmtArgv = (argv: string[]): string => {
+    const text = argv.join(" ");
+    return text.length > 120 ? `${text.slice(0, 119)}… (+${text.length - 119} more chars)` : text;
+  };
+
   for (const verdict of review.verdicts) {
     if (verdict.verdict !== "unverifiable" || !verdict.proposes) continue;
 
@@ -410,25 +417,25 @@ export async function runProposedChecks(
 
     if (tier === "refuse") {
       decision = "refused";
-      note(`! declined to run a check for ${verdict.id}: ${proposal.argv.join(" ")} (not on the allowlist)`);
+      note(`! declined to run a check for ${verdict.id}: ${fmtArgv(proposal.argv)} (not on the allowlist)`);
     } else if (tier === "ask" && !(opts.approve && (await opts.approve({
       claim: verdict.id,
       argv: proposal.argv,
       ...(proposal.why ? { why: proposal.why } : {}),
     })))) {
       decision = "human-rejected";
-      note(`skipped a check for ${verdict.id}: ${proposal.argv.join(" ")}`);
+      note(`skipped a check for ${verdict.id}: ${fmtArgv(proposal.argv)}`);
     } else {
       decision = tier === "auto" ? "auto-allowed" : "human-approved";
-      note(`checking ${verdict.id}: ${proposal.argv.join(" ")}`);
+      note(`checking ${verdict.id}: ${fmtArgv(proposal.argv)}`);
       run = await runCommand(proposal.argv, {
         cwd: opts.repo,
         ...(rule?.timeoutMs ? { timeoutMs: rule.timeoutMs } : {}),
       });
       const outcome = outcomeOf(proposal.expect, run);
-      if (outcome === "matched") note(`  ${proposal.argv.join(" ")} agrees with the plan`);
-      else if (outcome === "mismatched") note(`  ! ${proposal.argv.join(" ")} disagrees with the plan`);
-      else note(`  ${proposal.argv.join(" ")} did not complete (${run.status})`);
+      if (outcome === "matched") note(`  ${fmtArgv(proposal.argv)} agrees with the plan`);
+      else if (outcome === "mismatched") note(`  ! ${fmtArgv(proposal.argv)} disagrees with the plan`);
+      else note(`  ${fmtArgv(proposal.argv)} did not complete (${run.status})`);
     }
 
     records.push(

@@ -124,10 +124,11 @@ export async function runHead(
   models: Models,
   mode: Mode,
   reporting: Reporting = {},
+  opts?: { parent?: { name: string; dir: string } },
 ): Promise<Head> {
   const note = reporting.onNote ?? (() => {});
   const runner = new OpencodeRunRunner({ repo, ...models, onCall: reporting.onCall });
-  const paths = await createRun(repo, task, models, mode);
+  const paths = await createRun(repo, task, models, mode, opts?.parent ? { parent: opts.parent } : undefined);
 
   try {
     note(`drafting — ${models.drafter.ref}`);

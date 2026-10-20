@@ -10,6 +10,7 @@
  *   adv run --resume [<run>]
  *   adv decide [<run>]
  *   adv revise [<run>] [--rewrite]
+ *   adv continue [<run>] [--instructions "…"]
  *   adv status [<run>]
  *   adv ping <model-or-pair>… [--full] [--timeout <ms>]
  *   adv benchmarks [--refresh] [<ref>]
@@ -24,7 +25,7 @@
  *   Without a terminal it refuses unless --yes is passed.
  */
 
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config.ts";
 import type { FamilyCheck } from "./config.ts";
@@ -67,7 +68,8 @@ import {
   type Paths,
   saveState,
 } from "./orchestrator.ts";
-import { loadArtifacts, runHead, runTail, saveGate, type Models, type Reporting } from "./pipeline.ts";
+import { loadArtifacts, loadTail, runHead, runTail, saveGate, type Models, type Reporting } from "./pipeline.ts";
+import { composeContinuation, followUpOf } from "./continue.ts";
 import { familyClash } from "./models.ts";
 import { renderResult, renderResultAnsi } from "./render.ts";
 import type { CallHook } from "./runners/opencode-run.ts";
@@ -247,6 +249,117 @@ async function finalize(
   console.log(`\nartifacts: ${displayPath(paths.dir)}`);
 }
 
+/**
+ * The shared tail of every fresh run: criteria, decisions, head, gate, tail.
+ * `cmdRun` and `cmdContinue` differ only in where the task comes from — typed
+ * by the human, or composed from a previous result — so both end here. A
+ * chained run is a normal run: fresh draft, fresh cross-family review, and
+ * the gate again.
+ */
+async function runFreshTask(
+  repo: string,
+  opts: {
+    task: string;
+    models: Models;
+    mode: Mode;
+    check: FamilyCheck;
+    checkSource: string;
+    gateEnabled: boolean;
+    skipGate: boolean;
+    parent?: { name: string; dir: string };
+  },
+) {
+  const { task, models, mode, check, checkSource } = opts;
+  // Answer mode has no repository: no criteria from the directory it was run
+  // in, and no settled decisions either. Both are repo-specific, and loading
+  // them made a general question answer itself from this project's notes.
+  const criteria =
+    mode === "answer" ? { text: NO_CRITERIA, found: false } : await readCriteria(repo);
+  // Answer mode assumes no repository, so no criteria is the normal case, not a
+  // fault. Warning about it there is noise that makes a correct state look broken.
+  if (!criteria.found && mode === "plan") {
+    console.log(
+      "  warning: .adv/criteria.md not found — using a minimal fallback. " +
+        "Run `adv init`, or the reviewer may invent criteria.",
+    );
+  }
+  const decisions =
+    mode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
+
+  console.log(
+    `  subject ${mode === "answer" ? "general question" : "this repository"} · ` +
+      `${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
+  );
+  checkFamily(models, check, checkSource);
+  const canAsk = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  const runReporting: Reporting = {
+    ...reporting,
+    // Only ask when there is someone to ask. Without a terminal, a slow check is
+    // recorded as declined rather than silently run.
+    ...(canAsk ? { onApprove: askApproval } : {}),
+  };
+  const head = await runHead(repo, task, criteria.text, decisions, models, mode, runReporting, {
+    ...(opts.parent ? { parent: opts.parent } : {}),
+  });
+  console.log(`  run: ${displayPath(head.paths.dir)}`);
+  for (const warning of gateWarnings({
+    missing: head.missing,
+    evidenceIssues: head.evidenceIssues,
+    urlRepairs: head.urlRepairs,
+    hasCriteria: criteria.found || mode === "answer",
+  })) {
+    console.log(`  warning: ${warning}`);
+  }
+
+  console.log("\n── gate ──");
+  printGateSummary(head.claims, head.review, head.checks);
+
+  // --no-gate: run straight through. No model resolves anything: every judgment
+  // call is left open, every finding untriaged, and the plan presents options.
+  if (opts.skipGate) {
+    const openGate: Gate = {
+      decisions: head.claims.judgment.map((j) => ({ id: j.id, choice: "open" })),
+      findings: head.review.extra_findings.map((f) => ({
+        id: f.id,
+        disposition: "untriaged" as const,
+      })),
+    };
+    await saveGate(head.paths, openGate);
+    console.log(
+      `\n  --no-gate: ${openGate.decisions.length} judgment call(s) left open, ` +
+        `${openGate.findings.length} finding(s) untriaged. Nothing was decided for you.`,
+    );
+    return finalize(repo, head.paths, head.claims, head.review, openGate, models, mode, head.checks);
+  }
+
+  if (!(opts.gateEnabled && canAsk)) {
+    await saveGate(head.paths, { decisions: [], findings: [] });
+    console.log(
+      `\n  paused at the gate.\n` +
+        `    adv decide ${path.basename(head.paths.dir)}\n` +
+        `    adv run --resume ${path.basename(head.paths.dir)}`,
+    );
+    return;
+  }
+
+  const gate = await collectGate(head.claims, head.review);
+  await saveGate(head.paths, gate);
+  // A gate answer to a general question is not a repository decision.
+  if (mode === "plan") {
+    await appendDecisions(
+      repo,
+      gate.decisions
+        .filter((d) => d.choice !== "open")
+        .map((d) => ({
+          id: d.id,
+          text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
+          choice: d.choice,
+        })),
+    );
+  }
+  return finalize(repo, head.paths, head.claims, head.review, gate, models, mode, head.checks);
+}
+
 async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
   const repo = repoOf(flags);
   const cfg = await loadConfig(repo);
@@ -303,94 +416,82 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
   const task = positional.join(" ").trim();
   if (!task) throw new Error('usage: adv run "<task>"');
 
-  // Answer mode has no repository: no criteria from the directory it was run
-  // in, and no settled decisions either. Both are repo-specific, and loading
-  // them made a general question answer itself from this project's notes.
-  const criteria =
-    mode === "answer" ? { text: NO_CRITERIA, found: false } : await readCriteria(repo);
-  // Answer mode assumes no repository, so no criteria is the normal case, not a
-  // fault. Warning about it there is noise that makes a correct state look broken.
-  if (!criteria.found && mode === "plan") {
-    console.log(
-      "  warning: .adv/criteria.md not found — using a minimal fallback. " +
-        "Run `adv init`, or the reviewer may invent criteria.",
-    );
-  }
-  const decisions =
-    mode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
+  return runFreshTask(repo, {
+    task,
+    models,
+    mode,
+    check,
+    checkSource,
+    gateEnabled: cfg.gate,
+    skipGate: flags.has("no-gate"),
+  });
+}
 
-  console.log(
-    `  subject ${mode === "answer" ? "general question" : "this repository"} · ` +
-      `${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
-  );
-  checkFamily(models, check, checkSource);
-  const canAsk = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  const runReporting: Reporting = {
-    ...reporting,
-    // Only ask when there is someone to ask. Without a terminal, a slow check is
-    // recorded as declined rather than silently run.
-    ...(canAsk ? { onApprove: askApproval } : {}),
+/**
+ * `adv continue [<run>] [--instructions "…"]` — continue a debate by content.
+ *
+ * Sessions cannot chain (each `--standalone` run owns its session store), so
+ * the previous result travels inside the new task, whole, plus the human's
+ * follow-up — which is what makes this a continuation rather than a rerun.
+ * The new run is otherwise normal: fresh draft, fresh review, the gate again.
+ */
+async function cmdContinue(flags: Map<string, string | true>, positional: string[]) {
+  const repo = repoOf(flags);
+  const cfg = await loadConfig(repo);
+  requireFamily("drafter", flags);
+  requireFamily("reviewer", flags);
+  const models: Models = {
+    drafter: modelFrom(flags.get("drafter"), flags.get("drafter-family"), cfg.models.drafter),
+    reviewer: modelFrom(flags.get("reviewer"), flags.get("reviewer-family"), cfg.models.reviewer),
   };
-  const head = await runHead(repo, task, criteria.text, decisions, models, mode, runReporting);
-  console.log(`  run: ${displayPath(head.paths.dir)}`);
-  for (const warning of gateWarnings({
-    missing: head.missing,
-    evidenceIssues: head.evidenceIssues,
-    urlRepairs: head.urlRepairs,
-    hasCriteria: criteria.found || mode === "answer",
-  })) {
-    console.log(`  warning: ${warning}`);
-  }
+  const check: FamilyCheck = flags.has("strict") ? "require" : cfg.familyCheck;
+  const checkSource = flags.has("strict") ? "--strict" : ".adv/config.json";
 
-  console.log("\n── gate ──");
-  printGateSummary(head.claims, head.review, head.checks);
-
-  const skipGate = flags.has("no-gate");
-
-  // --no-gate: run straight through. No model resolves anything: every judgment
-  // call is left open, every finding untriaged, and the plan presents options.
-  if (skipGate) {
-    const openGate: Gate = {
-      decisions: head.claims.judgment.map((j) => ({ id: j.id, choice: "open" })),
-      findings: head.review.extra_findings.map((f) => ({
-        id: f.id,
-        disposition: "untriaged" as const,
-      })),
-    };
-    await saveGate(head.paths, openGate);
-    console.log(
-      `\n  --no-gate: ${openGate.decisions.length} judgment call(s) left open, ` +
-        `${openGate.findings.length} finding(s) untriaged. Nothing was decided for you.`,
-    );
-    return finalize(repo, head.paths, head.claims, head.review, openGate, models, mode, head.checks);
-  }
-
-  if (!(cfg.gate && canAsk)) {
-    await saveGate(head.paths, { decisions: [], findings: [] });
-    console.log(
-      `\n  paused at the gate.\n` +
-        `    adv decide ${path.basename(head.paths.dir)}\n` +
-        `    adv run --resume ${path.basename(head.paths.dir)}`,
-    );
-    return;
-  }
-
-  const gate = await collectGate(head.claims, head.review);
-  await saveGate(head.paths, gate);
-  // A gate answer to a general question is not a repository decision.
-  if (mode === "plan") {
-    await appendDecisions(
-      repo,
-      gate.decisions
-        .filter((d) => d.choice !== "open")
-        .map((d) => ({
-          id: d.id,
-          text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
-          choice: d.choice,
-        })),
+  const dirArg = positional[0] ?? (await latestRun(repo));
+  if (!dirArg) throw new Error("usage: adv continue [<run>] [--instructions \"…\"]");
+  const parentPaths = resolveRun(repo, dirArg);
+  const parentState = await loadState(parentPaths);
+  if (parentState.state === "failed") {
+    throw new Error(
+      `run failed${parentState.error ? ` — ${parentState.error.split("\n")[0]!}` : ""}.\n` +
+        `  continue needs a run with a result to continue from; this one has none.`,
     );
   }
-  return finalize(repo, head.paths, head.claims, head.review, gate, models, mode, head.checks);
+  // The tail is the result; a run parked at the gate has no tail yet, so the
+  // draft-so-far stands in, said out loud.
+  let previousResult: string;
+  try {
+    previousResult = (await loadTail(parentPaths)).plan;
+  } catch {
+    try {
+      previousResult = await readFile(parentPaths.planV1, "utf8");
+    } catch {
+      throw new Error(
+        `run is in state "${parentState.state}" — continue needs a run with a draft or a result.`,
+      );
+    }
+  }
+
+  const followUp = followUpOf(flags.get("instructions"), positional.slice(1));
+  if (!followUp) {
+    throw new Error(
+      'usage: adv continue [<run>] [--instructions "…"] — say what should happen next',
+    );
+  }
+
+  const parentName = path.basename(parentPaths.dir);
+  const { task } = composeContinuation(parentName, previousResult, followUp);
+  console.log(`  continuing run ${parentName} (${parentState.state})`);
+  return runFreshTask(repo, {
+    task,
+    models,
+    mode: parentState.mode,
+    check,
+    checkSource,
+    gateEnabled: cfg.gate,
+    skipGate: flags.has("no-gate"),
+    parent: { name: parentName, dir: parentPaths.dir },
+  });
 }
 
 async function cmdDecide(flags: Map<string, string | true>, positional: string[]) {
@@ -560,6 +661,7 @@ async function cmdStatus(flags: Map<string, string | true>, positional: string[]
   }
   console.log(`task:   ${state.task}`);
   console.log(`models: ${state.models.drafter.ref} -> ${state.models.reviewer.ref}`);
+  if (state.parent) console.log(`continues: ${state.parent.name}  (↳ ${displayPath(state.parent.dir)})`);
   const clash = familyClash(state.models);
   if (clash) console.log(`        ! ${clash}`);
   for (const r of state.urlRepairs ?? []) {
@@ -693,6 +795,7 @@ function usage() {
   adv run --resume [<run>] [--strict]
   adv decide [<run>]
   adv revise [<run>] [--rewrite] [--strict]
+  adv continue [<run>] [--instructions "…"] [--strict] [--no-gate]
   adv status [<run>]
   adv ping <model-or-pair>… [--full] [--timeout <ms>]
   adv benchmarks [--refresh] [<ref>]
@@ -709,7 +812,11 @@ function usage() {
   --rewrite            revise: re-run the tail even when no answers changed
 
   revise re-asks the gate with your recorded answers (Enter keeps one) and re-runs
-  only the rewrite: the draft and the review are never repeated.`);
+  only the rewrite: the draft and the review are never repeated.
+
+  continue starts a new run from a finished one: the previous result plus your
+  follow-up becomes the new task, so the debate continues with fresh eyes.
+  Needs --instructions (or trailing words) saying what should happen next.`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -917,6 +1024,9 @@ try {
       break;
     case "revise":
       await cmdRevise(flags, positional);
+      break;
+    case "continue":
+      await cmdContinue(flags, positional);
       break;
     case "rm":
       await cmdRm(flags, positional);

@@ -12,15 +12,20 @@ import {
   buildItems,
   clampIndex,
   clampOffset,
+  CUSTOM_ROW_LABEL,
+  customRowIndex,
   decisionEntries,
   describeGateChange,
   describeJudgmentCall,
+  displayOptions,
   findingQuestion,
   gateSummaryLines,
+  isCustomChoice,
   judgmentQuestion,
   maxOffset,
   parseEvidence,
   readEvidenceContext,
+  sanitizeCustomChoice,
   selectionForCurrent,
   statusSpans,
   verdictCounts,
@@ -53,11 +58,11 @@ const review: Review = {
 };
 
 describe("buildItems", () => {
-  test("a judgment call always offers 'leave it open', saying what that means", () => {
+  test("a judgment call always offers 'I don't know', saying what that means", () => {
     const [item] = buildItems(claims, review);
     expect(item?.kind).toBe("judgment");
     expect(item?.options[1]).toBe("redis");
-    expect(item?.options[2]).toContain("leave it open — don't decide now");
+    expect(item?.options[2]).toContain("I don't know — leave it open");
     expect(item?.values).toEqual(["in-process", "redis", "open"]);
   });
 
@@ -117,6 +122,11 @@ describe("answersToGate", () => {  test("records a decision and a finding in the
   test("an unexpected finding value is untriaged, not quietly dismissed", () => {
     const gate = answersToGate([{ id: "E1", kind: "finding", value: "skip" }]);
     expect(gate.findings[0]?.disposition).toBe("untriaged");
+  });
+
+  test("a typed answer travels through verbatim — the schema never constrained it", () => {
+    const gate = answersToGate([{ id: "J1", kind: "judgment", value: "none of these — §2 already picked this" }]);
+    expect(gate.decisions[0]?.choice).toBe("none of these — §2 already picked this");
   });
 });
 
@@ -244,9 +254,58 @@ describe("selectionForCurrent", () => {
     expect(selectionForCurrent(finding!, "untriaged")).toBe(2);
   });
 
-  test("no recorded answer, or one that is not a value, lands on the first option", () => {
+  test("no recorded answer lands on the first option", () => {
     expect(selectionForCurrent(judgment!)).toBe(0);
-    expect(selectionForCurrent(judgment!, "a stale value")).toBe(0);
+  });
+
+  test("a free-text answer lands on the custom row, not the first option", () => {
+    // A stale gate used to land on the first option rather than nowhere; a
+    // typed answer is not stale — it is shown back as the recorded text, so
+    // the cursor sits on the row that owns it.
+    expect(selectionForCurrent(judgment!, "none of these")).toBe(customRowIndex(judgment!));
+    expect(selectionForCurrent(judgment!, "none of these")).toBe(judgment!.options.length);
+  });
+
+  test("a finding's unknown value still lands on the first option — findings have no custom row", () => {
+    expect(selectionForCurrent(finding!, "a stale value")).toBe(0);
+  });
+});
+
+describe("the custom row", () => {
+  const items = buildItems(claims, review);
+  const judgment = items.find((i) => i.kind === "judgment")!;
+  const finding = items.find((i) => i.kind === "finding")!;
+
+  test("judgment calls display a trailing custom row; findings do not", () => {
+    expect(displayOptions(judgment!)).toEqual([...judgment!.options, CUSTOM_ROW_LABEL]);
+    expect(displayOptions(finding!)).toEqual(finding!.options);
+    expect(customRowIndex(judgment!)).toBe(judgment!.options.length);
+  });
+
+  test("isCustomChoice is only ever true for a judgment answer outside its values", () => {
+    expect(isCustomChoice(judgment!, "redis")).toBe(false);
+    expect(isCustomChoice(judgment!, "open")).toBe(false);
+    expect(isCustomChoice(judgment!, "none of these")).toBe(true);
+    expect(isCustomChoice(judgment!, undefined)).toBe(false);
+    expect(isCustomChoice(judgment!, "")).toBe(false);
+    expect(isCustomChoice(finding!, "anything")).toBe(false);
+  });
+
+  test("sanitise collapses to one line, strips stars, and bounds the length", () => {
+    // The decisions.md entry reads `**choice**`: a `*` in the choice would
+    // break the entry regex and silently drop the decision from the next feed.
+    expect(sanitizeCustomChoice("  none\nof   these  ")).toBe("none of these");
+    expect(sanitizeCustomChoice("a **bold** claim")).toBe("a ·bold· claim");
+    expect(sanitizeCustomChoice("x".repeat(400)).length).toBe(300);
+    expect(sanitizeCustomChoice("   ")).toBe("");
+  });
+
+  test("a custom answer is a settled decision like any other", () => {
+    const entries = decisionEntries(claims, {
+      decisions: [{ id: "J1", from: "(none)", to: "none of these" }],
+      findings: [],
+    });
+    expect(entries).toEqual([{ id: "J1", text: claims.judgment[0]!.text, choice: "none of these" }]);
   });
 });
 
@@ -258,6 +317,15 @@ describe("gate prompts", () => {
     expect(judgmentQuestion(judgment, "redis")).toContain("(currently: redis)");
     expect(judgmentQuestion(judgment, "redis")).toContain("Enter to keep");
     expect(judgmentQuestion(judgment)).not.toContain("Enter to keep");
+  });
+
+  test("the judgment prompt names the escape hatch either way", () => {
+    expect(judgmentQuestion(judgment)).toContain("your own answer");
+    expect(judgmentQuestion(judgment, "redis")).toContain("your own answer");
+  });
+
+  test("a custom recorded answer reads back in full, so a revisit does not look lost", () => {
+    expect(judgmentQuestion(judgment, "none of these")).toContain("(currently: none of these)");
   });
 
   test("a prefilled finding prompt shows the recorded choice in words", () => {

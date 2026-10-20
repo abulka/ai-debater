@@ -1,6 +1,11 @@
 import * as readline from "node:readline/promises";
 import type { Claims, Gate, Review } from "./contracts.ts";
-import { describeJudgmentCall, findingQuestion, judgmentQuestion } from "./gate-model.ts";
+import {
+  describeJudgmentCall,
+  findingQuestion,
+  judgmentQuestion,
+  sanitizeCustomChoice,
+} from "./gate-model.ts";
 
 /**
  * The human gate. Nothing here is decided by a model: the human answers every
@@ -60,13 +65,13 @@ export async function collectGate(
         const answer = (await ask(judgmentQuestion(judgment, current))).trim();
         if (answer === "") {
           if (!current) {
-            console.log("     (answer with a number or 'open')");
+            console.log("     (answer with a number, 'open', or your own answer)");
             continue;
           }
           decisions.push({ id: judgment.id, choice: current });
           break;
         }
-        if (answer === "open") {
+        if (answer.toLowerCase() === "open") {
           decisions.push({ id: judgment.id, choice: "open" });
           break;
         }
@@ -75,9 +80,46 @@ export async function collectGate(
           decisions.push({ id: judgment.id, choice: judgment.options[n - 1] ?? "" });
           break;
         }
-        console.log(
-          "     (answer with a number or 'open'" + (current ? ", or Enter to keep" : "") + ")",
-        );
+        // Anything else is the human's own answer — the escape hatch for a
+        // question whose options do not make sense. On a terminal it is echoed
+        // back for confirmation so a typo cannot silently become a decision;
+        // piped input records it directly.
+        const cleaned = sanitizeCustomChoice(answer);
+        if (!cleaned) {
+          console.log(
+            "     (answer with a number, 'open'" + (current ? ", Enter to keep" : "") + ", or your own answer)",
+          );
+          continue;
+        }
+        if (rl) {
+          const confirm = (
+            await ask(`     will record: "${cleaned}" — Enter to confirm, or type a different answer: `)
+          ).trim();
+          if (confirm === "") {
+            decisions.push({ id: judgment.id, choice: cleaned });
+            break;
+          }
+          const recleaned = sanitizeCustomChoice(confirm);
+          if (recleaned.toLowerCase() === "open") {
+            decisions.push({ id: judgment.id, choice: "open" });
+            break;
+          }
+          const rn = Number(confirm);
+          if (Number.isInteger(rn) && rn >= 1 && rn <= judgment.options.length) {
+            decisions.push({ id: judgment.id, choice: judgment.options[rn - 1] ?? "" });
+            break;
+          }
+          if (recleaned) {
+            decisions.push({ id: judgment.id, choice: recleaned });
+            break;
+          }
+          console.log(
+            "     (answer with a number, 'open'" + (current ? ", Enter to keep" : "") + ", or your own answer)",
+          );
+          continue;
+        }
+        decisions.push({ id: judgment.id, choice: cleaned });
+        break;
       }
     }
 

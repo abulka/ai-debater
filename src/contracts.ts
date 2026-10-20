@@ -202,6 +202,13 @@ export const RunState = z.object({
   mode: z.enum(["plan", "answer"]),
   models: z.object({ drafter: ModelRef, reviewer: ModelRef }),
   /**
+   * The run this one continues, when it continues one: the parent's run name
+   * (its timestamp directory name) and its directory. Optional so every run
+   * recorded before chaining still parses. Informational only — the composed
+   * task carries the parent's text, so a chain reads whole without this.
+   */
+  parent: z.object({ name: z.string(), dir: z.string() }).optional(),
+  /**
    * URLs repaired deterministically before the review saw the plan. Recorded so
    * the artifact is not silently different from what the model wrote.
    */

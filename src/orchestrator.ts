@@ -108,6 +108,7 @@ export async function createRun(
   task: string,
   models: RunState["models"],
   mode: RunState["mode"],
+  opts?: { parent?: { name: string; dir: string } },
 ): Promise<Paths> {
   const dir = path.join(runBucket(repo, mode), runStamp());
   await mkdir(dir, { recursive: true });
@@ -119,6 +120,7 @@ export async function createRun(
     task,
     mode,
     models,
+    ...(opts?.parent ? { parent: opts.parent } : {}),
   });
   return p;
 }
@@ -322,6 +324,8 @@ export interface RunSummary {
    * `recentPairs` skips those rather than failing.
    */
   models?: { drafter: ModelRef; reviewer: ModelRef };
+  /** The run this one continues, when it continues one. Display only. */
+  parent?: { name: string; dir: string };
 }
 
 /**
@@ -359,6 +363,7 @@ export async function listRuns(repo: string): Promise<RunSummary[]> {
         mode: state.mode,
         createdAt: state.createdAt,
         ...(state.models ? { models: state.models } : {}),
+        ...(state.parent ? { parent: state.parent } : {}),
       });
     } catch {
       /* no readable state — not a run worth listing */

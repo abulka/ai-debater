@@ -27,6 +27,51 @@ export interface GateItem {
   evidence?: string;
 }
 
+/**
+ * The trailing row a judgment call offers in the TUI: a free-text answer for
+ * when none of the model's options make sense. A view concern, not part of
+ * `buildItems` — the model never proposed it, and `gate.json` records the
+ * typed text itself, not this label.
+ */
+export const CUSTOM_ROW_LABEL = "type your own answer…";
+
+/** The options as the TUI shows them: judgment calls gain the custom row. */
+export function displayOptions(item: GateItem): string[] {
+  return item.kind === "judgment" ? [...item.options, CUSTOM_ROW_LABEL] : [...item.options];
+}
+
+/** The index of the custom row in the displayed list, for judgment calls. */
+export function customRowIndex(item: GateItem): number {
+  return item.options.length;
+}
+
+/**
+ * Whether a recorded choice is free text rather than one of the model's
+ * options: a judgment answer that is not among the item's values and is not
+ * "open" (which is its own row). Findings keep their enum and never qualify.
+ */
+export function isCustomChoice(item: GateItem, value: string | undefined): boolean {
+  return (
+    item.kind === "judgment" &&
+    value !== undefined &&
+    value !== "" &&
+    !item.values.includes(value)
+  );
+}
+
+/**
+ * A custom answer must survive `decisions.md`: one line, no `*` (the entry
+ * regex reads `**choice**`), bounded. Both front ends sanitise through here
+ * so the CLI and the TUI record the same bytes for the same typing.
+ */
+export function sanitizeCustomChoice(raw: string): string {
+  return raw
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\*+/g, "·")
+    .slice(0, 300);
+}
+
 export interface GateAnswer {
   id: string;
   kind: GateItem["kind"];
@@ -51,7 +96,7 @@ export function buildItems(claims: Claims, review: Review): GateItem[] {
         const against = tradeoffs?.per_option.find((p) => p.option === option)?.against ?? [];
         return `${option}${against.length ? `  — ${against.join("; ")}` : ""}`;
       }),
-      options: [...j.options, "leave it open — don't decide now; both options will be shown"],
+      options: [...j.options, "I don't know — leave it open; the plan presents the options instead of picking"],
       values: [...j.options, "open"],
     });
   }
@@ -204,7 +249,9 @@ export function dispositionLabel(
 /**
  * The CLI's judgment prompt. With a recorded answer, Enter is a real reply —
  * keeping the answer — and the prompt must say so. Without one, the old
- * contract holds: a number or "open", nothing else.
+ * contract holds, plus the escape hatch: anything that is not a number or
+ * 'open' is recorded as the human's own answer. A custom recorded answer
+ * reads back in full so a revisit does not look lost.
  */
 export function judgmentQuestion(
   judgment: Claims["judgment"][number],
@@ -212,7 +259,7 @@ export function judgmentQuestion(
 ): string {
   const marker = current ? `  (currently: ${current})` : "";
   return `  ${judgment.id}${marker}: ` + (
-    current ? "1-N, 'open', or Enter to keep: " : "1-N, or 'open': "
+    current ? "1-N, 'open', your own answer, or Enter to keep: " : "1-N, 'open', or your own answer: "
   );
 }
 
@@ -315,13 +362,16 @@ export function decisionEntries(claims: Claims, change: GateChange): DecisionEnt
  * Where the gate's cursor lands for an item that already has a recorded
  * answer: on that answer. That is what makes a re-asked gate readable —
  * the current choice is what the cursor sits on, and Enter keeps it.
- * An answer that is not among the item's values (a stale gate) lands on the
- * first option rather than nowhere.
+ * A free-text answer (not among the item's values) lands on the custom row,
+ * which the TUI appends after the model's options. Anything else unknown
+ * lands on the first option rather than nowhere.
  */
 export function selectionForCurrent(item: GateItem, current?: string): number {
   if (!current) return 0;
   const i = item.values.indexOf(current);
-  return i === -1 ? 0 : i;
+  if (i !== -1) return i;
+  if (isCustomChoice(item, current)) return customRowIndex(item);
+  return 0;
 }
 
 export interface VerdictCounts {

@@ -12,12 +12,17 @@ import {
   buildItems,
   clampIndex,
   clampOffset,
+  CUSTOM_ROW_LABEL,
+  customRowIndex,
   decisionEntries,
   describeGateChange,
+  displayOptions,
   gateWarnings,
+  isCustomChoice,
   maxOffset,
   parseEvidence,
   readEvidenceContext,
+  sanitizeCustomChoice,
   selectionForCurrent,
   statusSpans,
   verdictCounts,
@@ -101,7 +106,8 @@ import {
   type Reporting,
   type Tail,
 } from "./pipeline.ts";
-import { diffPane, renderAnswer, renderResult, renderResultLines } from "./render.ts";
+import { diffPane, renderAnswerOnlyLines, renderCommentaryLines, renderAnswer, renderResult } from "./render.ts";
+import { composeContinuation } from "./continue.ts";
 import {
   fitSpans,
   renderMarkdownLines,
@@ -139,7 +145,6 @@ type Phase =
   | "setup"
   | "home"
   | "start"
-  | "clarify"
   | "settings"
   | "aakey"
   | "pick"
@@ -174,11 +179,12 @@ const RESULT_KEYS: { key: string; what: string }[] = [
   { key: "x", what: "the exact text diff, and what each change was for (Esc back)" },
   { key: "d", what: "the draft the review saw, before the gate" },
   { key: "v", what: "every verdict, with its evidence" },
-  { key: "i", what: "the review at a glance — warnings, checks, refuted claims" },
+  { key: "i", what: "the run at a glance — what happened, what changed, decisions open, review summary" },
   { key: "c", what: "the claims the drafter declared" },
   { key: "R", what: "the reviewer's raw reply, exactly as it was written" },
   { key: "l", what: "the full run log" },
   { key: "r", what: "revisit the gate — re-ask it with the recorded answers prefilled" },
+  { key: "C", what: "continue this debate — the desk asks for your follow-up only; the result rides along" },
   { key: "n", what: "back to your question — the draft you had typed is kept" },
   { key: "↑↓ · j / k", what: "scroll a line" },
   { key: "space · f", what: "page down" },
@@ -186,6 +192,33 @@ const RESULT_KEYS: { key: string; what: string }[] = [
   { key: "Ctrl+D · Ctrl+U", what: "half a page down · half a page up" },
   { key: "g / G", what: "jump to the top / the end" },
   { key: "q", what: "quit (the run stays on disk — reopen it with Ctrl+R from home)" },
+];
+
+/**
+ * Every key the gate screen answers to, for the `?` pane.
+ *
+ * The footer has room for seven; the rest were invisible until someone read
+ * the source (`w`, `i`, `l` answer every gate question and appeared nowhere).
+ * `^T` is spelled out here because its name promises more than it does: it
+ * hands the mouse to the terminal so a drag selects — the visible rows only,
+ * since the alternate screen keeps no scrollback. `y` is the way to copy the
+ * question out whole.
+ */
+const GATE_KEYS: { key: string; what: string }[] = [
+  { key: "↑↓ · Enter", what: "choose an option (a recorded answer is where the cursor starts; Enter keeps it)" },
+  { key: "t", what: "type your own answer to a judgment call — Enter records it, Esc back" },
+  { key: "o", what: "don't know — leave the judgment call open; the plan presents the options instead of picking" },
+  { key: "s", what: "skip — same as o for a judgment call; a finding is left for later" },
+  { key: "y", what: "copy this question as Markdown — to the clipboard, and question-<id>.md in the run directory" },
+  { key: "d", what: "the answer/plan these questions are about — the context for every choice" },
+  { key: "v", what: "every verdict, with its evidence" },
+  { key: "e", what: "the cited source — the file around the line, or the URL" },
+  { key: "w", what: "the current item's whole text, unclipped" },
+  { key: "i", what: "the review summary — warnings, checks, refuted claims" },
+  { key: "l", what: "the full run log" },
+  { key: "Ctrl+R", what: "past runs — open another run from here" },
+  { key: "n", what: "back to the question desk — the run stays parked on disk" },
+  { key: "Esc", what: "leave the gate — the run stays reachable (the draft pane closes back to the question)" },
 ];
 
 /**
@@ -491,21 +524,6 @@ function Setup({
   );
 }
 
-/**
- * A cheap nudge, not a classifier. If someone types a question in plan mode,
- * the run will read the repository and answer with a plan; that happened once and
- * the result was a "Plan:" about fixtures/toy-repo. A question mark, or a question
- * opening word, is enough to suggest Tab.
- */
-function looksLikeQuestion(task: string): boolean {
-  const text = task.trim();
-  if (!text) return false;
-  if (/\?\s*$/.test(text)) return true;
-  return /^(what|which|who|whom|whose|when|where|why|how|is|are|was|were|does|do|did|can|could|should|would)\b/i.test(
-    text,
-  );
-}
-
 function Home({
   selection,
   setSelection,
@@ -623,6 +641,9 @@ function Start({
   setDeskSel,
   notice,
   pair,
+  continuing,
+  onAbandonContinue,
+  onViewParent,
   onRun,
   onToggleMode,
   onPick,
@@ -641,6 +662,11 @@ function Start({
   notice: string | null;
   /** The name of the saved pair the current two models are, or null when unnamed. */
   pair: string | null;
+  /** A continuation is waiting for its follow-up: the parent run's name. */
+  continuing?: string | null;
+  onAbandonContinue?: () => void;
+  /** Ctrl+L — read the parent result in a pane, Esc back to the follow-up. */
+  onViewParent?: () => void;
   onRun: () => void;
   onToggleMode: () => void;
   onPick: (role: "drafter" | "reviewer") => void;
@@ -667,11 +693,18 @@ function Start({
       onSettings();
       return;
     }
-    // Ctrl+U clears the draft, readline-style.
+    // Ctrl+U clears the draft, readline-style — and abandons a waiting
+    // continuation, since an empty follow-up cannot run anyway.
     if (key.ctrl && input === "u") {
       setTask("");
       setCaret(0);
       setDeskSel(4);
+      if (continuing) onAbandonContinue?.();
+      return;
+    }
+    // Ctrl+L — read the parent result without leaving the follow-up behind.
+    if (key.ctrl && input === "l" && continuing) {
+      onViewParent?.();
       return;
     }
     // Line editing, readline-style: arrows step, ^A/^E jump, option-arrows
@@ -818,10 +851,13 @@ function Start({
           </Text>
         )}
       </Box>
-      {mode === "plan" && looksLikeQuestion(task) && (
-        <Box marginTop={1}>
-          <Text color="yellow">
-            ! that reads like a general question — Tab switches to one, with no repository read
+      {continuing && (
+        <Box marginTop={1} flexDirection="column">
+          <Text color={THEME.accent} wrap="truncate">
+            continuing run {continuing} — the previous result rides along; type your follow-up, then Enter
+          </Text>
+          <Text dimColor wrap="truncate">
+            Ctrl+L view the parent result · Ctrl+U abandons the continuation and clears the prompt
           </Text>
         </Box>
       )}
@@ -2510,11 +2546,15 @@ function Runs({
           const selected = at === index;
           const marked = tagged.has(r.dir);
           const label = r.mode === "answer" ? "question" : "task";
+          // A chained run names its parent: `↳` marks the continuation, so a
+          // chain reads as one in the list. Measured into the prefix, like the
+          // rest, so the row still never exceeds the pane.
+          const chain = r.parent ? "↳ " : "";
           // The row must never exceed the pane: a row that exactly fills the
           // width wraps on some terminals, and the window counts lines — the
           // old `width - 34` guessed the prefix and overflowed by five on long
           // tasks. Measured from the real prefix, with one spare column.
-          const head = `${r.name}   ${r.state.padEnd(8)}${label} · `;
+          const head = `${r.name}   ${r.state.padEnd(8)}${chain}${label} · `;
           const room = Math.max(8, width - 1 - 4 - head.length);
           const text = r.task.length > room ? `${r.task.slice(0, room - 1)}…` : r.task;
           return (
@@ -2529,6 +2569,7 @@ function Runs({
                 {r.state.padEnd(8)}
               </Text>
               <Text color={selected ? THEME.accent : undefined} dimColor={!selected} wrap="truncate">
+                {chain}
                 {label} · {text}
               </Text>
             </Box>
@@ -2744,6 +2785,7 @@ function GateView({
   mode,
   revisit,
   current,
+  custom,
   contentH,
 }: {
   claims: Claims;
@@ -2759,6 +2801,8 @@ function GateView({
   revisit?: boolean;
   /** The recorded answer for the current item, when there is one. */
   current?: string;
+  /** The free-text editor, open when the human is typing their own answer. */
+  custom?: { text: string; caret: number } | null;
   /** Content rows the screen may use: the finding's own text fills what fits. */
   contentH: number;
 }) {
@@ -2782,13 +2826,17 @@ function GateView({
   const titleRows = wrapText(item.title, 4, wrapW);
   const detail: string[] = [];
   for (const line of item.detail) detail.push(...wrapText(line, 2, wrapW));
+  // The displayed options: judgment calls gain the trailing custom row, so the
+  // budget counts what is actually drawn rather than what the model proposed.
+  const shown = displayOptions(item);
+  const customCurrent = isCustomChoice(item, current) ? current! : undefined;
   // The finding's own text fills what the title and options leave — on a tall
   // terminal that is the whole finding, and `w` still shows it whole in a pane.
   const clippedDetail = detail.slice(
     0,
     gateDetailBudget(contentH, {
       titleRows: titleRows.length,
-      optionRows: item.options.length,
+      optionRows: shown.length,
       extras: extras.length > 0,
       revisit: !!revisit,
     }),
@@ -2849,7 +2897,7 @@ function GateView({
       </Box>
 
       <Box flexDirection="column">
-        {item.options.map((option, i) => (
+        {shown.map((option, i) => (
           <Box key={i}>
             <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
             <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
@@ -2863,22 +2911,37 @@ function GateView({
             )}
           </Box>
         ))}
+        {customCurrent !== undefined && (
+          <Box>
+            <Text dimColor>{"      recorded: "}</Text>
+            <Text color={THEME.code}>"{customCurrent.length > 80 ? `${customCurrent.slice(0, 79)}…` : customCurrent}"</Text>
+          </Box>
+        )}
       </Box>
+
+      {custom !== null && custom !== undefined && item.kind === "judgment" && (
+        <Box borderStyle="round" borderColor="cyan" paddingX={1} marginTop={1} flexDirection="column">
+          <Text dimColor>your own answer — Enter records it, Esc back to the options</Text>
+          <FieldText text={custom.text} cursor={Math.max(0, Math.min(custom.caret, custom.text.length))} />
+        </Box>
+      )}
 
       <Box marginTop={1}>
         <Text>
           <Line
             spans={hints(
               ["↑↓", "move"],
-              ["Enter", revisit ? "keeps current" : "answer"],
-              ["w", "whole text"],
-              ["d", thing],
-              ["v", "verdicts"],
-              ...(item.evidence ? ([["e", "source"]] as [string, string][]) : []),
-              ["i", "summary"],
-              ["l", "log"],
+              ["Enter", custom ? "record it" : revisit ? "keeps current" : "answer"],
+              ...(item.kind === "judgment" && !custom
+                ? ([
+                    ["d", "read draft"],
+                    ["t", "own answer"],
+                    ["o", "don't know"],
+                  ] as [string, string][])
+                : ([["d", "read draft"]] as [string, string][])),
+              ["?", "keys"],
               ["n", "question"],
-              ["Esc", "leave"],
+              ["Esc", custom ? "close editor" : "leave"],
             )}
           />
         </Text>
@@ -3194,7 +3257,6 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
    * in, and Ctrl+T hands it over and takes it back.
    */
   const [mouseReporting, setMouseReporting] = useState(true);
-  const [clarifySel, setClarifySel] = useState(0);
   const approvalResolver = useRef<((ok: boolean) => void) | null>(null);
 
   /* The run being worked on, when it is one that already exists on disk.
@@ -3203,6 +3265,26 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
      one. It drives the prefill, the "did anything move" check, and the
      decisions.md supersede rule — the same three the CLI's `revise` uses. */
   const [previousGate, setPreviousGate] = useState<Gate | null>(null);
+  /**
+   * The gate's free-text editor, open on a judgment call whose options do not
+   * fit. Null when closed; text and caret while the human types their own
+   * answer. One editor, not one per item: the gate asks one question at a
+   * time, and leaving the item closes it.
+   */
+  const [gateCustom, setGateCustom] = useState<{ text: string; caret: number } | null>(null);
+  /**
+   * A continuation waiting for its follow-up. The desk prompt holds ONLY the
+   * follow-up — one editable line — and the parent's result rides in here,
+   * composed into the full task at run time. Stuffing the whole result into
+   * the prompt field buried the caret in a single uneditable line, which is
+   * why this state exists. Null when the desk is a plain question.
+   */
+  const [pendingContinue, setPendingContinue] = useState<{
+    name: string;
+    dir: string;
+    mode: Mode;
+    result: string;
+  } | null>(null);
   /** The run already had a life on disk before this gate was entered. A failed
      tail on such a run parks back at its gate, retryable; a brand-new run
      keeps the head's rule — failed is failed. */
@@ -3286,25 +3368,6 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       if (key.return) void chooseSetup(setupSelection === 0 ? "init" : "skip");
     },
     { isActive: phase === "setup" },
-  );
-
-  useInput(
-    (_input, key) => {
-      if (key.escape) {
-        setPhase("start");
-        return;
-      }
-      if (key.upArrow) {
-        setClarifySel(0);
-        return;
-      }
-      if (key.downArrow) {
-        setClarifySel(1);
-        return;
-      }
-      if (key.return) beginRun(clarifySel === 0 ? "answer" : "plan");
-    },
-    { isActive: phase === "clarify" },
   );
 
   async function chooseSetup(action: "init" | "skip") {
@@ -5348,12 +5411,30 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       setPhase("error");
       return;
     }
+    // A continuation runs on the human's words: without a follow-up there is
+    // nothing new to say, and running would replay the parent verbatim.
+    const followUp = task.trim();
+    if (pendingContinue && !followUp) {
+      setNotice("type your follow-up first — Enter runs nothing without it");
+      setDeskSel(4);
+      return;
+    }
+    // The composed task — parent header, the previous result whole, the
+    // follow-up — is assembled here, at run time. It is what the run records;
+    // the prompt field only ever held the follow-up.
+    const fullTask = pendingContinue
+      ? composeContinuation(pendingContinue.name, pendingContinue.result, followUp).task
+      : followUp;
     // The two things the human just chose. They belong in the log: without them
     // the history starts at "drafting" and does not say what was asked or who is
     // doing it.
     setOpenedFrom("start");
     addLog(`${next === "answer" ? "general question" : "repository"} · ${cfg.models.drafter.ref} -> ${cfg.models.reviewer.ref}`);
-    addLog(`${next === "answer" ? "question" : "task"}: ${task.trim()}`);
+    addLog(
+      pendingContinue
+        ? `continuing ${pendingContinue.name} · follow-up: ${followUp}`
+        : `${next === "answer" ? "question" : "task"}: ${fullTask}`,
+    );
     if (next !== mode) {
       setMode(next);
       void persist(cfg, next);
@@ -5362,7 +5443,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     // supersede, and the config's models are the run's models.
     setRunMode(next);
     setRunModels(cfg.models);
-    setRunTask(task.trim());
+    setRunTask(fullTask);
     setPreviousGate(null);
     setReopened(false);
     setWasDone(false);
@@ -5373,6 +5454,8 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     // run would open straight onto the previous run's gate.
     setHead(null);
     setAnswers([]);
+    setGateCustom(null);
+    setPendingContinue(null);
     setIndex(0);
     setSelection(0);
     setPanel(null);
@@ -5664,6 +5747,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       setRunMode(state.mode);
       setRunTask(state.task);
       setAnswers([]);
+      setGateCustom(null);
       setIndex(0);
       setSelection(0);
       setPanel(null);
@@ -5692,6 +5776,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     setReopened(true);
     setWasDone(true);
     setAnswers([]);
+    setGateCustom(null);
     setIndex(0);
     // The first question's cursor starts on its recorded answer, like every
     // later one will.
@@ -5710,6 +5795,35 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     setPhase("gate");
   }
 
+  /**
+   * From the result screen: continue the debate in a new run. `C` is the
+   * deliberate key — no arming, no draft warnings; the reader pressed it on
+   * purpose. Nothing runs here: the desk gets a follow-up prompt (one
+   * editable line), and the debate screen's Enter is what starts the run, so
+   * a slipped key costs nothing. The parent's result rides in
+   * `pendingContinue` and is composed into the task when the run starts: it
+   * never enters the prompt field. Ctrl+L re-reads it from the desk.
+   */
+  function startContinue() {
+    if (!head || !tail || panel) return;
+    const parentName = path.basename(head.paths.dir);
+    setNotice(null);
+    // The continuation answers in the parent's mode: a general question
+    // re-opened must not start reading the repository it was not asked about.
+    const parentMode = runMode ?? mode;
+    if (parentMode !== mode) {
+      setMode(parentMode);
+      if (cfg) void persist(cfg, parentMode);
+    }
+    setPendingContinue({ name: parentName, dir: head.paths.dir, mode: parentMode, result: tail.plan });
+    setTask("");
+    setDeskSel(4);
+    setOpenedFrom("start");
+    setPanel(null);
+    addLog(`continuing run ${parentName} — type your follow-up, then Enter runs it`);
+    setPhase("start");
+  }
+
   /* The copy notice is an answer to a keystroke, not part of the result: it
      goes away on its own so the footer is not permanently shouting. */
   useEffect(() => {
@@ -5717,6 +5831,58 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     const timer = setTimeout(() => setNotice(null), 4000);
     return () => clearTimeout(timer);
   }, [notice]);
+
+  /**
+   * Copy the question on screen — `y` at the gate.
+   *
+   * The judgment calls are written by a model, and a vague one is exactly the
+   * thing a reader wants a second opinion on; selecting in a pane is the
+   * terminal's business and the alternate screen keeps no scrollback, so the
+   * clipboard is the dependable path. Also written to the run directory, like
+   * every other copy: a clipboard that fails still leaves the file.
+   */
+  async function copyQuestion() {
+    if (!head) return;
+    const item = items[index];
+    if (!item) return;
+    const lines: string[] = [`## ${item.id} — ${item.title}`];
+    if (item.kind === "judgment") {
+      lines.push("", "Options:");
+      for (const option of item.options) lines.push(`- ${option}`);
+    } else {
+      lines.push("", "Disposition: yes (apply to the text) / no (leave as it is) / later");
+    }
+    if (item.evidence) lines.push("", `Evidence: ${item.evidence}`);
+    const file = path.join(head.paths.dir, `question-${item.id}.md`);
+    const result = await copyMarkdown(lines.join("\n"), file);
+    setNotice(copyNotice(result, lines.join("\n").length, path.basename(file)));
+  }
+
+  /**
+   * The gate opens on the draft.
+   *
+   * Every question judges a text the gate never showed — deciding blind was
+   * the workflow's own flaw, and the context pane was one undiscoverable `d`
+   * away. So the draft pane opens itself when the gate is entered (fresh run,
+   * a run reopened from the list, a revisit); Esc takes you to the first
+   * question and `d` brings the draft back any time. Once per entry, not once
+   * per question: the flag resets whenever the phase leaves the gate.
+   */
+  const gateDraftOpened = useRef(false);
+  useEffect(() => {
+    if (phase !== "gate" || !head) {
+      gateDraftOpened.current = false;
+      return;
+    }
+    // A gate with no questions goes straight through; a pane would flash over
+    // the transition.
+    if (items.length === 0 || gateDraftOpened.current || panel !== null) return;
+    gateDraftOpened.current = true;
+    void openPanel("text");
+    // The pane is opened by the transition into the gate, not by the panel's
+    // own state: closing it must not reopen it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, head, items.length]);
 
   /**
    * The result as the renderer wants it: what the screen is drawn from.
@@ -5834,10 +6000,21 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   }
 
   /* Panels: the text the calls are about, every verdict, the cited source, the log. */
-  async function openPanel(kind: "text" | "verdicts" | "evidence" | "log" | "info" | "item") {
+  async function openPanel(kind: "text" | "verdicts" | "evidence" | "log" | "info" | "item" | "keys") {
     if (!head) return;
     const item = items[index];
     const thing = effectiveMode === "answer" ? "answer" : "plan";
+
+    if (kind === "keys") {
+      showPanel(
+        "keys on this screen",
+        GATE_KEYS.map((k) =>
+          spans({ text: `  ${k.key.padEnd(14)}`, color: THEME.accent, bold: true }, k.what),
+        ),
+        14,
+      );
+      return;
+    }
 
     if (kind === "log") {
       showPanel(
@@ -5876,7 +6053,16 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
           );
         }
       }
-      showPanel("the review at a glance", lines.length ? lines : [spans("nothing to report")]);
+      // On the result screen the commentary rides here too: the screen itself
+      // is the answer only, so "what happened / what changed / decisions open"
+      // live behind the same key.
+      if (phase === "result" && tail) {
+        const report = resultReport();
+        if (report) {
+          lines.push(...renderCommentaryLines(report, wrapWidth()), []);
+        }
+      }
+      showPanel(phase === "result" ? "the run at a glance" : "the review at a glance", lines.length ? lines : [spans("nothing to report")]);
       return;
     }
 
@@ -6015,6 +6201,8 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     (input, key) => {
       const item = items[index];
       if (!item) return;
+      // The options as drawn: judgment calls carry the trailing custom row.
+      const shown = displayOptions(item);
 
       // Where the cursor lands on a recorded answer: on it. That is the whole
       // point of the prefill — Enter keeps, arrows change.
@@ -6035,6 +6223,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       const commit = (value: string) => {
         const next = [...answers, { id: item.id, kind: item.kind, value }];
         setAnswers(next);
+        setGateCustom(null);
         if (index + 1 < items.length) {
           setIndex(index + 1);
           landOn(index + 1);
@@ -6042,6 +6231,75 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
           void finishGate(next);
         }
       };
+
+      /** Open the free-text editor, prefilled with the recorded custom answer when there is one. */
+      const openCustom = () => {
+        const recorded =
+          previousGate?.decisions.find((d) => d.id === item.id)?.choice;
+        const prefill = isCustomChoice(item, recorded) ? recorded! : "";
+        setSelection(customRowIndex(item));
+        setGateCustom({ text: prefill, caret: prefill.length });
+      };
+
+      // The free-text editor owns the keys while it is open: line editing,
+      // readline-style, like every other text field. Up/down stay put rather
+      // than moving the option cursor underneath the editor.
+      if (gateCustom !== null) {
+        const cur = Math.max(0, Math.min(gateCustom.caret, gateCustom.text.length));
+        const setText = (text: string, caret: number) =>
+          setGateCustom({ text, caret: Math.max(0, Math.min(caret, text.length)) });
+        if (key.escape) {
+          setGateCustom(null);
+          return;
+        }
+        if (key.return) {
+          const cleaned = sanitizeCustomChoice(gateCustom.text);
+          if (cleaned) commit(cleaned);
+          return;
+        }
+        if (key.upArrow || key.downArrow) return;
+        if (key.ctrl && input === "a") {
+          setGateCustom({ text: gateCustom.text, caret: 0 });
+          return;
+        }
+        if (key.ctrl && input === "e") {
+          setGateCustom({ text: gateCustom.text, caret: gateCustom.text.length });
+          return;
+        }
+        if (isWordLeft(key, input)) {
+          setGateCustom({ text: gateCustom.text, caret: wordLeft(gateCustom.text, cur) });
+          return;
+        }
+        if (isWordRight(key, input)) {
+          setGateCustom({ text: gateCustom.text, caret: wordRight(gateCustom.text, cur) });
+          return;
+        }
+        if (isKillToEnd(key, input)) {
+          setText(killToEnd(gateCustom.text, cur), cur);
+          return;
+        }
+        if (key.leftArrow) {
+          setGateCustom({ text: gateCustom.text, caret: cur - 1 });
+          return;
+        }
+        if (key.rightArrow) {
+          setGateCustom({ text: gateCustom.text, caret: cur + 1 });
+          return;
+        }
+        if (key.backspace) {
+          if (cur > 0) setText(gateCustom.text.slice(0, cur - 1) + gateCustom.text.slice(cur), cur - 1);
+          return;
+        }
+        if (key.delete) {
+          if (cur < gateCustom.text.length) setText(gateCustom.text.slice(0, cur) + gateCustom.text.slice(cur + 1), cur);
+          return;
+        }
+        if (key.ctrl || key.meta) return;
+        if (input && !input.startsWith("\x1b[<")) {
+          setText(gateCustom.text.slice(0, cur) + input + gateCustom.text.slice(cur), cur + input.length);
+        }
+        return;
+      }
 
       if (key.escape) {
         // Leaving the gate never loses the run: the head is on disk, and the
@@ -6063,11 +6321,19 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         return;
       }
       if (key.downArrow) {
-        setSelection((s) => Math.min(item.options.length - 1, s + 1));
+        setSelection((s) => Math.min(shown.length - 1, s + 1));
         return;
       }
       if (input === "d") {
         void openPanel("text");
+        return;
+      }
+      if (input === "y" && !key.ctrl && !key.meta) {
+        void copyQuestion();
+        return;
+      }
+      if (input === "?") {
+        void openPanel("keys");
         return;
       }
       if (input === "v") {
@@ -6090,6 +6356,10 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         void openPanel("item");
         return;
       }
+      if (input === "t" && item.kind === "judgment" && !key.ctrl && !key.meta) {
+        openCustom();
+        return;
+      }
       if (input === "o" && item.kind === "judgment") {
         commit("open");
         return;
@@ -6100,7 +6370,15 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         commit(item.kind === "finding" ? "untriaged" : "open");
         return;
       }
-      if (key.return) commit(item.values[selection] ?? item.values[0]!);
+      if (key.return) {
+        // Enter on the custom row opens the editor rather than recording its
+        // label: the label is affordance, not an answer.
+        if (item.kind === "judgment" && selection === customRowIndex(item)) {
+          openCustom();
+          return;
+        }
+        commit(item.values[selection] ?? item.values[0]!);
+      }
     },
     { isActive: phase === "gate" && panel === null },
   );
@@ -6466,7 +6744,25 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   } else if (phase === "pairconfirm" && pairAsk) {
     content = <ConfirmPair ask={pairAsk.ask} pair={pairAsk.pair} onAnswer={(ok) => void answerPairAsk(ok)} />;
   } else if (phase === "start") {
-    content = (
+    content = panel ? (
+      /* Ctrl+L at the desk: the parent result, read in a pane. Start is
+         unmounted while the pane is up, so typing cannot fall through to the
+         prompt behind it; Esc returns to the follow-up, untouched. */
+      <Scroller
+        key={`panel:${panel.title}`}
+        title={panel.title}
+        lines={panel.lines}
+        notice={notice}
+        height={scrollerH}
+        footer={[
+          { text: "the question desk", color: THEME.accent },
+          { text: " · " },
+          { text: "Esc", color: THEME.key, bold: true },
+          { text: " back to your follow-up", dim: true },
+        ]}
+        onClose={() => setPanel(null)}
+      />
+    ) : (
       <Start
         repo={repo}
         cfg={cfg}
@@ -6477,16 +6773,19 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         setDeskSel={setDeskSel}
         notice={notice}
         pair={currentPairName}
-        onRun={() => {
-          // A question typed in plan mode reads the repository and answers with
-          // a "Plan:". Ask once, rather than relying on a warning line.
-          if (mode === "plan" && looksLikeQuestion(task)) {
-            setClarifySel(0);
-            setPhase("clarify");
-            return;
-          }
-          beginRun();
+        continuing={pendingContinue?.name ?? null}
+        onAbandonContinue={() => {
+          setPendingContinue(null);
+          addLog("continuation abandoned — the desk is a plain question again");
         }}
+        onViewParent={() => {
+          if (!pendingContinue) return;
+          showPanel(
+            `the result you are continuing — run ${pendingContinue.name}`,
+            renderMarkdownLines(pendingContinue.result, wrapWidth()),
+          );
+        }}
+        onRun={() => beginRun()}
         onToggleMode={() => {
           // Persist it: the mode is a preference, like the models, and Tab
           // followed by a restart used to put you back in plan mode.
@@ -6569,6 +6868,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
           mode={effectiveMode}
           revisit={hadAnswers}
           current={current}
+          custom={gateCustom}
           contentH={contentH}
         />
       );
@@ -6596,8 +6896,8 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     ) : report ? (
       <Scroller
         key="result"
-        title="done"
-        lines={renderResultLines(report)}
+        title="done — ai debate concluded"
+        lines={renderAnswerOnlyLines(report, wrapWidth())}
         notice={notice}
         height={scrollerH}
         escLabel={openedFrom === "runs" ? "Esc back to the list" : "Esc back"}
@@ -6608,10 +6908,11 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         // rest of the keys are behind `?`.
         footer={[
           ...hints(
+            ["C", "continue"],
             ["y", "copy answer"],
-            ["Y", "copy all"],
             ["x", "diff + why"],
-            ["n", "question"],
+            ["i", "at a glance"],
+            ["n", "new question"],
             ["?", "keys"],
             ["q", "quit"],
           ),
@@ -6619,6 +6920,12 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         ]}
         onClose={() => exit()}
         onKey={(input) => {
+          // C is the deliberate continue: no arming, no draft warnings. The
+          // reader pressed a dedicated key on purpose.
+          if (input === "C") {
+            startContinue();
+            return true;
+          }
           if (input === "n") {
             setPhase("start");
             return true;

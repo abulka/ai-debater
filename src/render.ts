@@ -318,6 +318,44 @@ export function renderResultLines(
 }
 
 /**
+ * The answer and its sources, nothing else — the result screen's default.
+ *
+ * The commentary (what happened, what changed, decisions open) is one `i` away,
+ * not scrolled above the fold: a reader opening the result wants the answer,
+ * and the counts pushed it down the screen.
+ *
+ * Sections are ordered — answer, sources, then commentary — so "answer-only"
+ * is a prefix, and the first non-answer header ends it.
+ */
+const isAnswerSection = (section: Section): boolean =>
+  /^── (the answer|sources) /.test(section.header);
+
+export function renderAnswerOnlyLines(
+  a: Parameters<typeof resultSections>[0],
+  width = wrapWidth(),
+): StyledLine[] {
+  const out: StyledLine[] = [];
+  for (const section of resultSections(a)) {
+    if (!isAnswerSection(section)) break;
+    out.push(...sectionLines(section, width));
+  }
+  return out;
+}
+
+/** The complement: what happened, what changed, decisions open — behind `i`. */
+export function renderCommentaryLines(
+  a: Parameters<typeof resultSections>[0],
+  width = wrapWidth(),
+): StyledLine[] {
+  const out: StyledLine[] = [];
+  for (const section of resultSections(a)) {
+    if (isAnswerSection(section)) continue;
+    out.push(...sectionLines(section, width));
+  }
+  return out;
+}
+
+/**
  * The exact changes on their own, for the pane that shows them.
  *
  * The CLI prints the diff inline, at the end of the result, which is right for

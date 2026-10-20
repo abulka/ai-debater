@@ -70,6 +70,12 @@ replacement for tests. The models never resolve judgment calls.
 | Model pairs + favourites | **done 18 Oct** — named pairs, OpenCode's favourites inherited read-only |
 | Model ping | **done 18 Oct** — `p`/`P`/`A` in the picker, `adv ping` on the CLI, price and tool-calling badges, the provider pane. Findings in `docs/OPENCODE-MODELS.md` |
 | TUI revise door | **done 18 Oct** — the same revise, reachable from the TUI: `r` on the result screen, past-runs picker (Ctrl+R) |
+| Gate custom answer | **done 20 Oct** — `t` on a judgment call opens a free-text editor; the CLI records any non-number, non-`open` reply (confirmed on a TTY). No schema change: `choice` was always free text |
+| Chained runs | **done 20 Oct** — `adv continue [<run>] [--instructions "…"]`, `Enter` on the result screen; spec in `docs/CONTINUE.md` |
+| Clarify screen | **done 20 Oct, retired same day** — the answer-or-plan question drew (fixed with `src/tui-phase.test.ts`, which pins every `Phase` member to the render chain), then went away entirely: the desk's mode switch is the choice, and asking again after Enter was the same question twice |
+| Gate workflow batch | **done 20 Oct** — the gate opens on the draft; "I don't know" wording; `y` copies the question out; `?` lists the gate's keys; the typing warning retired (clarify asks once); `^T` proven at the gate by pty |
+| Workflow round two | **done 20 Oct** — clarify retired; lean plan-mode drafts (no shell scope-notes, no reciting decisions, answers stay answers); continue seeds a follow-up prompt instead of flooding it; toy fixture's test decisions removed |
+| Workflow round three | **done 20 Oct** — the result screen is the answer (commentary behind `i`); `C` continues forcefully (no arming); `Ctrl+L` re-reads the parent result from the desk; prompts pin the subject to the working directory and keep open decisions to one line; declined-check warnings truncate |
 
 Typecheck must stay clean: `bun run typecheck`. Tests must stay green:
 `bun test` (the gate mapping, resume-model choice and failed-state write are
@@ -94,6 +100,7 @@ adv run "<task>" --dir <repo> [--no-gate] [--general] [--plan] [--strict]
 adv decide [<run>]
 adv run --resume [<run>]
 adv revise [<run>] [--rewrite] # re-ask the gate (prefilled), re-run only the tail
+adv continue [<run>] [--instructions "…"] # new run from a finished one: result + follow-up
 adv status [<run>]
 adv ping <model-or-pair>… [--full] [--timeout <ms>]
 
@@ -171,15 +178,19 @@ supersede rule.
 | ? | Picker help — providers and their bills, the model notes behind the `· note` badge, ping state with every failure found, and the table reference (marks, columns, views, keys) |
 | Y | Picker: export the table as Markdown with a legend — for a second opinion in another LLM — to the clipboard and `~/.local/share/adv/models.md` (overwritten each time). Arms a choice: `e` entire shown table, `v` just the visible window |
 | Tab | New debate: switch subject — **this repository** or a **general question** (also the subject row, Enter toggles) |
-| Enter | New debate: on the prompt, run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
-| ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
+| Enter | New debate: on the prompt, run the typed task — in the subject the desk shows (the mode switch is the choice; Tab corrects it) |
+| ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus **"I don't know — leave it open"** plus **type your own answer…** (`t`, or Enter on that row) |
+| (gate entry) | The draft pane opens itself — the questions judge a text the gate never showed. Esc to the first question; `d` brings the draft back any time |
+| t | Gate: type your own answer to a judgment call, when none of the options makes sense — an inline editor (the `lineedit.ts` motions); Enter records it, Esc back to the options. Recorded verbatim in `gate.json`, shown back on revisit, settled into `decisions.md` like any choice |
+| y | Gate: copy the current question as Markdown — to the clipboard, and `question-<id>.md` in the run directory |
+| ? | Gate: every key this screen answers to — including `^T`, which hands the mouse to the terminal for selecting the *visible* rows (the alternate screen keeps no scrollback) |
 | s | Skip the current question (finding: untriaged; judgment: open) |
 | o | Gate: leave a judgment call open |
 | d | Gate: the answer/plan text these questions are about, rendered. Result: the draft the review saw, before the gate |
 | v | Gate/Result: every verdict, with its evidence |
 | e | Gate: the cited source — the file around the line, or the URL |
 | w | Gate: the current item's whole text, unclipped |
-| i | Gate/Result: the review summary — warnings, checks, refuted claims |
+| i | Gate: the review summary — warnings, checks, refuted claims. Result: the run at a glance — those plus what happened, what changed, decisions open |
 | l | Gate/Result: the full run log |
 | c | Result: the claims the drafter declared, and the options each judgment call offered |
 | R | Result: the reviewer's raw reply, before the tool merged a check result into it |
@@ -188,6 +199,9 @@ supersede rule.
 | y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
+| Enter | Result: inert (a slipped Enter starts nothing). `C` is continue |
+| C | Result: continue this debate — forceful, no arming. The desk asks for your follow-up only (one editable line; the parent's result is composed into the task at run time, never into the prompt); Ctrl+U abandons. `adv continue [<run>] [--instructions "…"]` is the CLI form |
+| Ctrl+L | Desk, while continuing: view the parent result in a pane — Esc straight back to your follow-up |
 | n | Result/Gate/Runs: back to the debate screen — the draft, subject and models you had are kept |
 | Esc | Back, one level: home is the root (debate · runs · settings → home; pick browse → home, pick select/build → debate screen/pairs screen; pairs → settings or debate screen). A panel closes; a result or gate opened from the past-runs list returns to that list (tags, scroll and all). `n` is the unconditional way to the debate screen, `q` quits |
 | n · Esc · q | Error: the same rule — Esc back where you came from, n to the debate screen, q quits. This screen had no handler at all, which is how a reader got stuck on it |
@@ -357,6 +371,8 @@ src/
   prompts.ts        plan/answer prompts; one deliverable per call
   orchestrator.ts   run dirs, state machine, decisions.md
   gate.ts           the CLI gate (interactive or piped)
+  continue.ts       chained runs: the previous result plus a follow-up,
+                    composed into a new task. Tested.
   diff.ts           unified diff + changelog cross-check (a heuristic)
   render.ts         the result as sections, each drawn one way: plain text for
                     a pipe, rendered Markdown for a terminal. Tested.
@@ -618,12 +634,65 @@ spike/              M0
   result on purpose — quitting is `q`, never a stray Escape. The `Scroller`
   swallows Ctrl/meta combos so Ctrl+R cannot also read as `r` (revisit) or
   Ctrl+Y as `y` (copy).
+- **The custom row is a view concern, not a gate item.** `buildItems` never
+  contains it — the model never proposed it — so `GateItem.values` has no
+  entry for it and `commit` must never record its label. The TUI appends it
+  (`displayOptions`), the cursor index for it is `customRowIndex(item)`
+  (== `values.length`), and `selectionForCurrent` lands a recorded free-text
+  answer there. A custom choice must pass through `sanitizeCustomChoice`:
+  `decisions.md` entries read `**choice**`, so a `*` in the text breaks the
+  entry regex and silently drops the decision from the next draft's feed.
+- **Continuing is a dedicated key, and it is forceful.** `C` on the result sets
+  a pending continuation (parent name/dir/mode/result) and an empty prompt;
+  `beginRun` composes the full task at run time. Enter was tried first, with an
+  arm-and-warn for a non-empty desk draft — but the desk always held the task
+  that started the run, so every continue warned, and a slipped Enter started
+  a run. An explicit capital key needs no guard: the guard's real job is on
+  *openRun*, which still never touches `task`. The prompt field is one line;
+  the parent's result travels in state, never in the field. An empty
+  follow-up refuses to run (it would replay the parent verbatim), and Ctrl+U
+  abandons the continuation. It also switches the subject to the parent's
+  mode: a continued question must not start reading a repository.
+  `state.parent` stays display-only provenance — the composed task carries the
+  chain regardless.
+- **The model resolves "this repo" as the git repo, not the directory.** A
+  repo that sits inside a larger checkout (the toy fixture inside ai-debater)
+  made "what is this repo about" come back about the *enclosing* tool — PWD
+  and cwd were correct; the model read upward, and the evidence checker then
+  flagged every citation as missing. The prompts pin the subject to the
+  working directory ("cite only files under it"), which the checker polices
+  afterwards.
+- **The result screen is the answer; the commentary is behind `i`.** What
+  happened, what changed and decisions open pushed the answer below the fold
+  on the very screen that exists to show it. `renderAnswerOnlyLines` /
+  `renderCommentaryLines` split `resultSections` by prefix — the answer and
+  sources are always the first sections — and `i` renders the complement.
+  The CLI's piped report keeps everything: a pipe is for scripting.
+- **The prompt invites what the sandbox denies, and the model apologises in
+  print.** The plan-mode prompt said "or a git command you actually ran" while
+  the drafter agent has no shell — so it tried, was denied, and opened the
+  plan with a scope-note about the commands it could not run. A prompt must
+  only ask for what the agent's tools can produce. The same pass added "do not
+  recite the settled decisions" (a draft quoted them all back as a section)
+  and "answers stay answers" (a question had come back as an options-plan).
+- **The gate opens on the draft, once per entry.** The pane is opened by the
+  phase transition itself — a ref flag set on entry and reset whenever the
+  phase leaves the gate — not by the panel's own state, or closing it would
+  reopen it. `d` is the manual way back; the footer says `d read draft`, not
+  `d plan`, which read like a label rather than an invitation.
+- **`^T` is proven to work at the gate.** The pty probe drives the TUI to a
+  parked run's gate and asserts the mouse-off bytes (`?1006l`/`?1000l`) and the
+  mode-line flip. Selection itself is then the terminal's — the visible rows
+  only, no scrollback on the alternate screen — so when a reader wants text
+  *out*, `y` copies it whole; drag-selection is not a copy API.
 - **Every screen needs a way out, and the text on it has to name a key that
   exists.** The error phase had no input handler: its own words said "Esc for the
   other runs" while the only key that worked was Ctrl+C, so a reader who opened a
   failed run from the past-runs list was stuck. When adding a phase, add its
   handler in the same commit, and make the hint line name the keys the handler
-  answers to.
+  answers to. The handler is not enough on its own: the clarify phase shipped
+  one and still drew a blank frame for lack of a render branch, so
+  `src/tui-phase.test.ts` pins every `Phase` member to the render chain.
 - **Esc means "back", and back is where you came from.** `openedFrom` records
   whether the run on screen came from the past-runs list or from the debate screen, and
   `goBack()` is the only thing that reads it: the result, the gate and the error

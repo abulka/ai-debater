@@ -31,6 +31,9 @@ const PROPOSE_CHECK = `- If a claim could be settled by running ONE command, you
   - "argv" is one executable and its arguments. No shell: no \`sh -c\`, no pipes, no
     \`&&\`, no globs, no redirection, no \`!\`. If the check needs any of those, it
     cannot be expressed — leave the claim unverifiable and say what would settle it.
+  - Propose only simple inspection commands — listing files, counting, searching
+    with plain arguments. Inline code (\`bun -e\`, \`node -e\`), scripts and anything
+    that runs a program you wrote are refused by the allowlist.
   - Propose only commands that inspect the repository or run its own checks.
     Anything else is refused.
   - You never run it and never see the output. Do not claim you did.`;
@@ -65,6 +68,10 @@ ${i.mode === "answer" ? "ANSWER" : "PLAN"}
 ${i.body}`;
 }
 
+const SCOPE = `- The subject is the working directory you are in. It may sit inside a larger git
+  repository: treat this directory as the whole subject, and cite only files
+  under it.`;
+
 function planPrompt(i: DraftInput): string {
   return `You are working in the repository you are in.
 
@@ -74,16 +81,24 @@ What the task asks for decides the deliverable:
   implementation PLAN: steps, risks, open decisions, what to verify. Do not write
   code and do not modify any file.
 - If it asks a QUESTION about the code — how something works, where something
-  lives, why it behaves this way — ANSWER it, citing file and line. Do not turn a
-  question into a plan.
+  lives, why it behaves this way — ANSWER it, citing file and line. Lead with
+  the answer in a few sentences; do not turn a question into a plan with
+  options and steps.
 
 RULES
-- Every statement about the codebase must come from a file you actually read, or a
-  git command you actually ran. Do not guess.
+${SCOPE}
+- Every statement about the codebase must come from a file you actually read.
+  Do not guess. You have no shell: do not run commands, and do not write notes
+  about what you could not run.
 - Do not choose between options where reasonable people could differ. Name the
-  decision and the options, and leave it open for the human.
+  decision and the options, and leave it open for the human — one line each
+  ("Open: X or Y"). No "open for you to decide" sections and no tours of
+  candidates you did not choose.
 - The criteria below are fixed. Do not invent criteria.
-- The settled decisions below are closed. Do not reopen them.
+- The settled decisions below are closed. Do not reopen them, and do not recite
+  them — cite one by id only where it bears on a choice.
+- Keep it as short as the task allows. Do not describe the process or these
+  instructions; the plan or answer stands on its own.
 
 CRITERIA
 ${i.criteria}
@@ -102,6 +117,7 @@ function answerPrompt(i: DraftInput): string {
   return `Answer the question below, thoroughly and concretely.
 
 RULES
+${SCOPE}
 - Lead with the answer in one sentence, then the detail. No preamble.
 - If the question asks which option is best, RECOMMEND ONE and say why. State the
   criteria you used. Never hand the choice back — an option list instead of an
@@ -165,6 +181,7 @@ ${PROPOSE_CHECK}`;
   return `You are an adversarial reviewer of ${subject}${i.mode === "plan" ? " for the repository you are in" : ""}.
 
 RULES
+${SCOPE}
 - Verify. Do not rewrite. NEVER propose an alternative answer${i.mode === "plan" ? " or plan" : ""}.
 ${verifyRule}
 - For every judgment call, list trade-offs for each option against the criteria.
