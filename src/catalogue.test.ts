@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   cannotUseTools,
   costOf,
   formatCost,
   formatCostBasis,
   formatCostFull,
+  loadBestCatalogue,
   parseCatalogue,
   splitRef,
   toolsOf,
@@ -60,11 +64,12 @@ describe("parseCatalogue", () => {
     expect(c.has("opencode-go/space-bunny-free")).toBe(true);
   });
 
-  test("a model whose upstream entry is null is absent, not a crash", () => {
-    // groq/beam-free is literally null in the real catalogue.
+  test("a model whose upstream entry is null is absent, but its `-free` name still says free", () => {
+    // groq/beam-free is literally null in the real catalogue — absent from the
+    // map, and the suffix rule below recovers it.
     const c = parseCatalogue(FIXTURE);
     expect(c.has("groq/beam-free")).toBe(false);
-    expect(costOf(c, "groq/beam-free")).toEqual({ kind: "unknown" });
+    expect(costOf(c, "groq/beam-free")).toEqual({ kind: "free" });
   });
 
   test("REJECTS OpenCode's model.json, which parses as JSON and is not a catalogue", () => {
@@ -109,6 +114,23 @@ describe("cost", () => {
     expect(costOf(c, "groq/compound-mini")).toEqual({ kind: "unknown" });
   });
 
+  test("an absent `-free` model is free: every upstream `-free` is one", () => {
+    // The catalogue has not caught up with opencode/deepseek-v4.1-flash-free;
+    // its name is the evidence. Only a silence infers — never an override.
+    expect(costOf(c, "opencode/deepseek-v4.1-flash-free")).toEqual({ kind: "free" });
+    expect(costOf(c, "nowhere/something-free")).toEqual({ kind: "free" });
+  });
+
+  test("the `-free` inference never overrides what the catalogue states", () => {
+    // Priced stays priced even under a free-shaped name; a bare `free` is a
+    // name, not a tier.
+    const priced = parseCatalogue(
+      JSON.stringify({ p: { id: "p", models: { "x-free": { cost: { input: 1, output: 2 } } } } }),
+    );
+    expect(costOf(priced, "p/x-free")).toMatchObject({ kind: "priced", input: 1 });
+    expect(costOf(c, "nowhere/free")).toEqual({ kind: "unknown" });
+  });
+
   test("an absent model is unknown, never free", () => {
     expect(costOf(c, "nowhere/nothing")).toEqual({ kind: "unknown" });
   });
@@ -120,6 +142,49 @@ describe("cost", () => {
 
   test("a price without tiers is not flagged", () => {
     expect(costOf(c, "groq/qwen/qwen3.8-27b")).toMatchObject({ kind: "priced", tiered: false });
+  });
+});
+
+describe("loadBestCatalogue", () => {
+  const tmp = () => mkdtemp(path.join(os.tmpdir(), "adv-catalogue-"));
+  const shaped = (model: string) =>
+    JSON.stringify({ p: { id: "p", models: { [model]: { cost: { input: 1, output: 2 } } } } });
+  const stamp = async (file: string, ageMs: number) => {
+    // mtime is the age: utimes sets it back by ageMs.
+    const t = new Date(Date.now() - ageMs);
+    const { utimes } = await import("node:fs/promises");
+    await utimes(file, t, t);
+  };
+
+  test("the newer copy wins", async () => {
+    const dir = await tmp();
+    const opencode = path.join(dir, "opencode.json");
+    const adv = path.join(dir, "adv.json");
+    await writeFile(opencode, shaped("old-model"));
+    await writeFile(adv, shaped("new-model"));
+    await stamp(opencode, 10 * 24 * 60 * 60 * 1000);
+    await stamp(adv, 1000);
+    const r = await loadBestCatalogue(opencode, adv);
+    expect(r.catalogue.has("p/new-model")).toBe(true);
+  });
+
+  test("a newer copy that parses to nothing falls back to the older", async () => {
+    const dir = await tmp();
+    const opencode = path.join(dir, "opencode.json");
+    const adv = path.join(dir, "adv.json");
+    await writeFile(opencode, shaped("good-model"));
+    await writeFile(adv, "{not json");
+    await stamp(opencode, 10 * 24 * 60 * 60 * 1000);
+    await stamp(adv, 1000);
+    const r = await loadBestCatalogue(opencode, adv);
+    expect(r.catalogue.has("p/good-model")).toBe(true);
+  });
+
+  test("no files is an empty catalogue, not a throw", async () => {
+    const dir = await tmp();
+    const r = await loadBestCatalogue(path.join(dir, "a.json"), path.join(dir, "b.json"));
+    expect(r.catalogue.size).toBe(0);
+    expect(r.ageMs).toBeNull();
   });
 });
 

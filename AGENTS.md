@@ -417,10 +417,24 @@ spike/              M0
   the models.dev `tool_call: false` flag (cannot be a repository agent, free), and
   the ping (a real call, and the only trustworthy one). Do not let anything above
   the ping claim a model works.
-- **Absent metadata is `?`, never `free`.** 77 of the 651 listed models have no
-  cost upstream — including `opencode-go/beam-free`, whose catalogue entry is
-  literally `null`. Rendering an unknown cost as "free" bills real money at 3am,
-  so `costOf` has a third state and every renderer must keep it.
+- **Absent metadata is `?`, never `free` — with one suffix-shaped exception.**
+  77 of the 651 listed models have no cost upstream. Rendering an unknown cost
+  as "free" bills real money at 3am, so `costOf` keeps its third state — but a
+  ref missing from the catalogue whose name ends in `-free` reads `free`:
+  every `-free` ref models.dev lists (68 of them, all providers) is free,
+  with no priced and no null counterexample. It fills silences only, never
+  overrides a listed price, and a bare `free` is a name, not a tier.
+- **The price catalogue refreshes itself.** OpenCode's
+  `~/.cache/opencode/models.json` has no refresh owner — nothing fetches it
+  on any schedule (a 6-day-old file proved it). Past a week stale `adv`
+  fetches models.dev into its own `~/.local/share/adv/catalogue.json` in the
+  background at picker open and reads whichever copy is newer, falling back
+  to the older when the newer parses to nothing. Never writes OpenCode's file.
+- **The serving-tier strip is shared, not copied.** The ACD resolver once had
+  its own weaker chain and lost every `-contributor` serving while the
+  benchmarks kept theirs. `stripTier` is now exported from `benchmarks.ts`
+  and `resolveAcd` calls it — one vocabulary, one place, so the two columns
+  cannot drift apart again.
 - **`model.json` and `models.json` are one character apart and read differently.**
   OpenCode's favourites state is `~/.local/state/opencode/model.json`; the
   catalogue is `~/.cache/opencode/models.json`. Reading the wrong one does not

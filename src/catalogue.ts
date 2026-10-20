@@ -27,11 +27,17 @@
  * from here, and whether a call actually succeeds comes from `probe.ts`.
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { advDataRoot } from "./orchestrator.ts";
 
-/** What a model costs. `unknown` is a real answer and is never rendered "free". */
+/**
+ * What a model costs. `unknown` is a real answer and is never rendered
+ * "free" — with one documented exception: a ref the catalogue has never
+ * heard of whose name ends in `-free` (`costOf` infers from the suffix, which
+ * is unanimous upstream). Unknown is silence; free must be said.
+ */
 export type Cost =
   | { kind: "free" }
   | {
@@ -85,6 +91,24 @@ export const catalogueFile = (): string => {
   const base = xdg && xdg.trim() ? xdg : path.join(os.homedir(), ".cache");
   return path.join(base, "opencode", "models.json");
 };
+
+/**
+ * Where `adv` keeps its own copy. OpenCode's file has no refresh owner —
+ * nothing fetches it on any schedule — so `adv` fetches models.dev itself
+ * past staleness and reads whichever copy is newer. Never written into
+ * OpenCode's file: that one is not ours to touch.
+ */
+export const advCatalogueFile = (): string => path.join(advDataRoot(), "catalogue.json");
+
+/** What `adv` fetches: the same upstream OpenCode caches. Keyless, one GET. */
+export const MODELS_DEV_URL = "https://models.dev/api.json";
+
+/**
+ * Refresh when the cache is older than this. A week, the same threshold the
+ * benchmark caches use — models.dev moves slowly, and the picker already
+ * refreshes on that cadence.
+ */
+export const CATALOGUE_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Split a ref the way the catalogue is keyed.
@@ -215,6 +239,77 @@ export async function loadCatalogue(
   return { catalogue: parseCatalogue(raw), ageMs };
 }
 
+/**
+ * One file read: text plus mtime age, or null when there is no file. The two
+ * catalogue copies are compared by this, newest wins.
+ */
+async function readCopy(file: string): Promise<{ raw: string; ageMs: number } | null> {
+  let raw: string;
+  try {
+    raw = await readFile(file, "utf8");
+  } catch {
+    return null;
+  }
+  let ageMs = 0;
+  try {
+    ageMs = Date.now() - (await stat(file)).mtimeMs;
+  } catch {
+    /* read it, could not stat it: age zero, newest by default */
+  }
+  return { raw, ageMs: Math.max(0, ageMs) };
+}
+
+/**
+ * The catalogue from whichever copy is newer — OpenCode's or `adv`'s own —
+ * falling back to the older when the newer parses to nothing. A corrupt new
+ * fetch never blanks the rows while yesterday's file still parses.
+ */
+export async function loadBestCatalogue(
+  opencodeFile: string = catalogueFile(),
+  advFile: string = advCatalogueFile(),
+): Promise<{ catalogue: Catalogue; ageMs: number | null }> {
+  const [opencode, adv] = await Promise.all([readCopy(opencodeFile), readCopy(advFile)]);
+  const first = adv && (!opencode || adv.ageMs <= opencode.ageMs) ? adv : opencode;
+  const second = first === adv ? opencode : adv;
+  if (first) {
+    const parsed = parseCatalogue(first.raw);
+    if (parsed.size > 0) return { catalogue: parsed, ageMs: first.ageMs };
+  }
+  if (second) {
+    const parsed = parseCatalogue(second.raw);
+    if (parsed.size > 0) return { catalogue: parsed, ageMs: second.ageMs };
+  }
+  return { catalogue: EMPTY, ageMs: first?.ageMs ?? second?.ageMs ?? null };
+}
+
+/**
+ * Fetch models.dev and store it as `adv`'s own copy. Throws on network
+ * failure, a non-200, or a payload that parses to nothing — callers report
+ * it and keep the old cache, so a bad fetch never blanks the price column.
+ */
+export async function fetchCatalogue(
+  url: string = MODELS_DEV_URL,
+  file: string = advCatalogueFile(),
+  timeoutMs = 30_000,
+): Promise<{ catalogue: Catalogue; at: string; count: number }> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { Accept: "application/json", "User-Agent": "adv-catalogue" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    throw new Error(`catalogue fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!res.ok) throw new Error(`catalogue fetch failed: HTTP ${res.status}`);
+  const raw = await res.text();
+  const catalogue = parseCatalogue(raw);
+  if (catalogue.size === 0) throw new Error("catalogue fetch failed: payload parsed to nothing");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, raw.endsWith("\n") ? raw : `${raw}\n`);
+  return { catalogue, at: new Date().toISOString(), count: catalogue.size };
+}
+
 const usd = (n: number): string => `$${n.toFixed(n < 0.01 ? 4 : 2)}`;
 
 /**
@@ -264,8 +359,18 @@ export function formatCostFull(c: Cost): string {
 }
 
 /** `null` when the catalogue has never heard of the model. */
-export const costOf = (catalogue: Catalogue, ref: string): Cost =>
-  catalogue.get(ref)?.cost ?? { kind: "unknown" };
+export const costOf = (catalogue: Catalogue, ref: string): Cost => {
+  const entry = catalogue.get(ref);
+  if (entry) return entry.cost;
+  // A missing entry whose name ends in `-free` is a free serving the catalogue
+  // has not caught up with: every `-free` ref models.dev lists (68 of them,
+  // all providers) is `kind: "free"`, with no priced and no null
+  // counterexample. So the name is evidence, and only for a silence — a
+  // listed price is never overridden. A bare `free` is a name, not a tier.
+  const model = splitRef(ref)?.model ?? ref;
+  if (model.endsWith("-free")) return { kind: "free" };
+  return { kind: "unknown" };
+};
 
 export const toolsOf = (catalogue: Catalogue, ref: string): boolean | undefined =>
   catalogue.get(ref)?.toolCall;

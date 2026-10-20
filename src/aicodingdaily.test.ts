@@ -110,6 +110,38 @@ describe("resolveAcd", () => {
     ]);
     expect(resolveAcd(cat, direct, "x/glm-5-3")?.normalised).toBe(false);
   });
+
+  test("a serving tier strips to the measured model, marked", () => {
+    const spark = buildAcdIndex([
+      { id: "muse-spark-1-3", points: 53.01, costPerPrompt: 0.01, effort: "Max", harness: "OpenCode" },
+    ]);
+    // No canonical id: the served ref alone must reach the base slug.
+    const cat: Catalogue = new Map([["p/muse-spark-1-3-contributor", { cost: { kind: "free" } }]]);
+    const r = resolveAcd(cat, spark, "p/muse-spark-1-3-contributor")!;
+    expect(r.points).toBe(53.01);
+    expect(r.costPerPrompt).toBe(0.01);
+    expect(r.sourceId).toBe("muse-spark-1-3");
+    expect(r.normalised).toBe(true);
+  });
+
+  test("an exact id beats the stripped form", () => {
+    const both = buildAcdIndex([
+      { id: "foo", points: 10 },
+      { id: "foo-free", points: 11 },
+    ]);
+    const cat: Catalogue = new Map();
+    const r = resolveAcd(cat, both, "p/foo-free")!;
+    // Exact on the served chain wins; the strip never runs.
+    expect(r.points).toBe(11);
+    expect(r.sourceId).toBe("foo-free");
+  });
+
+  test("`-pro` stays a miss — possibly a sibling model", () => {
+    const base = buildAcdIndex([{ id: "foo", points: 10 }]);
+    const cat: Catalogue = new Map();
+    expect(resolveAcd(cat, base, "p/foo-pro")).toBeNull();
+    expect(resolveAcd(cat, base, "p/foo-image")).toBeNull();
+  });
 });
 
 describe("formatAcdBadge + formatPromptCost", () => {

@@ -25,7 +25,7 @@ import {
 } from "./gate-model.ts";
 import { familyClash, familyOf, isReferenceRow, listModels, orderedModels, providerOf, rankModels } from "./models.ts";
 import type { FilterMode, PickerView } from "./models.ts";
-import { costOf, cannotUseTools, formatCostBasis, loadCatalogue, type Catalogue, type PriceBasis } from "./catalogue.ts";
+import { CATALOGUE_STALE_AFTER_MS, costOf, cannotUseTools, fetchCatalogue, formatCostBasis, loadBestCatalogue, type Catalogue, type PriceBasis } from "./catalogue.ts";
 import {
   countScoredBySource,
   emptyBenchmarks,
@@ -2837,6 +2837,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   /** One fetch at a time per source: settings can be opened twice before either lands. */
   const benchFetching = useRef(false);
   const acdFetching = useRef(false);
+  const catFetching = useRef(false);
   const [authed, setAuthed] = useState<Map<string, "env" | "stored">>(new Map());
   /** Refs with a call in flight, so a row can say `…` instead of pretending. */
   const [pinging, setPinging] = useState<Set<string>>(new Set());
@@ -3050,9 +3051,13 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       filterHistoryLoaded.current = true;
       void loadFilterHistory().then(setFilterHistory);
     }
-    // The catalogue and our own probe record do not depend on the listing, so
-    // they do not wait for it. Neither throws.
-    void loadCatalogue().then((r) => setCatalogue(r.catalogue));
+    // The catalogue likewise: OpenCode's copy or `adv`'s own, whichever is
+    // newer — and past a week, `adv` fetches models.dev itself in the
+    // background, because nothing else refreshes that file on any schedule.
+    void loadBestCatalogue().then((r) => {
+      setCatalogue(r.catalogue);
+      if (r.ageMs === null || r.ageMs > CATALOGUE_STALE_AFTER_MS) void refreshCatalogue(true);
+    });
     void loadProbes().then(setProbes);
     // Whether an AA key is stored decides the benchmark source. Never throws.
     void loadAAKey().then((k) => setAAKeySet(!!k));
@@ -3221,6 +3226,26 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (!silent) setNotice(err instanceof Error ? err.message : String(err));
     } finally {
       acdFetching.current = false;
+    }
+  }
+
+  /**
+   * Refresh the price catalogue: one keyless models.dev GET into `adv`'s own
+   * copy, then the price cells re-render. Same silent/loud contract as the
+   * other two refreshes — a failed fetch keeps the old file with nothing
+   * said, so offline degrades to `?` rather than erroring.
+   */
+  async function refreshCatalogue(silent = false) {
+    if (catFetching.current) return;
+    catFetching.current = true;
+    try {
+      const r = await fetchCatalogue();
+      setCatalogue(r.catalogue);
+      if (!silent) setNotice(`price catalogue updated · ${r.count} models · fetched ${r.at.slice(0, 10)}`);
+    } catch (err) {
+      if (!silent) setNotice(err instanceof Error ? err.message : String(err));
+    } finally {
+      catFetching.current = false;
     }
   }
 

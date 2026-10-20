@@ -28,7 +28,7 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { advDataRoot } from "./orchestrator.ts";
-import { isStale } from "./benchmarks.ts";
+import { isStale, stripTier } from "./benchmarks.ts";
 import type { Catalogue } from "./catalogue.ts";
 
 /** The leaderboard. One keyless GET carries every scored model. */
@@ -196,8 +196,12 @@ export interface ResolvedAcd {
  *
  * Tiers: the exact normalised canonical id, then its suffix chain, then the
  * served ref's own chain — and every form also tries its hyphen-stripped
- * remainders for vendor-dropped slugs. Every tier past the first marks `≈`.
- * Null when nothing matches — and null is blank in the row, never a 0.
+ * remainders for vendor-dropped slugs. Last resort is the serving/effort
+ * strip both resolvers share (`-contributor`, `-free`, `-batch`, `-nitro`,
+ * then `-thinking`, `-max`, …): the same weights under a different serving
+ * arrangement, so `muse-spark-1-3-contributor` reads `muse-spark-1-3`'s row.
+ * Every tier past the first marks `≈`. Null when nothing matches — and null
+ * is blank in the row, never a 0.
  */
 export function resolveAcd(
   catalogue: Catalogue,
@@ -218,6 +222,25 @@ export function resolveAcd(
         ...(entry.harness ? { harness: entry.harness } : {}),
         sourceId: entry.id,
         normalised: entry.id.toLowerCase() !== lookup.toLowerCase() || i > 0,
+      };
+    }
+  }
+  // Last resort, shared with the benchmarks: one serving/effort tier off the
+  // last segment. Anything else-shaped (`-pro`, `-image`) stays a miss —
+  // `stripTier` never strips those, because that could be a sibling model.
+  for (const lookup of lookups) {
+    for (const form of acdFormsOf(lookup)) {
+      const stripped = stripTier(form);
+      if (!stripped) continue;
+      const entry = acd.byId.get(normalizeAcdId(stripped));
+      if (!entry) continue;
+      return {
+        points: entry.points,
+        ...(entry.costPerPrompt !== undefined ? { costPerPrompt: entry.costPerPrompt } : {}),
+        ...(entry.effort ? { effort: entry.effort } : {}),
+        ...(entry.harness ? { harness: entry.harness } : {}),
+        sourceId: entry.id,
+        normalised: true,
       };
     }
   }

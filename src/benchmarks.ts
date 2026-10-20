@@ -407,8 +407,12 @@ const SERVING_SUFFIX = /-(contributor|free|batch|nitro)$/;
  * first (`baseKeyOf`), then the serving suffix. Null when the form names no
  * tier — nothing to strip is not a weaker match. Never strips to nothing:
  * a bare `-free` is a name, like `baseKeyOf`'s bare `-max`.
+ *
+ * Exported for the ACD resolver, which matches through the same suffix
+ * vocabulary: two copies of this rule once drifted apart, and the ACD
+ * column lost every `-contributor` serving while the benchmarks kept theirs.
  */
-function stripTier(form: string): string | null {
+export function stripTier(form: string): string | null {
   const parts = form.split("/");
   const last = parts[parts.length - 1]!;
   let s = baseKeyOf(last);
