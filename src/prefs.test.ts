@@ -12,6 +12,8 @@ import {
   loadCeiling,
   loadDisabledProviders,
   loadFilterHistory,
+  loadHighlightColours,
+  loadHighlights,
   loadRefreshDays,
   loadTaskCeiling,
   recordFilterUse,
@@ -22,11 +24,15 @@ import {
   saveCeiling,
   saveDisabledProviders,
   saveFilterHistory,
+  saveHighlightColours,
+  saveHighlightPrefs,
+  saveHighlights,
   saveRefreshDays,
   saveTaskCeiling,
   stepCeiling,
   type FilterEntry,
 } from "./prefs.ts";
+import { DEFAULT_HIGHLIGHTS } from "./highlight.ts";
 
 const tmp = () => mkdtemp(path.join(os.tmpdir(), "adv-prefs-"));
 
@@ -228,6 +234,74 @@ describe("picker prefs", () => {
       entries = recordFilterUse(entries, { prev: null, text: `m${i}`, mode: "and" });
     expect(entries).toHaveLength(FILTER_HISTORY_MAX);
     expect(entries[0]).toEqual({ text: `m${FILTER_HISTORY_MAX}`, mode: "and" });
+  });
+});
+
+describe("highlights", () => {
+  test("a missing or malformed file is the seeded default", async () => {
+    const dir = await tmp();
+    expect(await loadHighlights(path.join(dir, "picker.json"))).toEqual(DEFAULT_HIGHLIGHTS);
+    const bad = path.join(dir, "bad.json");
+    await writeFile(bad, "{not json");
+    expect(await loadHighlights(bad)).toEqual(DEFAULT_HIGHLIGHTS);
+    for (const v of [{}, { highlights: "deepseek" }, { highlights: [1, null] }, []]) {
+      const f = path.join(dir, `${Math.random()}.json`);
+      await writeFile(f, JSON.stringify(v));
+      expect(await loadHighlights(f)).toEqual(DEFAULT_HIGHLIGHTS);
+    }
+  });
+
+  test("an explicit empty list stays empty — deleting the seed means none", async () => {
+    const file = path.join(await tmp(), "picker.json");
+    await writeFile(file, JSON.stringify({ highlights: [] }));
+    expect(await loadHighlights(file)).toEqual([]);
+  });
+
+  test("patterns round-trip cleaned, keeping the other keys", async () => {
+    const file = path.join(await tmp(), "picker.json");
+    await saveCeiling(1.5, file);
+    await saveHighlights(["  muse 1.3  ", "MUSE 1.3", "---", "deepseek flash v4.1"], file);
+    expect(await loadHighlights(file)).toEqual(["muse 1.3", "deepseek flash v4.1"]);
+    expect(await loadCeiling(file)).toBe(1.5);
+    await saveHighlights([], file);
+    expect(await loadHighlights(file)).toEqual([]);
+    expect(await loadCeiling(file)).toBe(1.5);
+  });
+
+  test("colour overrides round-trip, keyed case-insensitively, and only for palette colours", async () => {
+    const file = path.join(await tmp(), "picker.json");
+    await saveHighlightColours({ "Muse 1.3": "ansi256(69)", "---": "ansi256(69)", muse: "cyan" }, file);
+    expect(await loadHighlightColours(file)).toEqual({ "muse 1.3": "ansi256(69)" });
+    expect(await loadHighlights(file)).toEqual(DEFAULT_HIGHLIGHTS);
+  });
+
+  test("colour overrides default to none, and nonsense is none, never a throw", async () => {
+    const dir = await tmp();
+    expect(await loadHighlightColours(path.join(dir, "picker.json"))).toEqual({});
+    const bad = path.join(dir, "bad.json");
+    await writeFile(bad, "{not json");
+    expect(await loadHighlightColours(bad)).toEqual({});
+    for (const v of [{}, { highlightColours: "blue" }, { highlightColours: [1] }, []]) {
+      const f = path.join(dir, `${Math.random()}.json`);
+      await writeFile(f, JSON.stringify(v));
+      expect(await loadHighlightColours(f)).toEqual({});
+    }
+  });
+
+  test("one write carries patterns and colours together, pruning orphaned colours", async () => {
+    const file = path.join(await tmp(), "picker.json");
+    await saveHighlightPrefs(
+      ["muse 1.3", "deepseek flash v4.1"],
+      {
+        "muse 1.3": "ansi256(69)",
+        gone: "ansi256(221)",
+      },
+      file,
+    );
+    expect(await loadHighlights(file)).toEqual(["muse 1.3", "deepseek flash v4.1"]);
+    // `gone` names no kept pattern, so it is pruned rather than stored.
+    expect(await loadHighlightColours(file)).toEqual({ "muse 1.3": "ansi256(69)" });
+    expect(await loadCeiling(file)).toBe(DEFAULT_CEILING);
   });
 });
 

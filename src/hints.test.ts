@@ -12,6 +12,8 @@ const base: HintState = {
   filterMode: "and",
   ceiling: 0.8,
   taskCeiling: 0.5,
+  highlightCount: 1,
+  highlightsOn: true,
 };
 
 describe("buildHintText", () => {
@@ -83,6 +85,13 @@ describe("buildHintText", () => {
   test("the filter history key is named on every view, and says it saves", () => {
     expect(buildHintText(base)).toContain("R filter history (saves this filter)");
     expect(buildHintText({ ...base, view: "provider" })).toContain("R filter history");
+  });
+
+  test("M names the mute both ways, and only when a pattern exists", () => {
+    expect(buildHintText(base)).toContain("M highlights off");
+    expect(buildHintText({ ...base, highlightsOn: false })).toContain("M highlights on");
+    const none = buildHintText({ ...base, highlightCount: 0 });
+    expect(none).not.toContain("M highlights");
   });
 });
 

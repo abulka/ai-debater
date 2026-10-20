@@ -3,7 +3,6 @@ import {
   familyClash,
   familyOf,
   groupModels,
-  isReferenceRow,
   matchesFilter,
   orderedModels,
   parseFilterTerms,
@@ -86,27 +85,6 @@ describe("providerOf", () => {
     expect(providerOf("opencode-go/space-bunny-free")).toBe("opencode-go");
     expect(providerOf("groq/groq/compound-mini")).toBe("groq");
     expect(providerOf("local/lmstudio/qwen3.8-27b-mlx")).toBe("local");
-  });
-});
-
-describe("isReferenceRow", () => {
-  test("pins DeepSeek V4.1 Flash in all its servings, and nothing else", () => {
-    for (const ref of [
-      "opencode-go/deepseek-v4.1-flash",
-      "deepseek/deepseek-v4-1-flash",
-      "opencode/deepseek-v4.1-flash-free",
-      "opencode-go/deepseek-v4-1-flash-1017",
-    ]) {
-      expect(isReferenceRow(ref)).toBe(true);
-    }
-    for (const ref of [
-      "opencode-go/deepseek-v4-pro",
-      "opencode-go/qwen3.8-flash",
-      "opencode-go/glm-5.3-flash",
-      "deepseek/deepseek-v3",
-    ]) {
-      expect(isReferenceRow(ref)).toBe(false);
-    }
   });
 });
 

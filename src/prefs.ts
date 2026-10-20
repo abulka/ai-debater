@@ -13,6 +13,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { configDir } from "./config.ts";
+import { cleanHighlightPatterns, DEFAULT_HIGHLIGHTS, isPaletteColour, isUsablePattern } from "./highlight.ts";
 import type { FilterMode } from "./models.ts";
 
 /** Output $ per million tokens. $0.80 keeps the value view to the cheap. */
@@ -259,4 +260,93 @@ export async function saveFilterHistory(
     if (out.length >= FILTER_HISTORY_MAX) break;
   }
   await writePrefs(file, { filterHistory: out });
+}
+
+/**
+ * The picker's auto-highlight patterns: filter texts whose matching rows
+ * read in their own colour. Personal, like the ceilings and the provider
+ * list. A missing or malformed file is the seeded default; an explicit
+ * empty array stays empty — deleting the seed means "no highlights".
+ */
+export async function loadHighlights(file: string = pickerPrefsFile()): Promise<string[]> {
+  let raw: Record<string, unknown>;
+  try {
+    raw = await readPrefs(file);
+  } catch {
+    return [...DEFAULT_HIGHLIGHTS];
+  }
+  if (!("highlights" in raw)) return [...DEFAULT_HIGHLIGHTS];
+  const v = raw.highlights;
+  if (!Array.isArray(v)) return [...DEFAULT_HIGHLIGHTS];
+  if (v.length === 0) return [];
+  // Our own writer never stores unusable entries, so a non-empty list that
+  // cleans to nothing is a hand edit or corruption — the default, not empty.
+  const cleaned = cleanHighlightPatterns(v.filter((p): p is string => typeof p === "string"));
+  return cleaned.length > 0 ? cleaned : [...DEFAULT_HIGHLIGHTS];
+}
+
+export async function saveHighlights(
+  patterns: readonly string[],
+  file: string = pickerPrefsFile(),
+): Promise<void> {
+  await writePrefs(file, { highlights: cleanHighlightPatterns(patterns) });
+}
+
+/**
+ * Per-entry colour overrides from `^O`, keyed by lowercased pattern
+ * (matching is case-insensitive). Only usable patterns with real palette
+ * colours survive — a hand edit or an older palette falls back to the
+ * derived colour rather than storing a colour nothing can paint.
+ */
+export async function loadHighlightColours(
+  file: string = pickerPrefsFile(),
+): Promise<Record<string, string>> {
+  const v = (await readPrefs(file)).highlightColours;
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out: Record<string, string> = {};
+  for (const [raw, colour] of Object.entries(v as Record<string, unknown>)) {
+    const key = raw.trim().toLowerCase();
+    if (!key || !isUsablePattern(raw) || !isPaletteColour(colour)) continue;
+    if (key in out) continue;
+    out[key] = colour;
+  }
+  return out;
+}
+
+export async function saveHighlightColours(
+  colours: Readonly<Record<string, string>>,
+  file: string = pickerPrefsFile(),
+): Promise<void> {
+  const out: Record<string, string> = {};
+  for (const [raw, colour] of Object.entries(colours)) {
+    const key = raw.trim().toLowerCase();
+    if (!key || !isUsablePattern(raw) || !isPaletteColour(colour)) continue;
+    if (key in out) continue;
+    out[key] = colour;
+  }
+  await writePrefs(file, { highlightColours: out });
+}
+
+/**
+ * One write for both halves of the highlights screen. The two saves above
+ * each read-modify-write the file, so a handler that changes patterns and
+ * colours together (rename carries the colour, delete drops it) must use
+ * this — two writes in a row would let the second clobber the first.
+ */
+export async function saveHighlightPrefs(
+  patterns: readonly string[],
+  colours: Readonly<Record<string, string>>,
+  file: string = pickerPrefsFile(),
+): Promise<void> {
+  const clean = cleanHighlightPatterns(patterns);
+  const kept = new Set(clean.map((p) => p.toLowerCase()));
+  const out: Record<string, string> = {};
+  for (const [raw, colour] of Object.entries(colours)) {
+    const key = raw.trim().toLowerCase();
+    if (!key || !kept.has(key)) continue;
+    if (!isPaletteColour(colour)) continue;
+    if (key in out) continue;
+    out[key] = colour;
+  }
+  await writePrefs(file, { highlights: clean, highlightColours: out });
 }

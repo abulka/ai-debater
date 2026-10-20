@@ -5,6 +5,7 @@ import {
   contentRows,
   filterHistoryListHeight,
   gateDetailBudget,
+  highlightListHeight,
   logWindow,
   LOG_MAX_ROWS,
   MIN_CONTENT_ROWS,
@@ -121,6 +122,10 @@ describe("screen budgets", () => {
     expect(filterHistoryListHeight(40, false)).toBe(34);
     expect(filterHistoryListHeight(40, true)).toBe(32);
   });
+  test("the highlight list counts its chrome and the notice — input plus a two-line subtitle", () => {
+    expect(highlightListHeight(40, false)).toBe(31);
+    expect(highlightListHeight(40, true)).toBe(29);
+  });
   test("every list keeps at least one row", () => {
     expect(scrollerHeight(3, true)).toBe(1);
     expect(pickListHeight(3, true)).toBe(1);
@@ -128,6 +133,7 @@ describe("screen budgets", () => {
     expect(runsListHeight(3)).toBe(1);
     expect(providerFilterListHeight(3, true)).toBe(1);
     expect(filterHistoryListHeight(3, true)).toBe(1);
+    expect(highlightListHeight(3, true)).toBe(1);
   });
 });
 

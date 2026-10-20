@@ -141,6 +141,16 @@ export function filterHistoryListHeight(contentH: number, notice: boolean): numb
 }
 
 /**
+ * Highlight-list chrome: header (2) + subtitle (2) + input (2) + list
+ * margin (1) + hints (2). The notice takes two rows (margin + line). One
+ * row more than the filter history for the input, and one more for the
+ * matching rule the subtitle names.
+ */
+export function highlightListHeight(contentH: number, notice: boolean): number {
+  return Math.max(1, contentH - 9 - (notice ? 2 : 0));
+}
+
+/**
  * Provider-filter chrome: header (2) + subtitle (1) + list margin (1) +
  * hints (2). The notice takes two rows (margin + line). No current line, no
  * warnings — every row is one provider, and the list is a dozen rows, so

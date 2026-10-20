@@ -24,8 +24,9 @@ import {
   type GateAnswer,
   type GateItem,
 } from "./gate-model.ts";
-import { familyClash, familyOf, isReferenceRow, listModels, orderedModels, providerOf, rankModels } from "./models.ts";
+import { familyClash, familyOf, listModels, matchesFilter, orderedModels, providerOf, rankModels } from "./models.ts";
 import type { FilterMode, PickerView } from "./models.ts";
+import { highlightFor, highlightRules, isUsablePattern, nextFreeHighlightColour, highlightColourName, DEFAULT_HIGHLIGHTS, HIGHLIGHT_MAX } from "./highlight.ts";
 import { costOf, cannotUseTools, fetchCatalogue, formatCostBasis, loadBestCatalogue, type Catalogue, type PriceBasis } from "./catalogue.ts";
 import {
   countScoredBySource,
@@ -50,7 +51,7 @@ import {
 } from "./aicodingdaily.ts";
 import { loadAAKey, saveAAKey } from "./aa-key.ts";
 import { refreshAllBenchmarks, verifyAAKey } from "./artificialanalysis.ts";
-import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_REFRESH_DAYS, DEFAULT_TASK_CEILING, addFilterHistory, cycleRefreshDays, loadCeiling, loadDisabledProviders, loadFilterHistory, loadRefreshDays, loadTaskCeiling, recordFilterUse, refreshDaysMs, removeFilterHistory, roundCeiling, saveCeiling, saveDisabledProviders, saveFilterHistory, saveRefreshDays, saveTaskCeiling, stepCeiling, type FilterEntry } from "./prefs.ts";
+import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_REFRESH_DAYS, DEFAULT_TASK_CEILING, addFilterHistory, cycleRefreshDays, loadCeiling, loadDisabledProviders, loadFilterHistory, loadHighlightColours, loadHighlights, loadRefreshDays, loadTaskCeiling, recordFilterUse, refreshDaysMs, removeFilterHistory, roundCeiling, saveCeiling, saveDisabledProviders, saveFilterHistory, saveHighlightPrefs, saveRefreshDays, saveTaskCeiling, stepCeiling, type FilterEntry } from "./prefs.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, clickY, setMouseAccepting, wheelRows } from "./mouse.ts";
 import { rowAt } from "./click.ts";
 import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES, type ProviderBill } from "./providers.ts";
@@ -120,6 +121,7 @@ import {
   LOG_MAX_ROWS,
   MIN_CONTENT_ROWS,
   filterHistoryListHeight,
+  highlightListHeight,
   pairsListHeight,
   pickContentWants,
   pickHintAllowed,
@@ -144,6 +146,7 @@ type Phase =
   | "providers"
   | "provfilter"
   | "filterhist"
+  | "highlights"
   | "pairs"
   | "pairname"
   | "pairconfirm"
@@ -241,16 +244,19 @@ function Header({ right }: { right: string }) {
 }
 
 /**
- * A footer of keys: the key itself takes the accent and its label recedes, so
- * the eye can find "which key" without reading "what it does".
+ * A footer of keys: the key itself takes the key colour and its label
+ * recedes, so the eye can find "which key" without reading "what it does".
+ * Green on every screen — selection, headers and the view mode already spend
+ * cyan, so cyan keys would dissolve into the chrome instead of reading as
+ * "press me".
  */
 function hints(...pairs: [string, string][]): StyledLine {
   return pairs.flatMap(([key, what], i) =>
     i === 0
-      ? [{ text: key, color: THEME.accent, bold: true }, { text: ` ${what}` }]
+      ? [{ text: key, color: THEME.key, bold: true }, { text: ` ${what}` }]
       : [
           { text: " · " },
-          { text: key, color: THEME.accent, bold: true },
+          { text: key, color: THEME.key, bold: true },
           { text: ` ${what}` },
         ],
   );
@@ -848,6 +854,7 @@ function Settings({
   pair,
   aaKey,
   refreshDays,
+  highlights,
 }: {
   selection: number;
   saved: string | null;
@@ -857,7 +864,15 @@ function Settings({
   aaKey: boolean;
   /** The reader's cache window in days: the auto-refresh staleness for every keyless cache. */
   refreshDays: number;
+  /** The picker's auto-highlight patterns, for the row's summary. */
+  highlights: string[];
 }) {
+  const hlSummary =
+    highlights.length === 0
+      ? "none — every row the same"
+      : highlights.length <= 2
+        ? highlights.join(", ")
+        : `${highlights.slice(0, 2).join(", ")} +${highlights.length - 2} more`;
   const rows: { label: string; value: string }[] = [
     // Matched by model, not by position: a pair saved under another name is
     // still the pair in use, and showing nothing would read as "no pair".
@@ -866,6 +881,7 @@ function Settings({
       label: "benchmarks",
       value: aaKey ? "artificialanalysis.ai · key set" : "artificialanalysis.ai · no key — OpenRouter benchmarks",
     },
+    { label: "auto-highlight models", value: hlSummary },
     { label: "auto-refresh caches", value: formatRefreshDays(refreshDays) },
     { label: "refresh caches now", value: "benchmarks · ACD · prices" },
     { label: "back", value: "" },
@@ -1012,6 +1028,9 @@ function Pick({
   hintLines,
   clicksEnabled,
   onSelectRow,
+  rules,
+  highlightsOn,
+  highlightCount,
 }: {
   role: "drafter" | "reviewer";
   /** Browse: Enter does nothing, Esc goes home. Select: Enter assigns, Esc returns to the debate screen. */
@@ -1078,6 +1097,12 @@ function Pick({
   clicksEnabled: boolean;
   /** Move the cursor to this item index. A click selects, never commits. */
   onSelectRow: (itemIndex: number) => void;
+  /** Auto-highlight rules, newest first: the first matching pattern colours the row. */
+  rules: { pattern: string; colour: string }[];
+  /** Session mute for the rows above: off, every row reads the same. */
+  highlightsOn: boolean;
+  /** How many patterns are stored — the count line only names the mute when one exists. */
+  highlightCount: number;
 }) {  const { rows, items, favourite } = list;
   const cursor = items[index]?.row ?? 0;
   /**
@@ -1307,7 +1332,7 @@ function Pick({
             columns the width yielded, exactly as the rows below do, so the
             labels always sit over their column. The ranking's column rides in
             purple — the score, or the measured cost with `S` — so the sort
-            reads apart from the cyan chrome and the yellow reference rows;
+            reads apart from the cyan chrome and the highlight rows;
             the count line still names it in words, so a monochrome terminal
             loses nothing. */}
         <Line
@@ -1408,13 +1433,15 @@ function Pick({
           // The whole row lights up, not just the ref. With the price and status
           // in fixed columns 60 characters away, a cursor on the ref alone left
           // the reader guessing which price belonged to which model.
-          // Reference rows light up yellow instead: DeepSeek V4.1 Flash is the
-          // reader's pinned comparison line, so it reads at a glance. The
-          // cursor keeps its own colour — selection beats reference — and the
-          // name on the row still says what it is, so monochrome loses nothing.
-          const anchor = !selected && isReferenceRow(m);
-          const accent = selected ? THEME.accent : anchor ? THEME.warn : undefined;
-          const dimmed = !selected && !anchor;
+          // Highlighted rows light up in their pattern's colour instead, so a
+          // pinned comparison line reads at a glance. The cursor keeps its
+          // own colour — selection beats highlight — and the name on the row
+          // still says what it is, so monochrome loses nothing.
+          const hl = !selected
+            ? highlightFor(m, scoresFor(catalogue, benchmarks, m)?.name ?? null, rules)
+            : null;
+          const accent = selected ? THEME.accent : (hl?.colour ?? undefined);
+          const dimmed = !selected && !hl;
           const itemIndex = rowToItem.get(absolute) ?? -1;
           return (
             <Box
@@ -1431,7 +1458,7 @@ function Pick({
                   is in them. */}
               <Text dimColor={!selected}>{favourite.has(m) ? "★ " : "  "}</Text>
               <Text color={accent}>{selected ? "❯ " : "  "}</Text>
-              <Text color={accent} bold={selected} dimColor={dead && !selected && !anchor} wrap="truncate">
+              <Text color={accent} bold={selected} dimColor={dead && !selected && !hl} wrap="truncate">
                 {pad(shorten(m, refWidth - 1), refWidth)}
               </Text>
               <Text color={accent} dimColor={dimmed && !dead} wrap="truncate">{pad(cost, costW)}</Text>
@@ -1474,7 +1501,7 @@ function Pick({
                   {sepPrompt && <Text> </Text>}
                 </>
               )}
-              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead && !anchor} wrap="truncate">
+              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead && !hl} wrap="truncate">
                 {pad(status, badgeW)}
               </Text>
             </Box>
@@ -1515,6 +1542,7 @@ function Pick({
                       `${view === "taskcost" ? ` ≤ $${taskCeiling.toFixed(2)}/task${rankAcd ? " (ACD)" : ""}` : ""}` +
                       `${priceBasis === "high" ? " · price: high tier" : ""}` +
                       `${hideUnscored ? " · hiding unscored" : ""}` +
+                      `${!highlightsOn && highlightCount > 0 ? " · highlights off (M)" : ""}` +
                       `${!aaKey ? " · OpenRouter scores only — key: settings → benchmarks" : ""}`,
                     dim: true,
                   },
@@ -1712,7 +1740,7 @@ function providerLines(
   ]);
   lines.push([
     {
-      text: "DeepSeek V4.1 Flash rows read yellow — a pinned reference for comparing the rest. The cursor keeps its own colour; the name on the row still says what it is.",
+      text: "rows matching your auto-highlight patterns read in their own colours — M mutes them for this session, settings → auto-highlight models to edit them. The cursor keeps its own colour; the name on the row still says what it is.",
       dim: true,
     },
   ]);
@@ -1793,7 +1821,11 @@ function Providers({
       height={height}
       footer={[
         { text: "the picker", color: THEME.accent },
-        { text: " · ↑↓ scroll · Esc back", dim: true },
+        { text: " · " },
+        { text: "↑↓", color: THEME.key, bold: true },
+        { text: " scroll · ", dim: true },
+        { text: "Esc", color: THEME.key, bold: true },
+        { text: " back", dim: true },
       ]}
       onClose={onClose}
     />
@@ -1970,6 +2002,118 @@ function FilterHistory({
               ["D", "clear all"],
               ["Esc", "back"],
             )}
+          />
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * Auto-highlight patterns: one text line plus the list.
+ *
+ * Every entry is live at once — this is the list of matches, not a set of
+ * alternatives: a row reads in the colour of its first match, newest first.
+ * Matching is the picker's own loose rule with AND logic inside each
+ * pattern (`muse 1.3` needs both words; `"deep 4.1"` quotes an ordered
+ * phrase). `Tab` loads the selected entry into the line to rename it —
+ * `d` stays typeable (it is the first letter of `deepseek`), so deleting
+ * is `Ctrl+D`; `Ctrl+O` recolours the selected entry; `Ctrl+U` clears the
+ * line. The footer keys read green, like every footer now: cyan is the
+ * selection on this screen, so cyan keys would dissolve into it.
+ */
+function Highlights({
+  rules,
+  input,
+  caret,
+  index,
+  height,
+  notice,
+  editing,
+  muted,
+}: {
+  rules: { pattern: string; colour: string }[];
+  /** The text being typed. */
+  input: string;
+  /** The caret inside the text, clamped to it where it renders. */
+  caret: number;
+  index: number;
+  /** Visible rows, from the viewport budget: the frame must fit the terminal. */
+  height: number;
+  notice: string | null;
+  /** The pattern being renamed, or null when the line adds a new one. */
+  editing: string | null;
+  /** The rows are muted in the picker this session (M) — the editor still shows every colour. */
+  muted: boolean;
+}) {
+  const width = Math.max(8, useTerminalWidth() - 6);
+  const startRef = useRef(0);
+  const maxStart = Math.max(0, rules.length - height);
+  const prev = Math.min(Math.max(0, startRef.current), maxStart);
+  const start =
+    index < prev ? index : index >= prev + height ? Math.min(index - height + 1, maxStart) : prev;
+  startRef.current = start;
+
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="auto-highlight models" />
+      </Box>
+      <Text dimColor>
+        {rules.length === 0
+          ? "no highlights — every row reads the same"
+          : `${muted ? "off in the picker (M) · " : ""}every one of the ${rules.length} is live — a row reads in the colour of its first match, newest first`}
+      </Text>
+      <Text dimColor>loose matching, like the filter: every word must hit · "…" quotes an ordered phrase</Text>
+      <Box marginTop={1}>
+        <Text dimColor>{editing ? "rename   " : "pattern  "}</Text>
+        {input ? (
+          <FieldText text={input} cursor={caret} />
+        ) : (
+          <Text>
+            <Text dimColor>type a filter text…</Text>
+            <Text inverse> </Text>
+          </Text>
+        )}
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        {rules.slice(start, start + height).map((r, i) => {
+          const absolute = start + i;
+          const selected = absolute === index;
+          const clipped = r.pattern.length > width - 6 ? shorten(r.pattern, width - 6) : r.pattern;
+          return (
+            <Box key={r.pattern.toLowerCase()}>
+              <Text color={selected ? THEME.accent : undefined}>{selected ? "❯ " : "  "}</Text>
+              <Text color={r.colour}>■ </Text>
+              <Text
+                color={selected ? THEME.accent : undefined}
+                bold={selected}
+                wrap="truncate"
+              >
+                {clipped}
+              </Text>
+            </Box>
+          );
+        })}
+        {rules.length === 0 && <Text dimColor>e.g. deepseek flash v4.1 — Enter adds it</Text>}
+      </Box>
+      {notice && (
+        <Box marginTop={1}>
+          <Text dimColor>{notice}</Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text>
+          <Line
+            spans={hints(
+              ["Enter", editing ? "keep" : "add"],
+              ["Tab", "rename"],
+              ["^O", "recolour"],
+              ["↑↓", "choose"],
+              ["^D", "delete"],
+              ["^U", "clear"],
+              ["Esc", editing ? "cancel" : "back"],
+            ).map((s) => (s.color ? s : { text: s.text, dim: true }))}
           />
         </Text>
       </Box>
@@ -2908,6 +3052,25 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
    * back with the old file and wipe what the session just recorded.
    */
   const filterHistoryLoaded = useRef(false);
+  const [highlights, setHighlights] = useState<string[]>([...DEFAULT_HIGHLIGHTS]);
+  const highlightsLoaded = useRef(false);
+  const [hlInput, setHlInput] = useState('');
+  const [hlCaret, setHlCaret] = useState(0);
+  const [hlIndex, setHlIndex] = useState(0);
+  /** The pattern being renamed, or null when the line adds a new one. */
+  const [hlEditing, setHlEditing] = useState<string | null>(null);
+  /**
+   * Per-entry colour overrides from `^O`, keyed by lowercased pattern.
+   * Absent means the hash-derived colour — the common case stores nothing.
+   */
+  const [hlColours, setHlColours] = useState<Record<string, string>>({});
+  const highlightColoursLoaded = useRef(false);
+  /**
+   * Session mute for the auto-highlight rows. On, rows read in their
+   * pattern's colour; off, every row reads the same. Session-only, like the
+   * views — deleting the patterns is the persistent off.
+   */
+  const [highlightsOn, setHighlightsOn] = useState(true);
   /** Output $/M ceiling for the value view. Personal, in `prefs.ts`. */
   const [ceiling, setCeiling] = useState(DEFAULT_CEILING);
   /** Measured $/task ceiling for the taskcost view. Personal, like the value one. */
@@ -3167,6 +3330,14 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       filterHistoryLoaded.current = true;
       void loadFilterHistory().then(setFilterHistory);
     }
+    if (!highlightsLoaded.current) {
+      highlightsLoaded.current = true;
+      void loadHighlights().then(setHighlights);
+    }
+    if (!highlightColoursLoaded.current) {
+      highlightColoursLoaded.current = true;
+      void loadHighlightColours().then(setHlColours);
+    }
     // The catalogue likewise: OpenCode's copy or `adv`'s own, whichever is
     // newer — and past the reader's window, `adv` fetches models.dev itself
     // in the background, because nothing else refreshes that file on any schedule.
@@ -3203,6 +3374,16 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     setNotice(null);
     setPhase("settings");
     void ensureModelData();
+  }
+
+  /** Settings → auto-highlight patterns: one text line plus the list. */
+  function openHighlights() {
+    setHlInput("");
+    setHlCaret(0);
+    setHlIndex(0);
+    setHlEditing(null);
+    setNotice(null);
+    setPhase("highlights");
   }
 
   /** Home → models browser: the same list, with Enter inert. */
@@ -3473,7 +3654,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     setPhase("pairs");
   }
 
-  /* Settings: pairs, the benchmarks key, the cache window, a manual refresh.
+  /* Settings: pairs, the benchmarks key, highlights, the cache window, a manual refresh.
      The key lives in the user's config dir alone, never in a repo. */
   useInput(
     (_input, key) => {
@@ -3487,7 +3668,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         return;
       }
       if (key.downArrow) {
-        setSettingsSel((s) => Math.min(4, s + 1));
+        setSettingsSel((s) => Math.min(5, s + 1));
         return;
       }
       if (!key.return) return;
@@ -3505,6 +3686,10 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         return;
       }
       if (settingsSel === 2) {
+        openHighlights();
+        return;
+      }
+      if (settingsSel === 3) {
         const next = cycleRefreshDays(refreshDays);
         void (async () => {
           await saveRefreshDays(next);
@@ -3516,7 +3701,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         })();
         return;
       }
-      if (settingsSel === 3) {
+      if (settingsSel === 4) {
         // Loud, all three at once: the reader asked, so each reports — the
         // per-cache notices land on the next screen, the confirmation stays here.
         setSaved("refreshing benchmarks, AI Coding Daily and prices…");
@@ -4030,6 +4215,9 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     });
   }, [allModels, openCode, filter, filterMode, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, disabledProviders, priceBasis, catalogue, benchmarks]);
 
+  /** Auto-highlight rules, newest first — what colours the picker's rows. */
+  const hlRules = useMemo(() => highlightRules(highlights, hlColours), [highlights, hlColours]);
+
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
    *
@@ -4475,6 +4663,21 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         setPickIndex(0);
         return;
       }
+      // `M` mutes the auto-highlight rows for this session: the patterns
+      // stay stored, the rows just stop reading in colour. Session-only,
+      // like the views — deleting the patterns is the persistent off. With
+      // no patterns there is nothing to mute, so the key names where to add
+      // some instead of flipping a switch that changes nothing.
+      if (input === "M") {
+        setPingArmed(null);
+        commitFilter(true);
+        if (hlRules.length === 0) {
+          setNotice("no highlight patterns — settings → auto-highlight models to add some");
+          return;
+        }
+        setHighlightsOn((on) => !on);
+        return;
+      }
       // `D` ranks the flat views by AI Coding Daily — points for the order,
       // ACD $/task for the taskcost ceiling — instead of AA/OpenRouter. Ignored
       // in the provider view, which is grouped rather than ranked; the state
@@ -4832,6 +5035,219 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     { isActive: phase === "filterhist" },
   );
 
+  /**
+   * The highlights screen. One text line plus the list: typing goes to the
+   * line, `Enter` adds it at the front, `Tab` loads the selected entry into
+   * the line to rename it in place, `↑↓` moves the cursor, `Ctrl+D`
+   * deletes the selected entry (`d` stays typeable — it is the first letter
+   * of `deepseek`), `Ctrl+U` clears the line, `Esc` cancels a rename, then
+   * leaves for settings.
+   */
+  useInput(
+    (input, key) => {
+      if (key.escape) {
+        if (hlEditing !== null) {
+          setHlEditing(null);
+          setHlInput("");
+          setHlCaret(0);
+          setNotice(null);
+          return;
+        }
+        setPhase("settings");
+        return;
+      }
+      if (key.upArrow) {
+        setHlIndex((i) => clampIndex(i - 1, hlRules.length));
+        setNotice(null);
+        return;
+      }
+      if (key.downArrow) {
+        setHlIndex((i) => clampIndex(i + 1, hlRules.length));
+        setNotice(null);
+        return;
+      }
+      // `Ctrl+D` deletes the selected entry — `d` alone must keep typing.
+      // Deleting the entry being renamed cancels the rename with it, and a
+      // stored `^O` colour goes with the pattern it belonged to.
+      if (key.ctrl && input === "d") {
+        const at = hlRules[hlIndex];
+        if (!at) return;
+        const lower = at.pattern.toLowerCase();
+        const next = highlights.filter((p) => p.toLowerCase() !== lower);
+        const colours = { ...hlColours };
+        delete colours[lower];
+        setHighlights(next);
+        setHlColours(colours);
+        setHlIndex((i) => clampIndex(i, next.length));
+        if (hlEditing !== null && hlEditing.toLowerCase() === lower) {
+          setHlEditing(null);
+          setHlInput("");
+          setHlCaret(0);
+        }
+        setNotice(`removed "${at.pattern}"`);
+        void saveHighlightPrefs(next, colours);
+        return;
+      }
+      // `Ctrl+O` recolours the selected entry: the next palette colour after
+      // its own that no other entry reads in, so a recolour never steals a
+      // colour in use. The choice is stored beside the patterns; cycling
+      // back onto the derived colour drops the override again, so the common
+      // case stores nothing. Every colour taken needs more entries than the
+      // palette holds, and then there is nothing to cycle to.
+      if (key.ctrl && input === "o") {
+        const at = hlRules[hlIndex];
+        if (!at) return;
+        const lower = at.pattern.toLowerCase();
+        const recoloured = nextFreeHighlightColour(hlRules, at.pattern);
+        if (recoloured === null) {
+          setNotice("every colour is already in use");
+          return;
+        }
+        const derived = highlightRules([at.pattern])[0]!.colour;
+        const colours = { ...hlColours };
+        if (recoloured === derived) delete colours[lower];
+        else colours[lower] = recoloured;
+        setHlColours(colours);
+        setNotice(`"${at.pattern}" now reads ${highlightColourName(recoloured)}`);
+        void saveHighlightPrefs(highlights, colours);
+        return;
+      }
+      // `Tab` renames: the selected entry moves into the line, and `Enter`
+      // keeps it in place rather than front-bumping a copy. Tab never types
+      // here — it would land a literal tab in the pattern.
+      if (key.tab) {
+        const at = hlRules[hlIndex];
+        if (!at) return;
+        setHlEditing(at.pattern);
+        setHlInput(at.pattern);
+        setHlCaret(at.pattern.length);
+        setNotice(`renaming "${at.pattern}" — Enter keeps it, Esc cancels`);
+        return;
+      }
+      if (key.return) {
+        const text = hlInput.trim();
+        // An empty line adds nothing; while renaming it cancels instead.
+        if (!text) {
+          if (hlEditing !== null) {
+            setHlEditing(null);
+            setNotice(null);
+          }
+          return;
+        }
+        if (!isUsablePattern(text)) {
+          setNotice(`"${text}" matches nothing — quotes and separators alone highlight no row`);
+          return;
+        }
+        const nameOf = (ref: string): string | null =>
+          scoresFor(catalogue, benchmarks, ref)?.name ?? null;
+        const hits = allModels.filter((ref) => matchesFilter(ref, nameOf(ref), text, "and")).length;
+        const counted =
+          allModels.length === 0
+            ? ""
+            : hits === 0
+              ? " — matches nothing in the list"
+              : ` — ${hits} model${hits === 1 ? "" : "s"} here`;
+        // Renaming keeps the entry where it was: position is priority, so a
+        // rename must not front-bump. The `^O` colour moves with the text.
+        if (hlEditing !== null) {
+          if (text.toLowerCase() === hlEditing.toLowerCase()) {
+            setHlEditing(null);
+            setHlInput("");
+            setHlCaret(0);
+            setNotice(null);
+            return;
+          }
+          if (highlights.some((p) => p.toLowerCase() !== hlEditing.toLowerCase() && p.toLowerCase() === text.toLowerCase())) {
+            setNotice(`"${text}" is already highlighted`);
+            return;
+          }
+          const next = highlights.map((p) => (p.toLowerCase() === hlEditing.toLowerCase() ? text : p));
+          const colours = { ...hlColours };
+          const carried = colours[hlEditing.toLowerCase()];
+          delete colours[hlEditing.toLowerCase()];
+          if (carried !== undefined) colours[text.toLowerCase()] = carried;
+          setHighlights(next);
+          setHlColours(colours);
+          setHlEditing(null);
+          setHlInput("");
+          setHlCaret(0);
+          setNotice(`renamed "${hlEditing}" → "${text}"${counted}`);
+          void saveHighlightPrefs(next, colours);
+          return;
+        }
+        if (highlights.some((p) => p.toLowerCase() === text.toLowerCase())) {
+          setNotice(`"${text}" is already highlighted`);
+          return;
+        }
+        const next = [text, ...highlights].slice(0, HIGHLIGHT_MAX);
+        setHighlights(next);
+        setHlInput("");
+        setHlCaret(0);
+        setHlIndex(0);
+        setNotice(`added "${text}"${counted}`);
+        void saveHighlightPrefs(next, hlColours);
+        return;
+      }
+      // Line editing for the input, readline-style: arrows step, ^A/^E jump,
+      // option-arrows (and Ctrl-arrows) word-jump, ^K kills to the end, ^U
+      // clears the line.
+      const hcur = Math.max(0, Math.min(hlCaret, hlInput.length));
+      if (key.ctrl && input === "u") {
+        setHlInput("");
+        setHlCaret(0);
+        return;
+      }
+      if (key.ctrl && input === "a") {
+        setHlCaret(0);
+        return;
+      }
+      if (key.ctrl && input === "e") {
+        setHlCaret(hlInput.length);
+        return;
+      }
+      if (isWordLeft(key, input)) {
+        setHlCaret(wordLeft(hlInput, hcur));
+        return;
+      }
+      if (isWordRight(key, input)) {
+        setHlCaret(wordRight(hlInput, hcur));
+        return;
+      }
+      if (isKillToEnd(key, input)) {
+        setHlInput(killToEnd(hlInput, hcur));
+        setHlCaret(hcur);
+        setNotice(null);
+        return;
+      }
+      if (key.leftArrow) {
+        setHlCaret((c) => Math.max(0, Math.min(c, hlInput.length) - 1));
+        return;
+      }
+      if (key.rightArrow) {
+        setHlCaret((c) => Math.min(hlInput.length, Math.max(0, c) + 1));
+        return;
+      }
+      if (key.backspace) {
+        if (hcur > 0) {
+          setHlInput(hlInput.slice(0, hcur - 1) + hlInput.slice(hcur));
+          setHlCaret(hcur - 1);
+        }
+        return;
+      }
+      if (key.delete) {
+        if (hcur < hlInput.length) setHlInput(hlInput.slice(0, hcur) + hlInput.slice(hcur + 1));
+        return;
+      }
+      if (key.ctrl || key.meta) return;
+      if (input) {
+        setNotice(null);
+        setHlInput(hlInput.slice(0, hcur) + input + hlInput.slice(hcur));
+        setHlCaret(hcur + input.length);
+      }
+    },
+    { isActive: phase === "highlights" },
+  );
+
   const items = useMemo(() => (head ? buildItems(head.claims, head.review) : []), [head]);
   const runDir = head ? displayPath(head.paths.dir) : "";
 
@@ -5089,6 +5505,10 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     (rows) => setFilterHistIndex((i) => clampIndex(i + Math.sign(rows), filterHistory.length)),
     phase === "filterhist",
   );
+  useWheelScroll(
+    (rows) => setHlIndex((i) => clampIndex(i + Math.sign(rows), hlRules.length)),
+    phase === "highlights",
+  );
 
   function moveRuns(next: number) {
     const index = Math.max(0, Math.min(runs.length - 1, next));
@@ -5317,7 +5737,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       showPanel(
         "keys on this screen",
         RESULT_KEYS.map((k) =>
-          spans({ text: `  ${k.key.padEnd(12)}`, color: THEME.accent, bold: true }, k.what),
+          spans({ text: `  ${k.key.padEnd(12)}`, color: THEME.key, bold: true }, k.what),
         ),
         14,
       );
@@ -5801,6 +6221,8 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     filterMode,
     ceiling,
     taskCeiling,
+    highlightCount: hlRules.length,
+    highlightsOn,
   };
   const hintText = buildHintText(hintState);
   const hintW = hintWidth(termCols);
@@ -5819,6 +6241,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   const pickH = pickListHeight(contentH, notice !== null, hintLines.length);
   const runsH = runsListHeight(contentH);
   const filterHistH = filterHistoryListHeight(contentH, notice !== null);
+  const highlightH = highlightListHeight(contentH, notice !== null);
 
   /* The exit recap: the alternate screen leaves with the log, so the shell
      gets the record instead — state, run directory, and where the plan went.
@@ -5850,7 +6273,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     );
   } else if (phase === "settings" && cfg) {
     content = (
-      <Settings selection={settingsSel} saved={saved} pair={currentPairName} aaKey={aaKeySet} refreshDays={refreshDays} />
+      <Settings selection={settingsSel} saved={saved} pair={currentPairName} aaKey={aaKeySet} refreshDays={refreshDays} highlights={highlights} />
     );
   } else if (phase === "aakey") {
     content = <AAKey value={aaKeyInput} caret={aaKeyCaret} busy={aaKeyBusy} notice={notice} hasKey={aaKeySet} />;
@@ -5887,6 +6310,9 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         taskCeiling={taskCeiling}
         hintLines={hintLines}
         clicksEnabled={mouseReporting && altScreen}
+        rules={highlightsOn ? hlRules : []}
+        highlightsOn={highlightsOn}
+        highlightCount={hlRules.length}
         onSelectRow={(i) => {
           setPingArmed(null);
           commitFilter(false);
@@ -5924,6 +6350,19 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         index={filterHistIndex}
         height={filterHistH}
         notice={notice}
+      />
+    );
+  } else if (phase === "highlights") {
+    content = (
+      <Highlights
+        rules={hlRules}
+        input={hlInput}
+        caret={hlCaret}
+        index={hlIndex}
+        height={highlightH}
+        notice={notice}
+        editing={hlEditing}
+        muted={!highlightsOn}
       />
     );
   } else if (phase === "pairs") {
@@ -6039,7 +6478,9 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
           height={scrollerH}
           footer={[
             { text: `gate ${index + 1} of ${items.length}`, color: THEME.accent },
-            { text: " · Esc back to the question", dim: true },
+            { text: " · " },
+            { text: "Esc", color: THEME.key, bold: true },
+            { text: " back to the question", dim: true },
           ]}
           onClose={() => setPanel(null)}
         />
@@ -6087,7 +6528,9 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         height={scrollerH}
         footer={[
           { text: "the result", color: THEME.accent },
-          { text: " · Esc back", dim: true },
+          { text: " · " },
+          { text: "Esc", color: THEME.key, bold: true },
+          { text: " back", dim: true },
         ]}
         onClose={() => setPanel(null)}
       />

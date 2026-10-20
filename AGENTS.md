@@ -145,8 +145,8 @@ supersede rule.
 | Key | Action |
 | --- | --- |
 | m / n / p / s / q | Home — models browser · new debate · past runs · settings · quit (↑↓ · Enter works too; cursor starts on models browser) |
-| Ctrl+P | Settings — pairs, the benchmarks key, the cache window, a manual refresh (from home or the debate screen; Esc home) |
-| ↑↓ · Enter | Settings: on **edit drafter/reviewer pairs**, the list — saved pairs last used first, then pairs past runs used, then `new pair…` (pick a drafter, a reviewer, name it), then `save current as…` |
+| Ctrl+P | Settings — pairs, the benchmarks key, highlights, the cache window, a manual refresh (from home or the debate screen; Esc home) |
+| ↑↓ · Enter | Settings: on **edit drafter/reviewer pairs**, the list — saved pairs last used first, then pairs past runs used, then `new pair…` (pick a drafter, a reviewer, name it), then `save current as…`. On **auto-highlight models**, one text line plus the list — Enter adds at the front, Tab renames in place, `^O` recolours, `^D` deletes, `^U` clears, Esc cancels a rename, then back |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it (settings only — inert from the debate screen). A pair that belongs to a run is not stored here and goes when the run does |
 | r / R | Pairs: rename the highlighted saved pair — `r` edits its name, `R` prefills a name suggested from its models (settings only). The name prompt prefills a suggestion for new saves too |
 | ↑↓ · Enter | New debate: on **drafter/reviewer preset**, choose a saved preset (creating and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt and snaps the cursor back to it |
@@ -159,10 +159,12 @@ supersede rule.
 | D | Picker: rank the flat views by AI Coding Daily (points for the order, ACD $/task for the taskcost ceiling) instead of Artificial Analysis/OpenRouter — session-only, ignored in the provider view |
 | S | Picker: rank the flat views by measured cost ($/task, or ACD $/task with D) instead of by score, cheapest first — session-only, ignored in the provider view |
 | H | Picker: hide models with no benchmark, in every view |
+| M | Picker: mute the auto-highlight rows for this session — the patterns stay stored, the rows just stop reading in colour. Session-only, like the views; deleting the patterns is the persistent off. Only named when a pattern exists; the count line says `highlights off (M)` while muted |
 | L | Picker: lock to the selected provider — the view, the filter and H all still apply inside it, and so does A. Press again to clear |
 | F | Picker: providers on/off — every provider with a checkbox for whether the picker shows it. Space toggles, `a` all on, `o` all off, Esc returns. Applies to every view and persists in `~/.config/adv/picker.json` |
 | Tab | Picker: cycle the filter AND (every word, the default) → OR (any word) → OFF (text kept, ignored) — session-only, in every view. `"…"` quotes an ordered phrase (`"deep 4.1"` lands on `deepseek-v4.1-flash`) |
 | R | Picker: filter history — every filter used on the list, newest first. Pausing, moving (↑↓ wheel pages), any command key, Enter, Esc, and `R` itself all record. One provisional entry per visit, replaced as you refine. `d` removes one, `D` clears all after `y`. Persists in `~/.config/adv/picker.json` |
+| highlights | Settings → **auto-highlight models**: the list of matches — every entry is live at once, a row reading in the colour of its first match, newest first. Each entry is a filter text (`muse 1.3`, `"deep 4.1"`) with loose AND matching inside it, against the ref and the AA name. `deepseek flash v4.1` is the seeded entry, editable and deletable like any other; empty means none. Tab renames in place (position is priority, so a rename never front-bumps); `^O` recolours the selected entry with the next palette colour no other entry uses (stored beside the patterns; rename carries it, delete drops it). `M` in the picker mutes the rows for the session. Each entry's colour derives from its text; `muse 3.1` matches nothing (the ref is `muse-spark-1.3`). Persists in `~/.config/adv/picker.json` |
 | ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |
 | < > | Cheap views: move the active ceiling — value in $0.10 steps, taskcost geometrically (×1.5 / ÷1.5). Capped at the dearest measured cost, so `>` past everything is a no-op. Saved to `~/.config/adv/picker.json` |
 | ? | Picker: what each provider bills to, whether a key is present, what the ★ ✓ ✗ marks mean, and every failure a ping has found |
@@ -359,7 +361,11 @@ src/
                     a pipe, rendered Markdown for a terminal. Tested.
   markdown.ts       Markdown -> styled, pre-wrapped terminal lines. Styles only,
                     never removal; one line = one row. Tested.
-  theme.ts          the palette, as roles; ANSI codes for the CLI. Tested.
+  theme.ts          the palette, as roles, plus the highlight palette;
+                    ANSI codes for the CLI. Tested.
+  highlight.ts      configurable auto-highlight rows: filter texts with
+                    derived colours, matched with the picker's own rule.
+                    Tested.
   mouse.ts          wheel reports: enable/disable, decode, and the "is this
                     typed input or a report" test. Tested.
   clipboard.ts      copying the answer out: pbcopy/wl-copy, then OSC 52, then
@@ -473,12 +479,14 @@ spike/              M0
   `recordProbe` reads the whole file and writes one entry back, so a field the
   reader drops is a field every subsequent write erases. That bug silently
   un-marked every `T`.
-- **Every footer lights its keys the same way.** The picker's hint area used to
-  be one grey string while every other footer styled its keys; now
-  `hintRowSpans` (in `hints.ts`) splits a wrapped row into key/label spans and
-  the `Pick` footer renders keys in green + bold (`THEME.key`) through `Line` —
-  deliberately not `hints()` accent cyan, which the picker already spends on
-  selection, headers and the view mode. Only the part before a word’s first NBSP can be a key (`D`, `Tab` —
+- **Every footer lights its keys the same way.** Command keys read green +
+  bold (`THEME.key`) on every screen — the picker footer (`hintRowSpans` in
+  `hints.ts` splits a wrapped row into key/label spans and renders them
+  through `Line`), every `hints()` footer, the `?` key list, and the three
+  `Scroller` footers that used to leave their keys dim. Green deliberately,
+  not accent cyan: selection, headers and the view mode are all cyan, so cyan
+  keys would dissolve into the chrome instead of reading as "press me". Only
+  the part before a word’s first NBSP can be a key (`D`, `Tab` —
   never the `AA`/`OR` in the tail), and concatenating the spans reproduces the row
   byte-for-byte, so the one-row budget is untouched.
 - **A model row must never exceed the terminal's real width.** The picker lays
@@ -548,6 +556,24 @@ spike/              M0
   palette names has an ANSI code, because `toAnsi` silently drops the ones it
   does not know — which would be the TUI and the CLI describing one run two ways.
   Colour costs no width, so the row invariant above is untouched by any of it.
+- **Highlight rows are decoration in `src/highlight.ts`, outside the roles.**
+  The old hardwired `isReferenceRow` is gone: each pattern matches with the
+  picker's own `matchesFilter` (ref and AA name, quoted phrases), newest first,
+  and each colour hashes from its text into `HIGHLIGHT_PALETTE` — thirteen
+  across the spectrum (gold, blue, indigo, violet, orange, pink, coral, red,
+  sand, mauve, grey, amber, sky), every one mid-bright for a black background
+  (the old violet sank into it). Never cyan or teal (selection and chrome),
+  green (footer keys and confirmations — green stays reserved), magenta (the
+  sort column) or yellow (warnings); red appears in no picker row, only on
+  confirm screens. Orange sits at the index the seed hashes to, so the default
+  row keeps its colour — keep it there when extending the palette. `^O`
+  cycles the selected entry past colours other entries use (a stored override;
+  rename carries it, delete drops it) and reports when every colour is taken;
+  cycling home drops the override again. `muse 3.1` matching
+  nothing is the rule working, not a bug: the ref is `muse-spark-1.3` and
+  digit order matters. A quote-only or separator-only pattern parses to
+  nothing or to terms that can never hit, so the screen refuses it before it
+  is stored — an empty term list would match everything.
 - **The commentary is built as spans and printed as text.** `resultSections`
   returns styled lines; `renderResult` joins their text for anything that is not
   a terminal. That is why `adv run > plan.md` is unchanged by a colour change:
