@@ -122,8 +122,11 @@ describe("allProviderBills", () => {
 });
 
 describe("noteForModel", () => {
-  test("a contributor model carries the privacy note", () => {
-    expect(noteForModel("opencode-go/muse-spark-1.3-contributor")).toContain("privacy");
+  test("a contributor model carries the training-data note, not a price claim", () => {
+    const note = noteForModel("opencode-go/muse-spark-1.3-contributor");
+    expect(note).toContain("train");
+    expect(note).toContain("price tier");
+    expect(note).not.toContain("Blocked");
   });
 
   test("a free model says free is not the same as reachable", () => {

@@ -54,7 +54,7 @@ import { refreshAllBenchmarks, verifyAAKey } from "./artificialanalysis.ts";
 import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_REFRESH_DAYS, DEFAULT_TASK_CEILING, addFilterHistory, cycleRefreshDays, loadCeiling, loadDisabledProviders, loadFilterHistory, loadHighlightColours, loadHighlights, loadRefreshDays, loadTaskCeiling, recordFilterUse, refreshDaysMs, removeFilterHistory, roundCeiling, saveCeiling, saveDisabledProviders, saveFilterHistory, saveHighlightPrefs, saveRefreshDays, saveTaskCeiling, stepCeiling, type FilterEntry } from "./prefs.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, clickY, setMouseAccepting, wheelRows } from "./mouse.ts";
 import { rowAt } from "./click.ts";
-import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES, type ProviderBill } from "./providers.ts";
+import { allProviderBills, authedProviders, MODEL_NOTES, noteForModel, PROVIDER_NOTES, type ProviderBill } from "./providers.ts";
 import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, probeHint, type ProbeCache } from "./probe.ts";
 import { readOpenCodeModels } from "./opencode-state.ts";
 import {
@@ -1608,13 +1608,15 @@ function wrapNote(text: string, width: number, indent = 4): string[] {
 }
 
 /**
- * The provider pane: what each provider is, and which bill it lands on.
+ * The help pane (`?`): live state first, reference below.
  *
- * Answers the question the picker cannot: `opencode-go` is a subscription,
- * `opencode` is a different account that meters per token, and on this machine
- * the second one had no credit. Everything here is derived — the credential from
- * `opencode auth list`, the counts from the catalogue and the listing — except
- * the dated account notes, which no command can report.
+ * Four headed sections, in the order a reader needs them: the providers and
+ * their bills, the model notes the rows only badge as `· note`, the ping
+ * state with its failures, and the table reference (marks, columns, views,
+ * keys). The failures used to sit last, under a dozen paragraphs of manual —
+ * the most actionable thing on the screen, reachable only by scrolling past
+ * the least. The `· note` badge had no destination at all: this pane never
+ * rendered `MODEL_NOTES`.
  *
  * Built as styled lines and handed to a `Scroller` rather than drawn as boxes,
  * because it outgrows a short terminal: thirteen providers, three notes, the
@@ -1632,13 +1634,11 @@ function providerLines(
   const bills = allProviderBills(listing, catalogue, keyed);
   const failures = failedProbes(probes);
   const width = wrapWidth();
-  const lines: StyledLine[] = [
-    [{ text: "each provider, what it bills to, and whether a key is present.", dim: true }],
-    [{ text: "counts are free / priced / unknown · n without tools cannot be a repo agent", dim: true }],
-    [{ text: "★ OpenCode favourite · ❯ cursor · ✓ reachable (T: reached for a tool) · ✗ failed", dim: true }],
-    [{ text: "P to test a model · T to test with a tool · A pings every model shown", dim: true }],
-    [{ text: "" }],
-  ];
+  const head = (t: string): StyledLine => [{ text: `── ${t} ──`, color: THEME.accent, bold: true }];
+  const lines: StyledLine[] = [head("providers")];
+  lines.push([{ text: "each provider, what it bills to, and whether a key is present.", dim: true }]);
+  lines.push([{ text: "counts are free / priced / unknown · n without tools cannot be a repo agent", dim: true }]);
+  lines.push([{ text: "" }]);
 
   for (const b of bills) {
     const summary =
@@ -1670,8 +1670,49 @@ function providerLines(
     for (const d of dropped) lines.push([{ text: `    ${d}`, dim: true }]);
   }
 
+  lines.push([{ text: "" }]);
+  lines.push(head("model notes"));
+  lines.push([{ text: "a row with a · note badge has one of these — the row only has room for the badge.", dim: true }]);
+  lines.push([{ text: "" }]);
+  for (const n of MODEL_NOTES) {
+    lines.push([{ text: `· note  ${n.match} — ${n.text}`, dim: true }]);
+  }
+
   const { tested, failed } = probeCoverage(probes);
   lines.push([{ text: "" }]);
+  lines.push(head("pings"));
+  lines.push([{ text: "P to test a model · T to test with a tool · A pings every model shown", dim: true }]);
+  if (tested === 0) {
+    lines.push([{ text: "no model has been pinged yet — press P on one, or A to ping every model shown", dim: true }]);
+  } else {
+    lines.push([
+      {
+        text: `pinged ${tested} model(s) so far · ${failed} unusable · ${tested - failed} usable`,
+        dim: true,
+      },
+    ]);
+  }
+
+  if (failures.length > 0) {
+    lines.push([{ text: "" }]);
+    lines.push([
+      {
+        text: `✗ the ${failed} that failed, out of the ${tested} pinged so far`,
+        color: THEME.warn,
+      },
+    ]);
+    lines.push([
+      { text: "  this is only what has been tested — the rest of the catalogue is unknown,", dim: true },
+    ]);
+    lines.push([{ text: "  not known-good. A verdict goes stale: successes after a week, failures after a day.", dim: true }]);
+    for (const f of failures) {
+      lines.push(...wrapNote(`${f.ref} — ${f.verdict.detail}`, width).map((t) => [{ text: t, dim: true }] as StyledLine));
+    }
+  }
+
+  lines.push([{ text: "" }]);
+  lines.push(head("reading the table"));
+  lines.push([{ text: "★ OpenCode favourite · ❯ cursor · ✓ reachable (T: reached for a tool) · ✗ failed", dim: true }]);
   lines.push([
     {
       text: "I intelligence · C coding · A agentic — Artificial Analysis indices, relayed keyless via OpenRouter (attribution: artificialanalysis.ai).",
@@ -1762,33 +1803,6 @@ function providerLines(
       dim: true,
     },
   ]);
-  if (tested === 0) {
-    lines.push([{ text: "no model has been pinged yet — press P on one, or A to ping every model shown", dim: true }]);
-  } else {
-    lines.push([
-      {
-        text: `pinged ${tested} model(s) so far · ${failed} unusable · ${tested - failed} usable`,
-        dim: true,
-      },
-    ]);
-  }
-
-  if (failures.length > 0) {
-    lines.push([{ text: "" }]);
-    lines.push([
-      {
-        text: `✗ the ${failed} that failed, out of the ${tested} pinged so far`,
-        color: THEME.warn,
-      },
-    ]);
-    lines.push([
-      { text: "  this is only what has been tested — the rest of the catalogue is unknown,", dim: true },
-    ]);
-    lines.push([{ text: "  not known-good. A verdict goes stale: successes after a week, failures after a day.", dim: true }]);
-    for (const f of failures) {
-      lines.push(...wrapNote(`${f.ref} — ${f.verdict.detail}`, width).map((t) => [{ text: t, dim: true }] as StyledLine));
-    }
-  }
 
   return lines;
 }
@@ -1815,7 +1829,7 @@ function Providers({
 }) {
   return (
     <Scroller
-      title="providers"
+      title="help"
       lines={providerLines(listing, catalogue, keyed, dropped, probes)}
       notice={notice}
       height={height}
@@ -1841,7 +1855,8 @@ function Providers({
  *
  * Not a `Scroller`: this list is bounded (a dozen providers) and indexed
  * like the pair list, and every row is clipped to one line so the cursor
- * arithmetic stays honest. `?` stays the read-only explainer; this is the
+ * arithmetic stays honest. `?` stays the read-only explainer with its four
+ * sections (providers, model notes, pings, reading the table); this is the
  * interactive one next to it.
  */
 function ProviderFilter({

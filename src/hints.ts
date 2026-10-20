@@ -104,7 +104,7 @@ export function buildHintText(s: HintState): string {
     "P ping",
     "T tools ping",
     "Y export table",
-    "? providers",
+    "? help",
   ];
   return [nav, ...keys, ...(ceil ? [ceil] : []), ...actions].join(" · ");
 }

@@ -84,8 +84,9 @@ export const MODEL_NOTES: { match: string; text: string }[] = [
   {
     match: "contributor",
     text:
-      "trains on request data; needs a workspace privacy opt-in the desktop app " +
-      "does not expose. Blocked on this machine. (18 Oct 2026)",
+      "trains on request data — your prompts and completions may train the " +
+      "provider's models (Gemini → Google, Muse Spark → Meta). Not a price tier: " +
+      "Muse is heavily discounted, Argon is full price. Only a -free name costs nothing.",
   },
   {
     match: "free",
