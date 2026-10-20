@@ -73,11 +73,16 @@ describe("wrapHintLines", () => {
     }
   });
 
-  test("overflow truncates the last row, capped at four", () => {
+  test("no cap: the menu shows every row, overflow truncates only on demand", () => {
+    // Uncapped, a narrow terminal gets the whole menu — six rows at 60 wide,
+    // none of them marked.
     const rows = wrapHintLines(buildHintText(base), 60);
-    expect(rows.length).toBe(4);
-    expect(rows[3]!.endsWith("…")).toBe(true);
-    expect(wrapHintLines(buildHintText(base), 60, 2)).toHaveLength(2);
+    expect(rows.length).toBeGreaterThan(4);
+    expect(rows.some((r) => r.endsWith("…"))).toBe(false);
+    // An explicit maxRows still truncates, and marks the cut.
+    const cut = wrapHintLines(buildHintText(base), 60, 2);
+    expect(cut).toHaveLength(2);
+    expect(cut[1]!.endsWith("…")).toBe(true);
   });
 
   test("the toggle labels never split across rows", () => {

@@ -118,7 +118,8 @@ import {
   LOG_MAX_ROWS,
   MIN_CONTENT_ROWS,
   pairsListHeight,
-  pickHintTake,
+  pickContentWants,
+  pickHintAllowed,
   pickListHeight,
   runsListHeight,
   scrollerHeight,
@@ -1001,9 +1002,10 @@ function Pick({
   /** Measured $/task ceiling for the taskcost view's count line. */
   taskCeiling: number;
   /**
-   * The hint rows, wrapped to the terminal width by the App (see `hints.ts`)
-   * and sliced to what the viewport budget reserved. Rendered as-is: each
-   * element is one row, so the budget and the screen cannot disagree.
+   * The hint rows, wrapped to the terminal width by the App (see `hints.ts`).
+   * Rendered as-is: each element is one row. Uncapped — narrow terminals show
+   * every row; only a terminal too short for menu plus 3 list rows crops the
+   * tail, marked with `…`.
    */
   hintLines: string[];
 }) {  const { rows, items, favourite } = list;
@@ -1399,10 +1401,9 @@ function Pick({
           }
         />
       </Box>
-      {/* The hints, wrapped to the width by the App and sliced to the budget:
-          one element is one row, so this renders exactly what was reserved.
-          Priority-ordered in `hints.ts` — a narrow terminal loses the tail,
-          never the navigation. */}
+      {/* The hints, wrapped to the width by the App: one element is one row,
+          and a last-resort cut carries `…` (see `hints.ts`). Uncapped — a
+          narrow terminal shows every row, paid for by the log window first. */}
       {hintLines.map((line, i) => (
         <Box key={i}>
           <Text dimColor wrap="truncate">
@@ -4991,6 +4992,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
      `overflow="hidden"`, so a screen that miscounts clips instead of pushing
      the frame past the terminal. */
   const termRows = useTerminalRows();
+  // Both dimensions subscribe: columns drive the hint wrap below, and a
+  // width-only resize must re-render the App — nothing else recomputes the
+  // wrapped rows, so without this the menu stays wrapped to the old width
+  // until the next keypress.
+  const termCols = useTerminalWidth();
   const logLabel = approval ? null : workingLabel(log, phase, effectiveMode);
   /* The log as rows: `!` lines keep their colour, and every line is wrapped here
      rather than by Ink — a wrapped log line would occupy two rows and shift
@@ -5008,17 +5014,17 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   );
   const usable = contentRows(termRows);
   const running = phase === "running" || phase === "working";
-  const logTake = logWindow(logRows.length, usable, {
+  const logWant = logWindow(logRows.length, usable, {
     label: logLabel !== null,
     minContent: running ? 0 : MIN_CONTENT_ROWS,
     maxLog: running ? usable : LOG_MAX_ROWS,
   });
-  const contentH = Math.max(1, usable - logTake - (logLabel !== null ? 1 : 0));
-  const scrollerH = scrollerHeight(contentH, notice !== null);
-  // The hints wrap to the terminal width (see `hints.ts`), so the list budget
-  // follows the wrapped rows — and `Pick` renders exactly the slice reserved
-  // here. A resize re-renders (same `resize` event as the rows), so the two
-  // can never disagree about how many rows the hints take.
+  // The hints wrap to the terminal width (see `hints.ts`), uncapped — the
+  // menu shows everything. What yields instead is the log window: it shrinks
+  // toward what is left after the picker takes the full menu with a 3-row
+  // list, and only past that do the list (toward 1) and finally the menu
+  // itself (marked with `…`) give way. A resize re-renders through the same
+  // `resize` event as the rows, so budget and screen cannot disagree.
   const hintState: HintState = {
     pickMode,
     buildStep,
@@ -5029,9 +5035,21 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     ceiling,
     taskCeiling,
   };
-  const hintFull = wrapHintLines(buildHintText(hintState), hintWidth());
-  const hintTake = pickHintTake(contentH, notice !== null, hintFull.length);
-  const pickH = pickListHeight(contentH, notice !== null, hintFull.length);
+  const hintText = buildHintText(hintState);
+  const hintW = hintWidth(termCols);
+  const hintFullCount = wrapHintLines(hintText, hintW).length;
+  const logTake = Math.min(
+    logWant,
+    Math.max(0, usable - pickContentWants(hintFullCount, notice !== null) - (logLabel !== null ? 1 : 0)),
+  );
+  const contentH = Math.max(1, usable - logTake - (logLabel !== null ? 1 : 0));
+  const scrollerH = scrollerHeight(contentH, notice !== null);
+  const hintLines = wrapHintLines(
+    hintText,
+    hintW,
+    pickHintAllowed(contentH, notice !== null, hintFullCount),
+  );
+  const pickH = pickListHeight(contentH, notice !== null, hintLines.length);
   const runsH = runsListHeight(contentH);
 
   /* The exit recap: the alternate screen leaves with the log, so the shell
@@ -5097,7 +5115,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         buildStep={buildStep}
         priceBasis={priceBasis}
         taskCeiling={taskCeiling}
-        hintLines={hintFull.slice(0, hintTake)}
+        hintLines={hintLines}
       />
     );
   } else if (phase === "providers") {

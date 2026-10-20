@@ -95,12 +95,17 @@ export function hintWidth(cols: number = process.stdout.columns ?? 100): number 
 }
 
 /**
- * Greedy word-wrap the hint text to the width, at most `maxRows` rows. Rows
- * break at spaces, never mid-word; a word longer than the row is sliced
- * rather than overhanging. Overflow past the cap truncates the last visible
- * row with `…`, so the hints always fit the rows the budget reserved.
+ * Greedy word-wrap the hint text to the width. Rows break at spaces, never
+ * mid-word; a word longer than the row is sliced rather than overhanging.
+ * Uncapped by default — the menu shows everything; pass `maxRows` only when
+ * the budget cannot fit the lot, and overflow past the cap truncates the
+ * last visible row with `…`, so a cut is always marked.
  */
-export function wrapHintLines(text: string, width: number, maxRows = 4): string[] {
+export function wrapHintLines(
+  text: string,
+  width: number,
+  maxRows: number = Number.POSITIVE_INFINITY,
+): string[] {
   const room = Math.max(24, width);
   const cap = Math.max(1, maxRows);
   // Over-long words become slices up front, so the loop only breaks at spaces.

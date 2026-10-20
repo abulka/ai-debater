@@ -8,7 +8,8 @@ import {
   LOG_MAX_ROWS,
   MIN_CONTENT_ROWS,
   pairsListHeight,
-  pickHintTake,
+  pickContentWants,
+  pickHintAllowed,
   pickListHeight,
   runsListHeight,
   scrollerHeight,
@@ -88,15 +89,19 @@ describe("screen budgets", () => {
     // The default is the old two-line budget: same numbers as before.
     expect(pickListHeight(contentRows(50), false, 2)).toBe(pickListHeight(contentRows(50), false));
   });
-  test("hints cap at four and never starve the list", () => {
-    expect(pickHintTake(49, false, 9)).toBe(4);
-    expect(pickHintTake(49, false, 2)).toBe(2);
-    // A crowded screen loses hint rows first: 12 content rows leave 5, the
-    // list keeps 3 and the hints take 2 of 4 wanted.
-    expect(pickHintTake(12, false, 4)).toBe(2);
-    expect(pickListHeight(12, false, 4)).toBe(3);
+  test("the menu shows everything: the list yields before the hints", () => {
+    // No cap on wanted rows: ten wanted rows reserve ten.
+    expect(pickHintAllowed(49, false, 9)).toBe(9);
+    expect(pickHintAllowed(49, false, 2)).toBe(2);
+    // A crowded screen keeps the 3-row list and crops the menu instead:
+    // 12 content rows leave 5, so 2 of 8 wanted hint rows show.
+    expect(pickHintAllowed(12, false, 8)).toBe(2);
+    expect(pickListHeight(12, false, 2)).toBe(3);
     // Below even that, the list floors at one row rather than vanishing.
     expect(pickListHeight(3, true, 4)).toBe(1);
+    // The full menu plus a 3-row list is what the log yields to.
+    expect(pickContentWants(8, false)).toBe(7 + 8 + 3);
+    expect(pickContentWants(8, true)).toBe(9 + 8 + 3);
   });
   test("pairs subtract warnings", () => {
     expect(pairsListHeight(40, 0, false)).toBe(33);

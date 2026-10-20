@@ -76,32 +76,42 @@ export function scrollerHeight(contentH: number, notice: boolean): number {
  * Picker chrome: header (2) + filter (1) + column labels (1) + list margin (1)
  * + count (2) + hints. The notice takes two rows (margin + line).
  *
- * Hint rows are variable now: the hints wrap to the terminal width (see
- * `hints.ts`), so a narrow terminal spends more rows on them. Capped at
- * `PICK_HINT_MAX_ROWS`, and never enough to starve the list below
- * `PICK_LIST_MIN_ROWS` — a crowded screen loses hint rows, never model rows.
+ * Hint rows are variable: the hints wrap to the terminal width (see
+ * `hints.ts`), so a narrow terminal spends more rows on them. The menu shows
+ * everything — the budget yields in the opposite direction instead: the log
+ * window shrinks first (`pickContentWants`), then the list toward
+ * `PICK_LIST_MIN_ROWS`, and only past that does the menu itself crop (with
+ * a `…` marker from `wrapHintLines`).
  */
-export const PICK_HINT_MAX_ROWS = 4;
+export function pickChromeRows(notice: boolean): number {
+  return 7 + (notice ? 2 : 0);
+}
 
 /** The list keeps this many rows whenever the terminal allows it. */
 export const PICK_LIST_MIN_ROWS = 3;
 
 /**
- * How many of the wanted hint rows the budget actually reserves. `Pick`
- * renders exactly this many — the callers slice, so the budget and the
- * screen cannot disagree.
+ * Content rows the picker wants for the full menu with a 3-row list. The App
+ * clamps the log window to what is left after this before touching anything
+ * else, so a narrow terminal spends log rows on hints, never hint rows on
+ * nothing.
  */
-export function pickHintTake(contentH: number, notice: boolean, wanted: number): number {
-  const available = contentH - 7 - (notice ? 2 : 0);
-  return Math.max(
-    0,
-    Math.min(Math.max(0, wanted), PICK_HINT_MAX_ROWS, Math.max(0, available - PICK_LIST_MIN_ROWS)),
-  );
+export function pickContentWants(hintRows: number, notice: boolean): number {
+  return pickChromeRows(notice) + Math.max(0, hintRows) + PICK_LIST_MIN_ROWS;
+}
+
+/**
+ * Hint rows the budget allows inside this content height: the list keeps
+ * `PICK_LIST_MIN_ROWS` when possible, one row at minimum. The caller passes
+ * the result as `maxRows` to `wrapHintLines`, so a cut always carries `…`.
+ */
+export function pickHintAllowed(contentH: number, notice: boolean, wanted: number): number {
+  const room = contentH - pickChromeRows(notice);
+  return Math.max(1, Math.min(Math.max(0, wanted), room - PICK_LIST_MIN_ROWS));
 }
 
 export function pickListHeight(contentH: number, notice: boolean, hintRows = 2): number {
-  const available = contentH - 7 - (notice ? 2 : 0);
-  return Math.max(1, available - pickHintTake(contentH, notice, hintRows));
+  return Math.max(1, contentH - pickChromeRows(notice) - Math.max(0, hintRows));
 }
 
 /**
