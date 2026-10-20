@@ -312,15 +312,19 @@ export function orderedModels(
     disabled?: ReadonlySet<string>;
     /** `or` needs any filter term to match; the default `and` needs every one. `off` ignores the text. */
     filterMode?: FilterMode;
+    /** Show only the refs this accepts — the `N` screen. Composes with everything else. */
+    keep?: (ref: string) => boolean;
   } = {},
 ): ModelList {
   const pool = providerPool(all, opts.providerLock, opts.disabled);
   const enabledFavs = enabledOnly(favourites, opts.disabled);
   const enabledRecents = enabledOnly(recents, opts.disabled);
-  const grouped =
+  const grouped = keepRows(
     opts.hideUnscored && opts.scoreOf
       ? hideUnscoredRows(groupModels(pool, enabledFavs, enabledRecents), opts.scoreOf)
-      : groupModels(pool, enabledFavs, enabledRecents);
+      : groupModels(pool, enabledFavs, enabledRecents),
+    opts.keep,
+  );
   const nameOf = opts.nameOf ?? (() => null);
 
   const rows: ModelRow[] = [];
@@ -411,6 +415,8 @@ export interface RankOptions {
   rankBy?: "score" | "cost";
   /** `or` needs any filter token to match; the default `and` needs every one. `off` ignores the text. */
   filterMode?: FilterMode;
+  /** Show only the refs this accepts — the `N` screen. Composes with the filter and the views. */
+  keep?: (ref: string) => boolean;
 }
 
 const scoredOnly = (scoreOf: (ref: string) => ModelScore, refs: string[]): string[] =>
@@ -496,9 +502,10 @@ export function rankModels(
     rankBy = "score",
     nameOf = () => null,
     filterMode = "and",
+    keep = () => true,
   } = opts;
   const pool = providerPool(refs, providerLock, disabled);
-  const visible = visibleRefs(pool, filter, hideUnscored, scoreOf, nameOf, filterMode);
+  const visible = visibleRefs(pool, filter, hideUnscored, scoreOf, nameOf, filterMode).filter((ref) => keep(ref));
   // Each flat view filters on its own cheapness: output $/M under a ceiling,
   // or measured $/task under one. An unknown cost cannot be called cheap, so
   // unmeasured rows never pass a ceiling — the same rule in both views.
@@ -537,6 +544,20 @@ export function rankModels(
   }
   const listed = new Set(refs);
   return { rows, items, favourite: new Set(favourites.filter((f) => listed.has(f))), dropped: [] };
+}
+
+/** Keep only the refs `keep` accepts, from an already-built provider list. */
+function keepRows(
+  grouped: { favourites: string[]; recents: string[]; rest: string[]; dropped: string[] },
+  keep: ((ref: string) => boolean) | undefined,
+): { favourites: string[]; recents: string[]; rest: string[]; dropped: string[] } {
+  if (!keep) return grouped;
+  return {
+    favourites: grouped.favourites.filter((r) => keep(r)),
+    recents: grouped.recents.filter((r) => keep(r)),
+    rest: grouped.rest.filter((r) => keep(r)),
+    dropped: grouped.dropped,
+  };
 }
 
 /** Hide refs without a benchmark from an already-built provider list. */

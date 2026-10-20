@@ -1030,6 +1030,7 @@ function Pick({
   onSelectRow,
   rules,
   highlightsOn,
+  highlightsOnly,
   highlightCount,
 }: {
   role: "drafter" | "reviewer";
@@ -1101,6 +1102,8 @@ function Pick({
   rules: { pattern: string; colour: string }[];
   /** Session mute for the rows above: off, every row reads the same. */
   highlightsOn: boolean;
+  /** `N`: the list is narrowed to the highlighted rows. Already false when no patterns are stored. */
+  highlightsOnly: boolean;
   /** How many patterns are stored — the count line only names the mute when one exists. */
   highlightCount: number;
 }) {  const { rows, items, favourite } = list;
@@ -1545,6 +1548,7 @@ function Pick({
                       `${priceBasis === "high" ? " · price: high tier" : ""}` +
                       `${hideUnscored ? " · hiding unscored" : ""}` +
                       `${!highlightsOn && highlightCount > 0 ? " · highlights off (M)" : ""}` +
+                      `${highlightsOnly ? " · highlighted only (N)" : ""}` +
                       `${!aaKey ? " · OpenRouter scores only — key: settings → benchmarks" : ""}`,
                     dim: true,
                   },
@@ -1784,6 +1788,12 @@ function providerLines(
   lines.push([
     {
       text: "rows matching your auto-highlight patterns read in their own colours — M mutes them for this session, settings → auto-highlight models to edit them. The selected row keeps its band over any hue; the name on the row still says what it is.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "N lists only the highlighted models, in every view — the same rows the patterns colour, where M only changes the colour. Session-only; the count line says `highlighted only (N)` while it is on. Refused with no patterns stored.",
       dim: true,
     },
   ]);
@@ -3088,6 +3098,11 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
    * views — deleting the patterns is the persistent off.
    */
   const [highlightsOn, setHighlightsOn] = useState(true);
+  /**
+   * Session narrowing to the highlighted rows (`N`): on, only models a pattern
+   * matches are listed. Session-only, like the mute and the views.
+   */
+  const [highlightsOnly, setHighlightsOnly] = useState(false);
   /** Output $/M ceiling for the value view. Personal, in `prefs.ts`. */
   const [ceiling, setCeiling] = useState(DEFAULT_CEILING);
   /** Measured $/task ceiling for the taskcost view. Personal, like the value one. */
@@ -4199,15 +4214,25 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     }
     return max;
   }, [allModels, taskCostOf]);
+  /** Auto-highlight rules, newest first — what colours the picker's rows. */
+  const hlRules = useMemo(() => highlightRules(highlights, hlColours), [highlights, hlColours]);
+  /** `N` narrows to the highlighted rows only — and only while there are patterns to narrow by. */
+  const hlNarrowed = highlightsOnly && hlRules.length > 0;
+
   const modelRows = useMemo(() => {
     // The benchmark display name, for the filter: `muse 1.3 max` matches by
     // AA's own wording as well as by ref. One adapter, both list builders.
     const nameOf = (ref: string): string | null =>
       scoresFor(catalogue, benchmarks, ref)?.name ?? null;
+    // The same rule that colours a row decides whether `N` keeps it.
+    const keep = hlNarrowed
+      ? (ref: string) => highlightFor(ref, nameOf(ref), hlRules) !== null
+      : undefined;
     if (view === "provider") {
       return orderedModels(allModels, openCode.favourites, openCode.recents, filter, {
         ...(hideUnscored ? { hideUnscored: true as const, scoreOf: aaScoreOf } : {}),
         ...(providerLock ? { providerLock } : {}),
+        ...(keep ? { keep } : {}),
         disabled: disabledProviders,
         nameOf,
         filterMode,
@@ -4221,6 +4246,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       taskCeiling,
       favourites: openCode.favourites,
       ...(providerLock ? { providerLock } : {}),
+      ...(keep ? { keep } : {}),
       disabled: disabledProviders,
       scoreOf,
       outputOf,
@@ -4230,10 +4256,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       // gets here, grouped rather than ranked.
       rankBy: rankCost ? "cost" : "score",
     });
-  }, [allModels, openCode, filter, filterMode, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, disabledProviders, priceBasis, catalogue, benchmarks]);
-
-  /** Auto-highlight rules, newest first — what colours the picker's rows. */
-  const hlRules = useMemo(() => highlightRules(highlights, hlColours), [highlights, hlColours]);
+  }, [allModels, openCode, filter, filterMode, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, disabledProviders, priceBasis, catalogue, benchmarks, hlNarrowed, hlRules]);
 
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
@@ -4693,6 +4716,23 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
           return;
         }
         setHighlightsOn((on) => !on);
+        return;
+      }
+      // `N` lists only the highlighted models, in every view — the same rule
+      // that colours a row, so it is membership, not colour (that is `M`).
+      // Session-only, like `H` and `M`. With no patterns there is nothing to
+      // narrow to: it refuses and names where to add some, as `M` does, and
+      // clears a stale narrowing left from patterns since deleted.
+      if (input === "N") {
+        setPingArmed(null);
+        commitFilter(true);
+        if (hlRules.length === 0) {
+          setHighlightsOnly(false);
+          setNotice("no highlight patterns — settings → auto-highlight models to add some");
+          return;
+        }
+        setHighlightsOnly((on) => !on);
+        setPickIndex(0);
         return;
       }
       // `D` ranks the flat views by AI Coding Daily — points for the order,
@@ -6240,6 +6280,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     taskCeiling,
     highlightCount: hlRules.length,
     highlightsOn,
+    highlightsOnly: hlNarrowed,
   };
   const hintText = buildHintText(hintState);
   const hintW = hintWidth(termCols);
@@ -6329,6 +6370,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         clicksEnabled={mouseReporting && altScreen}
         rules={highlightsOn ? hlRules : []}
         highlightsOn={highlightsOn}
+        highlightsOnly={hlNarrowed}
         highlightCount={hlRules.length}
         onSelectRow={(i) => {
           setPingArmed(null);

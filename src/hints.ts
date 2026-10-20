@@ -23,6 +23,8 @@ export interface HintState {
   highlightCount: number;
   /** Session mute for the highlight rows. On: rows read in colour. */
   highlightsOn: boolean;
+  /** `N`: the list shows only the highlighted rows. */
+  highlightsOnly: boolean;
 }
 
 /**
@@ -40,9 +42,9 @@ const CEIL_KEYS = "<" + "\u00A0" + ">";
  *
  * Only keys that work in this view are named: a hint for a dead key invites
  * a press that does nothing. `D` and `S` are inert in the provider view,
- * which is grouped rather than ranked; `M` only shows when a highlight
- * pattern exists to mute. Both name their destination, like `L` does, so a
- * toggle reads both ways. The ceiling hint only shows where its keys work —
+ * which is grouped rather than ranked; `M` and `N` only show when a highlight
+ * pattern exists to mute or narrow by. Both name their destination, like `L`
+ * does, so a toggle reads both ways. The ceiling hint only shows where its keys work —
  * the value and taskcost views.
  */
 export function buildHintText(s: HintState): string {
@@ -60,6 +62,7 @@ export function buildHintText(s: HintState): string {
     // The mode is named in full three ways, like `L` does: the destination of
     // the next press reads on the key itself. Glued so a wrap never splits it.
     ...(s.highlightCount > 0 ? [s.highlightsOn ? "M highlights off" : "M highlights on"] : []),
+    ...(s.highlightCount > 0 ? [s.highlightsOnly ? "N show all" : "N highlighted only"] : []),
     // The mode is named in full three ways, like `L` does: the destination of
     // the next press reads on the key itself. Glued so a wrap never splits it.
     s.filterMode === "and"

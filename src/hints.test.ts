@@ -14,6 +14,7 @@ const base: HintState = {
   taskCeiling: 0.5,
   highlightCount: 1,
   highlightsOn: true,
+  highlightsOnly: false,
 };
 
 describe("buildHintText", () => {
@@ -92,6 +93,12 @@ describe("buildHintText", () => {
     expect(buildHintText({ ...base, highlightsOn: false })).toContain("M highlights on");
     const none = buildHintText({ ...base, highlightCount: 0 });
     expect(none).not.toContain("M highlights");
+  });
+
+  test("N names the narrowing both ways, and only when a pattern exists", () => {
+    expect(buildHintText(base)).toContain("N highlighted only");
+    expect(buildHintText({ ...base, highlightsOnly: true })).toContain("N show all");
+    expect(buildHintText({ ...base, highlightCount: 0 })).not.toContain("N highlighted");
   });
 });
 

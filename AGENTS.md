@@ -160,6 +160,7 @@ supersede rule.
 | S | Picker: rank the flat views by measured cost ($/task, or ACD $/task with D) instead of by score, cheapest first — session-only, ignored in the provider view |
 | H | Picker: hide models with no benchmark, in every view |
 | M | Picker: mute the auto-highlight rows for this session — the patterns stay stored, the rows just stop reading in colour. Session-only, like the views; deleting the patterns is the persistent off. Only named when a pattern exists; the count line says `highlights off (M)` while muted |
+| N | Picker: list only the highlighted models, in every view — the rows the patterns would colour (the same rule as `M`'s colour, but it drops the rest rather than recolouring them). Session-only, like `H` and `M`; composes with the filter, the views, the lock and `F`. Refused with no patterns stored. The count line says `highlighted only (N)` while it is on |
 | L | Picker: lock to the selected provider — the view, the filter and H all still apply inside it, and so does A. Press again to clear |
 | F | Picker: providers on/off — every provider with a checkbox for whether the picker shows it. Space toggles, `a` all on, `o` all off, Esc returns. Applies to every view and persists in `~/.config/adv/picker.json` |
 | Tab | Picker: cycle the filter AND (every word, the default) → OR (any word) → OFF (text kept, ignored) — session-only, in every view. `"…"` quotes an ordered phrase (`"deep 4.1"` lands on `deepseek-v4.1-flash`) |

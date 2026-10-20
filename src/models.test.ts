@@ -228,6 +228,17 @@ describe("orderedModels", () => {
     expect(kept.items).toHaveLength(2);
   });
 
+  test("keep narrows every group in both branches, and hides without reporting unavailable", () => {
+    const pool = ["opencode-go/a", "opencode-go/b", "openrouter/c"];
+    const keep = (ref: string) => ref !== "opencode-go/b";
+    const plain = orderedModels(pool, ["opencode-go/a", "opencode-go/b"], [], "", { keep });
+    expect(models(plain.rows)).toEqual(["opencode-go/a", "openrouter/c"]);
+    expect(plain.dropped).toEqual([]);
+    // The filter branch applies the same rule.
+    const filtered = orderedModels(pool, [], [], "opencode", { keep });
+    expect(models(filtered.rows)).toEqual(["opencode-go/a"]);
+  });
+
   test("providerLock narrows the pool before grouping, and composes with the filter", () => {
     const pool = ["opencode-go/a", "opencode-go/b", "openrouter/c"];
     const locked = orderedModels(pool, ["opencode-go/a"], [], "", { providerLock: "opencode-go" });
@@ -494,6 +505,21 @@ describe("rankModels", () => {
     expect(models(rankModels(refs, "value", { ...opts, hideUnscored: true, ceiling: 0.8 }))).toEqual([
       "p/cheap-best",
       "p/cheap-good",
+    ]);
+  });
+
+  test("keep narrows both flat views and composes with hideUnscored", () => {
+    const keep = (ref: string) => ref !== "p/cheap-best";
+    expect(models(rankModels(refs, "intelligence", { ...opts, keep }))).toEqual([
+      "p/cheap-good",
+      "p/pricey-good",
+      "p/cheap-plain",
+      "p/unknown-cost",
+    ]);
+    expect(models(rankModels(refs, "value", { ...opts, keep, ceiling: 0.8 }))).toEqual(["p/cheap-good", "p/cheap-plain"]);
+    expect(models(rankModels(refs, "intelligence", { ...opts, keep, hideUnscored: true }))).toEqual([
+      "p/cheap-good",
+      "p/pricey-good",
     ]);
   });
 
