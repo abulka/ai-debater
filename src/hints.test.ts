@@ -52,13 +52,21 @@ describe("buildHintText", () => {
   });
 
   test("modes and locks read in the navigation", () => {
-    expect(buildHintText({ ...base, pickMode: "browse" })).toContain("browsing");
     expect(
       buildHintText({ ...base, pickMode: "build", buildStep: "reviewer" }),
     ).toContain("reviewer");
     expect(buildHintText({ ...base, providerLock: "opencode-go" })).toContain(
       "unlock (locked to: opencode-go)",
     );
+  });
+
+  test("browse names no assignment — Enter is inert there", () => {
+    const browse = buildHintText({ ...base, pickMode: "browse" });
+    expect(browse).toContain("^F/^B page");
+    expect(browse).toContain("Esc home");
+    // The browser stands on its own: no key assigns, and no other screen is named.
+    expect(browse).not.toContain("Enter");
+    expect(browse).not.toContain("debate screen");
   });
 
   test("the provider switch names how many are off", () => {

@@ -43,7 +43,7 @@ const CEIL_KEYS = "<" + "\u00A0" + ">";
 export function buildHintText(s: HintState): string {
   const nav =
     s.pickMode === "browse"
-      ? "browsing — choose a model on the debate screen · ^F/^B page · ^D/^U half · Esc home"
+      ? "^F/^B page · ^D/^U half · Esc home"
       : s.pickMode === "build"
         ? `building a pair — Enter picks the ${s.buildStep ?? "drafter"} · ^F/^B page · ^D/^U half · Esc cancel`
         : "↑↓ choose · Enter select · ^F/^B page · ^D/^U half · Esc back";
