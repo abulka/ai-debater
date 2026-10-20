@@ -161,6 +161,7 @@ supersede rule.
 | H | Picker: hide models with no benchmark, in every view |
 | L | Picker: lock to the selected provider — the view, the filter and H all still apply inside it, and so does A. Press again to clear |
 | F | Picker: providers on/off — every provider with a checkbox for whether the picker shows it. Space toggles, `a` all on, `o` all off, Esc returns. Applies to every view and persists in `~/.config/adv/picker.json` |
+| Tab | Picker: switch the filter between AND (every word, the default) and OR (any word) — session-only, in every view |
 | ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |
 | < > | Cheap views: move the active ceiling — value in $0.10 steps, taskcost geometrically (×1.5 / ÷1.5). Capped at the dearest measured cost, so `>` past everything is a no-op. Saved to `~/.config/adv/picker.json` |
 | ? | Picker: what each provider bills to, whether a key is present, what the ★ ✓ ✗ marks mean, and every failure a ping has found |

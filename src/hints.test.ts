@@ -9,6 +9,7 @@ const base: HintState = {
   rankCost: false,
   providerLock: null,
   disabledCount: 0,
+  filterMode: "and",
   ceiling: 0.8,
   taskCeiling: 0.5,
 };
@@ -63,6 +64,11 @@ describe("buildHintText", () => {
   test("the provider switch names how many are off", () => {
     expect(buildHintText(base)).toContain("F providers on/off");
     expect(buildHintText({ ...base, disabledCount: 2 })).toContain("F providers (2 off)");
+  });
+
+  test("the Tab key names its destination, both ways", () => {
+    expect(buildHintText(base)).toContain("Tab\u00A0filter:\u00A0OR");
+    expect(buildHintText({ ...base, filterMode: "or" })).toContain("Tab\u00A0filter:\u00A0AND");
   });
 });
 

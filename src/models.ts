@@ -196,18 +196,27 @@ export interface ModelList {
  * display name. Separators are ignored on both sides, so `muse 1.3`,
  * `spark-1.3` and `spark 13` all land on `muse-spark-1.3` — and on
  * `Muse Spark 1.3 (Max)` by its AA name. An empty filter matches everything;
- * an all-separator token matches nothing, never everything.
+ * an all-separator token matches nothing, never everything (in OR it must
+ * not become a match-all). `mode` picks AND (every token, the default) or
+ * OR (any token).
  */
-export function matchesFilter(ref: string, name: string | null, filter: string): boolean {
+export function matchesFilter(
+  ref: string,
+  name: string | null,
+  filter: string,
+  mode: "and" | "or" = "and",
+): boolean {
   const tokens = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return true;
   const hay = [ref.toLowerCase(), ...(name ? [name.toLowerCase()] : [])];
   const flat = hay.map((h) => h.replace(/[-_./ ]/g, ""));
-  return tokens.every((t) => {
+  const hit = (t: string): boolean => {
     if (hay.some((h) => h.includes(t))) return true;
     const ft = t.replace(/[-_./]/g, "");
     return ft.length > 0 && flat.some((f) => f.includes(ft));
-  });
+  };
+  // AND needs every token; OR needs any one, so `muse mimo` is the union.
+  return mode === "or" ? tokens.some(hit) : tokens.every(hit);
 }
 
 /**
@@ -249,6 +258,8 @@ export function orderedModels(
     providerLock?: string;
     /** Providers the reader switched off on the `F` screen. Composes with the lock. */
     disabled?: ReadonlySet<string>;
+    /** `or` needs any filter token to match; the default `and` needs every one. */
+    filterMode?: "and" | "or";
   } = {},
 ): ModelList {
   const pool = providerPool(all, opts.providerLock, opts.disabled);
@@ -270,7 +281,7 @@ export function orderedModels(
   if (filter.trim()) {
     const seen = new Set<string>();
     for (const ref of [...grouped.favourites, ...grouped.recents, ...grouped.rest]) {
-      if (seen.has(ref) || !matchesFilter(ref, nameOf(ref), filter)) continue;
+      if (seen.has(ref) || !matchesFilter(ref, nameOf(ref), filter, opts.filterMode)) continue;
       seen.add(ref);
       push(ref);
     }
@@ -346,6 +357,8 @@ export interface RankOptions {
    * filter. Defaults to `score`.
    */
   rankBy?: "score" | "cost";
+  /** `or` needs any filter token to match; the default `and` needs every one. */
+  filterMode?: "and" | "or";
 }
 
 const scoredOnly = (scoreOf: (ref: string) => ModelScore, refs: string[]): string[] =>
@@ -363,9 +376,10 @@ function visibleRefs(
   hideUnscored: boolean,
   scoreOf: (ref: string) => ModelScore,
   nameOf: (ref: string) => string | null = () => null,
+  filterMode: "and" | "or" = "and",
 ): string[] {
   const matching = filter.trim()
-    ? refs.filter((ref) => matchesFilter(ref, nameOf(ref), filter))
+    ? refs.filter((ref) => matchesFilter(ref, nameOf(ref), filter, filterMode))
     : [...refs];
   return hideUnscored ? scoredOnly(scoreOf, matching) : matching;
 }
@@ -428,9 +442,10 @@ export function rankModels(
     taskCostOf = () => undefined,
     rankBy = "score",
     nameOf = () => null,
+    filterMode = "and",
   } = opts;
   const pool = providerPool(refs, providerLock, disabled);
-  const visible = visibleRefs(pool, filter, hideUnscored, scoreOf, nameOf);
+  const visible = visibleRefs(pool, filter, hideUnscored, scoreOf, nameOf, filterMode);
   // Each flat view filters on its own cheapness: output $/M under a ceiling,
   // or measured $/task under one. An unknown cost cannot be called cheap, so
   // unmeasured rows never pass a ceiling — the same rule in both views.

@@ -935,6 +935,7 @@ function Pick({
   list,
   filter,
   filterCaret,
+  filterMode,
   index,
   height,
   pickStart,
@@ -966,6 +967,8 @@ function Pick({
   filter: string;
   /** The caret inside the filter, clamped to it where it renders. */
   filterCaret: number;
+  /** AND needs every filter word; OR needs any one. Tab flips it. */
+  filterMode: "and" | "or";
   index: number;
   /** Visible model rows, from the viewport budget: the frame must fit the terminal. */
   height: number;
@@ -1184,7 +1187,9 @@ function Pick({
         />
       </Box>
       <Box>
-        <Text dimColor>filter  </Text>
+        {/* AND is the default and stays unmarked; the `or` appears only when
+            Tab has flipped the mode, so the marker always means something. */}
+        <Text dimColor>{filterMode === "or" ? "filter or  " : "filter  "}</Text>
         {filter ? (
           <FieldText text={filter} cursor={filterCaret} />
         ) : (
@@ -1570,7 +1575,7 @@ function providerLines(
   ]);
   lines.push([
     {
-      text: "type to filter · ←→ steps the caret inside the filter · ^A ^E jump to its ends · Esc leaves the picker, it never clears the filter",
+      text: "type to filter · Tab switches AND (every word) and OR (any word) · ←→ steps the caret inside the filter · ^A ^E jump to its ends · Esc leaves the picker, it never clears the filter",
       dim: true,
     },
   ]);
@@ -2634,6 +2639,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [filter, setFilter] = useState("");
   /** The caret inside the filter, clamped to it on every render. */
   const [filterCaret, setFilterCaret] = useState(0);
+  /** AND needs every filter word; OR needs any one. Session-only, like `D`/`S`. */
+  const [filterMode, setFilterMode] = useState<"and" | "or">("and");
   const [pickIndex, setPickIndex] = useState(0);
   const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
   /** What the picker lists: grouped providers, or a flat score-ordered view. */
@@ -3678,10 +3685,12 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         ...(providerLock ? { providerLock } : {}),
         disabled: disabledProviders,
         nameOf,
+        filterMode,
       });
     }
     return rankModels(allModels, view, {
       filter,
+      filterMode,
       hideUnscored,
       ceiling,
       taskCeiling,
@@ -3696,7 +3705,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // gets here, grouped rather than ranked.
       rankBy: rankCost ? "cost" : "score",
     });
-  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, disabledProviders, priceBasis, catalogue, benchmarks]);
+  }, [allModels, openCode, filter, filterMode, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, disabledProviders, priceBasis, catalogue, benchmarks]);
 
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
@@ -4211,6 +4220,17 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setPingArmed(null);
         setNotice(null);
         if (fcur < filter.length) setFilter(filter.slice(0, fcur) + filter.slice(fcur + 1));
+        setPickIndex(0);
+        return;
+      }
+      // Tab flips the filter between AND (every word) and OR (any word).
+      // Before the printable branch: it would otherwise type a literal tab
+      // into the filter. The list is a different list either way, so the
+      // cursor resets like every other filter edit.
+      if (key.tab) {
+        setPingArmed(null);
+        setNotice(null);
+        setFilterMode((m) => (m === "and" ? "or" : "and"));
         setPickIndex(0);
         return;
       }
@@ -5234,6 +5254,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     rankCost,
     providerLock,
     disabledCount: disabledProviders.size,
+    filterMode,
     ceiling,
     taskCeiling,
   };
@@ -5296,6 +5317,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         list={modelRows}
         filter={filter}
         filterCaret={filterCaret}
+        filterMode={filterMode}
         index={pickIndex}
         height={pickH}
         pickStart={pickStart}

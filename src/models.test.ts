@@ -320,6 +320,21 @@ describe("orderedModels", () => {
       "opencode-go/muse-spark-1-3-contributor",
     ]);
   });
+
+  test("filterMode or is the union across refs and names", () => {
+    const refs = [
+      "opencode-go/muse-spark-1-3-contributor",
+      "opencode-go/mimo-v2-flash",
+      "opencode-go/glm-5.3-flash",
+    ];
+    const nameOf = (ref: string) => (ref.includes("muse-spark") ? "Muse Spark 1.3 (Max)" : null);
+    expect(models(orderedModels(refs, [], [], "muse mimo", { nameOf, filterMode: "or" }).rows)).toEqual([
+      "opencode-go/mimo-v2-flash",
+      "opencode-go/muse-spark-1-3-contributor",
+    ]);
+    // AND is still the default: the same query is empty without the flag.
+    expect(models(orderedModels(refs, [], [], "muse mimo", { nameOf }).rows)).toEqual([]);
+  });
 });
 
 describe("matchesFilter", () => {
@@ -356,6 +371,26 @@ describe("matchesFilter", () => {
   test("an all-separator token matches nothing, never everything", () => {
     expect(matchesFilter("abc", null, "-")).toBe(false);
     expect(matchesFilter("abc", "Some Name", "-")).toBe(false);
+  });
+
+  test("OR needs any token: the union, not the intersection", () => {
+    expect(matchesFilter("opencode-go/muse-spark-1-3", null, "muse mimo", "or")).toBe(true);
+    expect(matchesFilter("x/mimo-v2", null, "muse mimo", "or")).toBe(true);
+    expect(matchesFilter("x/other", null, "muse mimo", "or")).toBe(false);
+  });
+
+  test("OR matches names the same way AND does", () => {
+    expect(matchesFilter("x/y", "Muse Spark 1.3 (Max)", "zzz max", "or")).toBe(true);
+    expect(matchesFilter("x/y", "Muse Spark 1.3 (Max)", "zzz www", "or")).toBe(false);
+  });
+
+  test("OR with an empty filter still matches everything; a bare separator still matches nothing", () => {
+    expect(matchesFilter("abc", null, "", "or")).toBe(true);
+    expect(matchesFilter("abc", null, "   ", "or")).toBe(true);
+    expect(matchesFilter("abc", null, "-", "or")).toBe(false);
+    expect(matchesFilter("x/glm-1", null, "glm -", "or")).toBe(true);
+    // The separator is dead weight, not a vote: with no live token it is a miss.
+    expect(matchesFilter("abc", null, "- -", "or")).toBe(false);
   });
 });
 
@@ -441,6 +476,14 @@ describe("rankModels", () => {
     ]);
     // Without names the same query is empty — Max lives in no ref.
     expect(models(rankModels(refs, "intelligence", { ...opts, filter: "max" }))).toEqual([]);
+  });
+
+  test("filterMode or is the union in a flat view too", () => {
+    expect(
+      models(rankModels(refs, "intelligence", { ...opts, filter: "best pricey", filterMode: "or" })),
+    ).toEqual(["p/cheap-best", "p/pricey-good"]);
+    // AND still the default: no ref carries both words.
+    expect(models(rankModels(refs, "intelligence", { ...opts, filter: "best pricey" }))).toEqual([]);
   });
 
   test("ties break alphabetically, so the order is stable between refreshes", () => {

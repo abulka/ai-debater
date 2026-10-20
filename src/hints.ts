@@ -15,6 +15,8 @@ export interface HintState {
   providerLock: string | null;
   /** Providers switched off on the `F` screen — the hint says how many. */
   disabledCount: number;
+  /** AND needs every filter word; OR needs any one. The filter line marks OR. */
+  filterMode: "and" | "or";
   ceiling: number;
   taskCeiling: number;
 }
@@ -50,6 +52,9 @@ export function buildHintText(s: HintState): string {
     "V switch view",
     "C price basis",
     "H hide unscored",
+    // The mode is named in full both ways, like `L` does: the destination of
+    // the next press reads on the key itself. Glued so a wrap never splits it.
+    s.filterMode === "or" ? "Tab\u00A0filter:\u00A0AND" : "Tab\u00A0filter:\u00A0OR",
     ...(s.view !== "provider"
       ? [
           s.rankAcd
