@@ -49,7 +49,7 @@ import {
 } from "./aicodingdaily.ts";
 import { loadAAKey, saveAAKey } from "./aa-key.ts";
 import { refreshAllBenchmarks, verifyAAKey } from "./artificialanalysis.ts";
-import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_TASK_CEILING, loadCeiling, loadDisabledProviders, loadTaskCeiling, roundCeiling, saveCeiling, saveDisabledProviders, saveTaskCeiling, stepCeiling } from "./prefs.ts";
+import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_TASK_CEILING, addFilterHistory, loadCeiling, loadDisabledProviders, loadFilterHistory, loadTaskCeiling, recordFilterUse, removeFilterHistory, roundCeiling, saveCeiling, saveDisabledProviders, saveFilterHistory, saveTaskCeiling, stepCeiling, type FilterEntry } from "./prefs.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
 import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES, type ProviderBill } from "./providers.ts";
 import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, probeHint, type ProbeCache } from "./probe.ts";
@@ -117,6 +117,7 @@ import {
   logWindow,
   LOG_MAX_ROWS,
   MIN_CONTENT_ROWS,
+  filterHistoryListHeight,
   pairsListHeight,
   pickContentWants,
   pickHintAllowed,
@@ -139,6 +140,7 @@ type Phase =
   | "pick"
   | "providers"
   | "provfilter"
+  | "filterhist"
   | "pairs"
   | "pairname"
   | "pairconfirm"
@@ -876,6 +878,14 @@ function Settings({
 /** Above this a ping-all is refused by name rather than silently costing 100 calls. */
 const PING_MAX = 40;
 
+/**
+ * Pause after typing that commits the filter provisionally: the reader stopped
+ * to look at the narrowed list, which is the plainest proof the filter works.
+ * Long enough to outlast a phrase being typed, short enough to have fired
+ * before any key that leaves the visit.
+ */
+const FILTER_IDLE_MS = 800;
+
 /** Fixed badge columns, so every row's status lines up. */
 const BADGE_W = 16;
 /**
@@ -1576,7 +1586,7 @@ function providerLines(
   ]);
   lines.push([
     {
-      text: "type to filter · Tab cycles AND (every word), OR (any word), OFF (text kept, ignored) · \"…\" quotes an ordered phrase — \"deep 4.1\" lands on deepseek-v4.1-flash · ←→ steps the caret inside the filter · ^A ^E jump to its ends · Esc leaves the picker, it never clears the filter",
+      text: "type to filter — pausing, moving through the list, or any command key records it · Tab cycles AND (every word), OR (any word), OFF (text kept, ignored) · \"…\" quotes an ordered phrase — \"deep 4.1\" lands on deepseek-v4.1-flash · ←→ steps the caret inside the filter · ^A ^E jump to its ends · R keeps this filter and opens its history · Esc leaves the picker",
       dim: true,
     },
   ]);
@@ -1767,6 +1777,92 @@ function ProviderFilter({
       <Box marginTop={1}>
         <Text>
           <Line spans={hints(["space", "toggle"], ["a", "all on"], ["o", "all off"], ["Esc", "back"])} />
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * Past filters: every filter a picker was left with, newest first.
+ *
+ * Not a `Scroller`: the list is bounded (thirty rows at most) and indexed
+ * like the provider switchboard, and every row is clipped to one line so the
+ * cursor arithmetic stays honest. Applying restores the text and its AND/OR
+ * mode — the view, the lock and the ceilings are separate lenses and stay
+ * where they are.
+ */
+function FilterHistory({
+  entries,
+  index,
+  height,
+  notice,
+}: {
+  entries: FilterEntry[];
+  index: number;
+  /** Visible rows, from the viewport budget: the frame must fit the terminal. */
+  height: number;
+  notice: string | null;
+}) {
+  const width = Math.max(8, useTerminalWidth() - 6);
+  // Sticky like the picker: the window holds while the cursor walks its rows,
+  // and follows only at an edge.
+  const startRef = useRef(0);
+  const maxStart = Math.max(0, entries.length - height);
+  const prev = Math.min(Math.max(0, startRef.current), maxStart);
+  const start =
+    index < prev ? index : index >= prev + height ? Math.min(index - height + 1, maxStart) : prev;
+  startRef.current = start;
+
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="filter history" />
+      </Box>
+      <Text dimColor>
+        {entries.length === 0
+          ? "no filters yet — narrow the list and it lands here"
+          : `${entries.length} filter${entries.length === 1 ? "" : "s"} · newest first`}
+      </Text>
+      <Box marginTop={1} flexDirection="column">
+        {entries.slice(start, start + height).map((e, i) => {
+          const absolute = start + i;
+          const selected = absolute === index;
+          // AND is the default and stays unmarked; `or` appears only when the
+          // mode left the default, so the marker always means something.
+          const modeMark = e.mode === "and" ? "" : ` · ${e.mode}`;
+          const row = `${e.text}${modeMark}`;
+          const clipped = row.length > width - 2 ? shorten(row, width - 2) : row;
+          return (
+            <Box key={`${e.text.toLowerCase()}${modeMark}`}>
+              <Text color={selected ? THEME.accent : undefined}>{selected ? "❯ " : "  "}</Text>
+              <Text
+                color={selected ? THEME.accent : undefined}
+                bold={selected}
+                wrap="truncate"
+              >
+                {clipped}
+              </Text>
+            </Box>
+          );
+        })}
+      </Box>
+      {notice && (
+        <Box marginTop={1}>
+          <Text dimColor>{notice}</Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text>
+          <Line
+            spans={hints(
+              ["↑↓", "choose"],
+              ["Enter", "apply"],
+              ["d", "remove"],
+              ["D", "clear all"],
+              ["Esc", "back"],
+            )}
+          />
         </Text>
       </Box>
     </Box>
@@ -2677,6 +2773,31 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [disabledProviders, setDisabledProviders] = useState<ReadonlySet<string>>(new Set());
   /** The cursor on the provider switchboard. */
   const [provFilterIndex, setProvFilterIndex] = useState(0);
+  /**
+   * Past filters, newest first. Personal and persisted in `prefs.ts` like the
+   * ceilings; the in-memory list is the session's truth, so a re-read never
+   * resurrects a row deleted two keypresses ago.
+   */
+  const [filterHistory, setFilterHistory] = useState<FilterEntry[]>([]);
+  /** The cursor on the filter-history panel. */
+  const [filterHistIndex, setFilterHistIndex] = useState(0);
+  /** `D` arms "clear all?" on the history panel: `y` clears, `n`/`Esc` stands down. */
+  const [histClearArmed, setHistClearArmed] = useState(false);
+  /**
+   * The provisional text this picker visit already recorded, or null once an
+   * entry went final. A visit contributes at most one provisional entry, which
+   * the next use replaces — typing `mus`, pausing, then `muse 1.3` records
+   * the full filter, never the prefix. A ref, not state: no row renders it.
+   */
+  const filterVisit = useRef<{ text: string } | null>(null);
+  /** The idle timer behind the pause-commit. Cleared on every edit and on leaving. */
+  const filterDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Whether this session has read the history file. Once per session, never
+   * per visit: a load started before a fire-and-forget save lands would call
+   * back with the old file and wipe what the session just recorded.
+   */
+  const filterHistoryLoaded = useRef(false);
   /** Output $/M ceiling for the value view. Personal, in `prefs.ts`. */
   const [ceiling, setCeiling] = useState(DEFAULT_CEILING);
   /** Measured $/task ceiling for the taskcost view. Personal, like the value one. */
@@ -2922,6 +3043,13 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     void loadCeiling().then(setCeiling);
     void loadTaskCeiling().then(setTaskCeiling);
     void loadDisabledProviders().then((list) => setDisabledProviders(new Set(list)));
+    // Past filters likewise — but once per session into the session's truth,
+    // never re-read per visit. A load started before a fire-and-forget save
+    // lands calls back with the old file and wipes what was just recorded.
+    if (!filterHistoryLoaded.current) {
+      filterHistoryLoaded.current = true;
+      void loadFilterHistory().then(setFilterHistory);
+    }
     // The catalogue and our own probe record do not depend on the listing, so
     // they do not wait for it. Neither throws.
     void loadCatalogue().then((r) => setCatalogue(r.catalogue));
@@ -2959,6 +3087,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   /** Home → models browser: the same list, with Enter inert. */
   async function openBrowser() {
     setPickMode("browse");
+    resetFilterVisit();
     setFilter("");
     setFilterCaret(0);
     setPickIndex(0);
@@ -2971,6 +3100,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   async function openPick(role: "drafter" | "reviewer") {
     setPickMode("select");
     setPickRole(role);
+    resetFilterVisit();
     setFilter("");
     setFilterCaret(0);
     setPickIndex(0);
@@ -2988,6 +3118,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     setPickMode("build");
     setBuildStep("drafter");
     setPairDraft({ drafter: null, reviewer: null });
+    resetFilterVisit();
     setFilter("");
     setFilterCaret(0);
     setPickIndex(0);
@@ -3904,6 +4035,60 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     await saveDisabledProviders([...next]);
   }
 
+  /**
+   * Record a use of the filter. A use is anything that proves the filter did
+   * something: moving through the narrowed list, a command that acts on it or
+   * changes its lens, `R`, Enter, Esc. Final commits end the visit's
+   * provisional entry; provisional ones replace it as the filter is refined.
+   * Empty text and OFF-mode text record nothing, and an unchanged head skips
+   * the write, so leaving twice rewrites nothing.
+   */
+  function commitFilter(final: boolean) {
+    if (filterDebounce.current !== null) {
+      clearTimeout(filterDebounce.current);
+      filterDebounce.current = null;
+    }
+    const t = filter.trim();
+    if (!t || filterMode === "off") return;
+    const prev = filterVisit.current?.text ?? null;
+    const head = filterHistory[0];
+    if (head && head.text.toLowerCase() === t.toLowerCase() && head.mode === filterMode) {
+      if (final) filterVisit.current = null;
+      return;
+    }
+    const next = recordFilterUse(filterHistory, { prev, text: filter, mode: filterMode });
+    setFilterHistory(next);
+    void saveFilterHistory(next);
+    filterVisit.current = final ? null : { text: t };
+  }
+
+  /**
+   * The pause-commit: typing stopped, so the settled filter is recorded
+   * provisionally. Every edit re-arms it; any commit or visit reset stands it
+   * down. Fires through a ref so the timer always runs the latest render's
+   * commit, not the keystroke's.
+   */
+  function pokeFilter() {
+    if (filterDebounce.current !== null) clearTimeout(filterDebounce.current);
+    filterDebounce.current = setTimeout(() => {
+      filterDebounce.current = null;
+      commitProvisional.current();
+    }, FILTER_IDLE_MS);
+  }
+
+  /** A fresh visit: nothing provisional behind it and no timer running. */
+  function resetFilterVisit() {
+    if (filterDebounce.current !== null) {
+      clearTimeout(filterDebounce.current);
+      filterDebounce.current = null;
+    }
+    filterVisit.current = null;
+  }
+
+  /** Latest provisional commit, for the idle timer that outlives its render. */
+  const commitProvisional = useRef(() => {});
+  commitProvisional.current = () => commitFilter(false);
+
   /** The provider pane scrolls and closes itself; `Scroller` owns its keys. */
   /* Model picker. */
   useInput(
@@ -3940,21 +4125,25 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           return;
         }
         if (pickMode === "build") {
+          commitFilter(true);
           setPairDraft({ drafter: null, reviewer: null });
           setBuildStep(null);
           setPhase("pairs");
           return;
         }
+        commitFilter(true);
         setPhase(pickMode === "browse" ? "home" : "start");
         return;
       }
       if (key.upArrow) {
         setPingArmed(null);
+        commitFilter(false);
         setPickIndex((i) => clampIndex(i - 1, items.length));
         return;
       }
       if (key.downArrow) {
         setPingArmed(null);
+        commitFilter(false);
         setPickIndex((i) => clampIndex(i + 1, items.length));
         return;
       }
@@ -3967,15 +4156,16 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           if (!chosen) return;
           const picked: ModelRef = { ref: chosen, family: familyOf(chosen) };
           if (buildStep !== "reviewer") {
+            commitFilter(true);
             setPairDraft({ drafter: picked, reviewer: null });
             setBuildStep("reviewer");
             setFilter("");
             setFilterCaret(0);
-    setFilterCaret(0);
             setPickIndex(0);
             return;
           }
           if (!pairDraft.drafter) return;
+          commitFilter(true);
           setPairDraft({ drafter: pairDraft.drafter, reviewer: picked });
           setPairRename(null);
           const builtName = suggestPairName({ drafter: pairDraft.drafter, reviewer: picked });
@@ -3992,6 +4182,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           };
           void persist(next, mode).then(() => setNotice(`saved ${pickRole}: ${chosen}`));
         }
+        commitFilter(true);
         setPingArmed(null);
         setPhase("start");
         return;
@@ -3999,6 +4190,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // `?` before the text handling below: it is a key, not a character to filter.
       if (input === "?") {
         setPingArmed(null);
+        commitFilter(true);
         setPhase("providers");
         return;
       }
@@ -4007,15 +4199,18 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // so the command keys take the case nothing needs.
       if (input === "P") {
         setPingArmed(null);
+        commitFilter(true);
         if (chosen) void runPing([chosen], "cheap");
         return;
       }
       if (input === "T") {
         setPingArmed(null);
+        commitFilter(true);
         if (chosen) void runPing([chosen], "full");
         return;
       }
       if (input === "A") {
+        commitFilter(true);
         void pingVisible();
         return;
       }
@@ -4024,6 +4219,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // below: while armed, neither types. Anything else disarms (every branch
       // above already does) and behaves normally.
       if (input === "y" && pingArmed !== null) {
+        commitFilter(true);
         void pingVisible();
         return;
       }
@@ -4039,18 +4235,21 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // the filter. Disarms the ping first: an export is not a confirmation.
       if (input === "Y") {
         setPingArmed(null);
+        commitFilter(true);
         armExport();
         return;
       }
       if (input === "e" && exportArm !== null) {
         const { entire } = exportArm;
         setExportArm(null);
+        commitFilter(true);
         void exportVisible(entire, "entire");
         return;
       }
       if (input === "v" && exportArm !== null) {
         const { visible } = exportArm;
         setExportArm(null);
+        commitFilter(true);
         void exportVisible(visible, "window");
         return;
       }
@@ -4062,6 +4261,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // filter.
       if (input === "B") {
         setPingArmed(null);
+        commitFilter(true);
         void refreshBenchmarks(false);
         void refreshAcd(false);
         return;
@@ -4073,6 +4273,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // value view's membership can change with it.
       if (input === "C") {
         setPingArmed(null);
+        commitFilter(true);
         setPriceBasis((b) => (b === "low" ? "high" : "low"));
         setPickIndex(0);
         return;
@@ -4082,6 +4283,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // each view is a different list.
       if (input === "V") {
         setPingArmed(null);
+        commitFilter(true);
         setView((v) =>
           v === "provider" ? "intelligence" : v === "intelligence" ? "value" : v === "value" ? "taskcost" : "provider",
         );
@@ -4090,6 +4292,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       }
       if (input === "H") {
         setPingArmed(null);
+        commitFilter(true);
         setHideUnscored((h) => !h);
         setPickIndex(0);
         return;
@@ -4102,6 +4305,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (input === "D") {
         if (view === "provider") return;
         setPingArmed(null);
+        commitFilter(true);
         setRankAcd((r) => !r);
         setPickIndex(0);
         return;
@@ -4113,6 +4317,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (input === "S") {
         if (view === "provider") return;
         setPingArmed(null);
+        commitFilter(true);
         setRankCost((r) => !r);
         setPickIndex(0);
         return;
@@ -4125,6 +4330,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // resets because a locked list is a different list.
       if (input === "L") {
         setPingArmed(null);
+        commitFilter(true);
         setProviderLock((lock) => (lock ? null : chosen ? providerOf(chosen) : null));
         setPickIndex(0);
         return;
@@ -4135,8 +4341,21 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // into the filter.
       if (input === "F") {
         setPingArmed(null);
+        commitFilter(true);
         setProvFilterIndex(0);
         setPhase("provfilter");
+        return;
+      }
+      // `R` keeps the current filter, then recalls past ones — newest first.
+      // The arrows are free on that screen, which is the whole point: the
+      // list owns them here. Uppercase like the rest, so lowercase keeps
+      // typing into the filter. With nothing typed, it just opens history.
+      if (input === "R") {
+        setPingArmed(null);
+        commitFilter(true);
+        setFilterHistIndex(0);
+        setHistClearArmed(false);
+        setPhase("filterhist");
         return;
       }
       // `<`/`>` move the ceiling of the cheap view on screen. Value steps
@@ -4170,21 +4389,25 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // from the viewport budget — not a constant.
       if (key.ctrl && input === "f") {
         setPingArmed(null);
+        commitFilter(false);
         setPickIndex((i) => clampIndex(i + pickH, items.length));
         return;
       }
       if (key.ctrl && input === "b") {
         setPingArmed(null);
+        commitFilter(false);
         setPickIndex((i) => clampIndex(i - pickH, items.length));
         return;
       }
       if (key.ctrl && input === "d") {
         setPingArmed(null);
+        commitFilter(false);
         setPickIndex((i) => clampIndex(i + Math.ceil(pickH / 2), items.length));
         return;
       }
       if (key.ctrl && input === "u") {
         setPingArmed(null);
+        commitFilter(false);
         setPickIndex((i) => clampIndex(i - Math.ceil(pickH / 2), items.length));
         return;
       }
@@ -4215,6 +4438,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           setFilterCaret(fcur - 1);
         }
         setPickIndex(0);
+        pokeFilter();
         return;
       }
       if (key.delete) {
@@ -4222,17 +4446,21 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setNotice(null);
         if (fcur < filter.length) setFilter(filter.slice(0, fcur) + filter.slice(fcur + 1));
         setPickIndex(0);
+        pokeFilter();
         return;
       }
       // Tab cycles AND → OR → OFF. Before the printable branch: it would
       // otherwise type a literal tab into the filter. The list is a different
       // list either way, so the cursor resets like every other filter edit —
-      // and OFF keeps the text, so cycling back restores it.
+      // and OFF keeps the text, so cycling back restores it. Re-arms the
+      // pause-commit: the mode is part of the entry, so a mode switch after
+      // a pause records the entry as it now runs.
       if (key.tab) {
         setPingArmed(null);
         setNotice(null);
         setFilterMode((m) => (m === "and" ? "or" : m === "or" ? "off" : "and"));
         setPickIndex(0);
+        pokeFilter();
         return;
       }
       if (key.ctrl || key.meta) return;
@@ -4243,6 +4471,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setFilter(filter.slice(0, fcur) + input + filter.slice(fcur));
         setFilterCaret(fcur + input.length);
         setPickIndex(0);
+        pokeFilter();
       }
     },
     { isActive: phase === "pick" },
@@ -4292,6 +4521,119 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       }
     },
     { isActive: phase === "provfilter" },
+  );
+
+  /**
+   * The filter-history panel. No text field here, so the arrows choose —
+   * which is the whole point: the list owns them on the picker. `d` removes
+   * the row (it is a line of text, and the panel shows the result); `D` arms
+   * "clear all?", like a ping-all, and only `y` spends it. Enter applies the
+   * text and its AND/OR mode; the view, the lock and the ceilings stay put.
+   */
+  useInput(
+    (input, key) => {
+      // An armed clear-all answers `y`/`n`/`Esc` and stays; anything else
+      // stands it down first, then behaves normally.
+      if (histClearArmed && !key.ctrl && !key.meta && (input === "y" || input === "Y")) {
+        const n = filterHistory.length;
+        setFilterHistory([]);
+        setFilterHistIndex(0);
+        setHistClearArmed(false);
+        setNotice(n === 0 ? "filter history is already empty" : `cleared ${n} filter${n === 1 ? "" : "s"}`);
+        void saveFilterHistory([]);
+        return;
+      }
+      if (histClearArmed && !key.ctrl && !key.meta && (input === "n" || input === "N" || key.escape)) {
+        setHistClearArmed(false);
+        setNotice(null);
+        return;
+      }
+      const standDown = () => {
+        if (histClearArmed) {
+          setHistClearArmed(false);
+          setNotice(null);
+        }
+      };
+
+      if (key.escape) {
+        setPhase("pick");
+        return;
+      }
+      if (key.upArrow) {
+        standDown();
+        setFilterHistIndex((i) => clampIndex(i - 1, filterHistory.length));
+        return;
+      }
+      if (key.downArrow) {
+        standDown();
+        setFilterHistIndex((i) => clampIndex(i + 1, filterHistory.length));
+        return;
+      }
+      if (key.return) {
+        const entry = filterHistory[filterHistIndex];
+        if (!entry) return;
+        standDown();
+        setNotice(null);
+        setFilter(entry.text);
+        setFilterCaret(entry.text.length);
+        setFilterMode(entry.mode);
+        setPickIndex(0);
+        // Applying is using, so it front-bumps — unless it is already newest,
+        // when saving would rewrite the file for nothing.
+        const head = filterHistory[0];
+        if (!head || head.text.toLowerCase() !== entry.text.toLowerCase() || head.mode !== entry.mode) {
+          const next = addFilterHistory(filterHistory, entry.text, entry.mode);
+          setFilterHistory(next);
+          void saveFilterHistory(next);
+        }
+        setPhase("pick");
+        return;
+      }
+      // Paging before the `d` branch below: Ctrl+D moves half a page, plain
+      // `d` removes the row. The page is the visible list, like the picker's.
+      if (key.ctrl && input === "f") {
+        standDown();
+        setFilterHistIndex((i) => clampIndex(i + filterHistH, filterHistory.length));
+        return;
+      }
+      if (key.ctrl && input === "b") {
+        standDown();
+        setFilterHistIndex((i) => clampIndex(i - filterHistH, filterHistory.length));
+        return;
+      }
+      if (key.ctrl && input === "d") {
+        standDown();
+        setFilterHistIndex((i) => clampIndex(i + Math.ceil(filterHistH / 2), filterHistory.length));
+        return;
+      }
+      if (key.ctrl && input === "u") {
+        standDown();
+        setFilterHistIndex((i) => clampIndex(i - Math.ceil(filterHistH / 2), filterHistory.length));
+        return;
+      }
+      if (input === "d" && !key.ctrl && !key.meta) {
+        const entry = filterHistory[filterHistIndex];
+        if (!entry) return;
+        standDown();
+        setNotice(null);
+        const next = removeFilterHistory(filterHistory, entry.text);
+        setFilterHistory(next);
+        setFilterHistIndex((i) => clampIndex(i, next.length));
+        void saveFilterHistory(next);
+        return;
+      }
+      // `D` arms the clear-all — how many filters, what confirms, what
+      // cancels — and only `y` spends it, like a ping-all.
+      if (input === "D" && !key.ctrl && !key.meta) {
+        if (filterHistory.length === 0) return;
+        setHistClearArmed(true);
+        const n = filterHistory.length;
+        setNotice(`clear ${n} filter${n === 1 ? "" : "s"}? — y clears, n or Esc keeps`);
+        return;
+      }
+      if (key.ctrl || key.meta) return;
+    },
+    { isActive: phase === "filterhist" },
   );
 
   const items = useMemo(() => (head ? buildItems(head.claims, head.review) : []), [head]);
@@ -4528,6 +4870,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   useWheelScroll(
     (rows) => {
       setPingArmed(null);
+      commitFilter(false);
       setPickIndex((i) => clampIndex(i + rows, modelRows.items.length));
     },
     phase === "pick",
@@ -4545,6 +4888,10 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   useWheelScroll(
     (rows) => setProvFilterIndex((i) => clampIndex(i + Math.sign(rows), provBills.length)),
     phase === "provfilter",
+  );
+  useWheelScroll(
+    (rows) => setFilterHistIndex((i) => clampIndex(i + Math.sign(rows), filterHistory.length)),
+    phase === "filterhist",
   );
 
   function moveRuns(next: number) {
@@ -5275,6 +5622,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   );
   const pickH = pickListHeight(contentH, notice !== null, hintLines.length);
   const runsH = runsListHeight(contentH);
+  const filterHistH = filterHistoryListHeight(contentH, notice !== null);
 
   /* The exit recap: the alternate screen leaves with the log, so the shell
      gets the record instead — state, run directory, and where the plan went.
@@ -5364,6 +5712,15 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         disabled={disabledProviders}
         index={provFilterIndex}
         height={providerFilterListHeight(contentH, notice !== null)}
+        notice={notice}
+      />
+    );
+  } else if (phase === "filterhist") {
+    content = (
+      <FilterHistory
+        entries={filterHistory}
+        index={filterHistIndex}
+        height={filterHistH}
         notice={notice}
       />
     );

@@ -132,6 +132,15 @@ export function runsListHeight(contentH: number): number {
 }
 
 /**
+ * Filter-history chrome: header (2) + subtitle (1) + list margin (1) +
+ * hints (2). The notice takes two rows (margin + line). Same arithmetic as
+ * the provider switchboard: the same shape of screen, so the same budget.
+ */
+export function filterHistoryListHeight(contentH: number, notice: boolean): number {
+  return Math.max(1, contentH - 6 - (notice ? 2 : 0));
+}
+
+/**
  * Provider-filter chrome: header (2) + subtitle (1) + list margin (1) +
  * hints (2). The notice takes two rows (margin + line). No current line, no
  * warnings — every row is one provider, and the list is a dozen rows, so

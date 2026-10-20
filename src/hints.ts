@@ -59,6 +59,7 @@ export function buildHintText(s: HintState): string {
       : s.filterMode === "or"
         ? "Tab\u00A0filter:\u00A0OFF"
         : "Tab\u00A0filter:\u00A0AND",
+    "R filter history (saves this filter)",
     ...(s.view !== "provider"
       ? [
           s.rankAcd

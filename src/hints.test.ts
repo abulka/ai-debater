@@ -71,6 +71,11 @@ describe("buildHintText", () => {
     expect(buildHintText({ ...base, filterMode: "or" })).toContain("Tab\u00A0filter:\u00A0OFF");
     expect(buildHintText({ ...base, filterMode: "off" })).toContain("Tab\u00A0filter:\u00A0AND");
   });
+
+  test("the filter history key is named on every view, and says it saves", () => {
+    expect(buildHintText(base)).toContain("R filter history (saves this filter)");
+    expect(buildHintText({ ...base, view: "provider" })).toContain("R filter history");
+  });
 });
 
 describe("wrapHintLines", () => {

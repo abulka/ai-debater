@@ -3,6 +3,7 @@ import {
   altScreenEnabled,
   cappedLines,
   contentRows,
+  filterHistoryListHeight,
   gateDetailBudget,
   logWindow,
   LOG_MAX_ROWS,
@@ -116,12 +117,17 @@ describe("screen budgets", () => {
     expect(providerFilterListHeight(40, false)).toBe(34);
     expect(providerFilterListHeight(40, true)).toBe(32);
   });
+  test("the filter history counts its chrome and the notice, like the provider filter", () => {
+    expect(filterHistoryListHeight(40, false)).toBe(34);
+    expect(filterHistoryListHeight(40, true)).toBe(32);
+  });
   test("every list keeps at least one row", () => {
     expect(scrollerHeight(3, true)).toBe(1);
     expect(pickListHeight(3, true)).toBe(1);
     expect(pairsListHeight(3, 9, true)).toBe(1);
     expect(runsListHeight(3)).toBe(1);
     expect(providerFilterListHeight(3, true)).toBe(1);
+    expect(filterHistoryListHeight(3, true)).toBe(1);
   });
 });
 

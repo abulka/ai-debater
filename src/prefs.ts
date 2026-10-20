@@ -13,6 +13,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { configDir } from "./config.ts";
+import type { FilterMode } from "./models.ts";
 
 /** Output $ per million tokens. $0.80 keeps the value view to the cheap. */
 export const DEFAULT_CEILING = 0.8;
@@ -107,4 +108,127 @@ export async function saveDisabledProviders(
   const out = [...new Set(providers.map((p) => p.trim()).filter(Boolean))];
   out.sort();
   await writePrefs(file, { disabledProviders: out });
+}
+
+/**
+ * One filter the picker was left with: the text as typed and the AND/OR mode
+ * it ran under. Newest first, capped — a line of text, not a lens: the view,
+ * the lock and the ceilings stay where they are.
+ */
+export interface FilterEntry {
+  text: string;
+  mode: FilterMode;
+}
+
+/** How many past filters the `R` panel keeps. Thirty lines of text, not a log. */
+export const FILTER_HISTORY_MAX = 30;
+
+/**
+ * Front-bump a filter onto the history. Empty or whitespace-only text and
+ * `off`-mode text are not filters — they match everything, so remembering
+ * them would restore a no-op — and are returned unchanged. Dedupe is
+ * case-insensitive (matching is), and the latest casing and mode win.
+ */
+export function addFilterHistory(
+  entries: readonly FilterEntry[],
+  text: string,
+  mode: FilterMode,
+): FilterEntry[] {
+  const t = text.trim();
+  if (!t || mode === "off") return [...entries];
+  const lower = t.toLowerCase();
+  return [{ text: t, mode }, ...entries.filter((e) => e.text.toLowerCase() !== lower)].slice(
+    0,
+    FILTER_HISTORY_MAX,
+  );
+}
+
+/** Drop one filter, matched case-insensitively. A miss returns a copy. */
+export function removeFilterHistory(entries: readonly FilterEntry[], text: string): FilterEntry[] {
+  const lower = text.trim().toLowerCase();
+  if (!lower) return [...entries];
+  return entries.filter((e) => e.text.toLowerCase() !== lower);
+}
+
+/**
+ * One use of the filter within a picker visit.
+ *
+ * A visit contributes at most one provisional entry, replaced as the filter is
+ * refined — otherwise the history fills with prefixes (`mus`, `muse` on the
+ * way to `muse 1.3`). `prev` is the text this visit already recorded, or null
+ * once an entry is final; the new text front-bumps and both it and the stale
+ * provisional are dropped from behind. Empty and `off`-mode text record
+ * nothing, so applying an entry always narrows.
+ */
+export interface FilterUse {
+  /** The provisional text this visit already recorded, or null once final. */
+  prev: string | null;
+  text: string;
+  mode: FilterMode;
+}
+
+export function recordFilterUse(entries: readonly FilterEntry[], use: FilterUse): FilterEntry[] {
+  const t = use.text.trim();
+  if (!t || use.mode === "off") return [...entries];
+  const lower = t.toLowerCase();
+  const prevLower = use.prev?.trim().toLowerCase() ?? null;
+  return [
+    { text: t, mode: use.mode },
+    ...entries.filter((e) => {
+      const el = e.text.toLowerCase();
+      if (el === lower) return false;
+      if (prevLower !== null && el === prevLower) return false;
+      return true;
+    }),
+  ].slice(0, FILTER_HISTORY_MAX);
+}
+
+function isFilterEntry(v: unknown): v is FilterEntry {
+  if (!v || typeof v !== "object") return false;
+  const e = v as { text?: unknown; mode?: unknown };
+  return (
+    typeof e.text === "string" &&
+    e.text.trim().length > 0 &&
+    (e.mode === "and" || e.mode === "or" || e.mode === "off")
+  );
+}
+
+/**
+ * Past filters, newest first. Unknown or malformed values are `[]` — like the
+ * provider list, a filter that cannot be read is forgotten, never applied.
+ * `off`-mode rows predate the guard (or a hand edit) and are dropped: applying
+ * one would look like the panel did nothing.
+ */
+export async function loadFilterHistory(file: string = pickerPrefsFile()): Promise<FilterEntry[]> {
+  const v = (await readPrefs(file)).filterHistory;
+  if (!Array.isArray(v)) return [];
+  const out: FilterEntry[] = [];
+  for (const raw of v) {
+    if (!isFilterEntry(raw)) continue;
+    const text = raw.text.trim();
+    if (raw.mode === "off") continue;
+    if (out.some((e) => e.text.toLowerCase() === text.toLowerCase())) continue;
+    out.push({ text, mode: raw.mode });
+    if (out.length >= FILTER_HISTORY_MAX) break;
+  }
+  return out;
+}
+
+export async function saveFilterHistory(
+  entries: readonly FilterEntry[],
+  file: string = pickerPrefsFile(),
+): Promise<void> {
+  const seen = new Set<string>();
+  const out: FilterEntry[] = [];
+  for (const e of entries) {
+    if (!isFilterEntry(e) || e.mode === "off") continue;
+    const text = e.text.trim();
+    if (!text) continue;
+    const lower = text.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    out.push({ text, mode: e.mode });
+    if (out.length >= FILTER_HISTORY_MAX) break;
+  }
+  await writePrefs(file, { filterHistory: out });
 }

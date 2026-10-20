@@ -3,16 +3,23 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  addFilterHistory,
   DEFAULT_CEILING,
   DEFAULT_TASK_CEILING,
+  FILTER_HISTORY_MAX,
   loadCeiling,
   loadDisabledProviders,
+  loadFilterHistory,
   loadTaskCeiling,
+  recordFilterUse,
+  removeFilterHistory,
   roundCeiling,
   saveCeiling,
   saveDisabledProviders,
+  saveFilterHistory,
   saveTaskCeiling,
   stepCeiling,
+  type FilterEntry,
 } from "./prefs.ts";
 
 const tmp = () => mkdtemp(path.join(os.tmpdir(), "adv-prefs-"));
@@ -95,5 +102,125 @@ describe("picker prefs", () => {
     expect(await loadTaskCeiling(file)).toBe(0.35);
     await saveDisabledProviders([], file);
     expect(await loadDisabledProviders(file)).toEqual([]);
+  });
+
+  test("empty and off-mode filters are never remembered", () => {
+    expect(addFilterHistory([], "   ", "and")).toEqual([]);
+    expect(addFilterHistory([], "gpt", "off")).toEqual([]);
+    expect(removeFilterHistory([{ text: "gpt", mode: "and" }], "  ")).toEqual([
+      { text: "gpt", mode: "and" },
+    ]);
+  });
+
+  test("a reused filter front-bumps, case-insensitively, latest casing and mode winning", () => {
+    const start = [
+      { text: "gpt", mode: "and" as const },
+      { text: "deepseek", mode: "and" as const },
+    ];
+    expect(addFilterHistory(start, "GPT", "or")).toEqual([
+      { text: "GPT", mode: "or" },
+      { text: "deepseek", mode: "and" },
+    ]);
+  });
+
+  test("the history caps at newest-first, trims, and round-trips beside the ceilings", async () => {
+    let entries: FilterEntry[] = [];
+    for (let i = 0; i < FILTER_HISTORY_MAX + 5; i++) entries = addFilterHistory(entries, `m${i}`, "and");
+    expect(entries).toHaveLength(FILTER_HISTORY_MAX);
+    expect(entries[0]).toEqual({ text: `m${FILTER_HISTORY_MAX + 4}`, mode: "and" });
+    const file = path.join(await tmp(), "picker.json");
+    await saveCeiling(1.5, file);
+    await saveFilterHistory([{ text: "  gpt  ", mode: "and" }], file);
+    expect(await loadFilterHistory(file)).toEqual([{ text: "gpt", mode: "and" }]);
+    expect(await loadCeiling(file)).toBe(1.5);
+  });
+
+  test("filter history defaults to none, and nonsense is none, never a throw", async () => {
+    const dir = await tmp();
+    expect(await loadFilterHistory(path.join(dir, "picker.json"))).toEqual([]);
+    const bad = path.join(dir, "bad.json");
+    await writeFile(bad, "{not json");
+    expect(await loadFilterHistory(bad)).toEqual([]);
+    for (const v of [{}, { filterHistory: "gpt" }, { filterHistory: [{ text: 1 }] }, []]) {
+      const f = path.join(dir, `${Math.random()}.json`);
+      await writeFile(f, JSON.stringify(v));
+      expect(await loadFilterHistory(f)).toEqual([]);
+    }
+  });
+
+  test("off-mode and duplicate rows on disk are dropped, on load and on save", async () => {
+    const dir = await tmp();
+    const f = path.join(dir, "disk.json");
+    await writeFile(
+      f,
+      JSON.stringify({
+        filterHistory: [
+          { text: "gpt", mode: "and" },
+          { text: "GPT", mode: "or" },
+          { text: "kept-off", mode: "off" },
+          { text: "  ", mode: "and" },
+        ],
+      }),
+    );
+    expect(await loadFilterHistory(f)).toEqual([{ text: "gpt", mode: "and" }]);
+    const out = path.join(dir, "out.json");
+    await saveFilterHistory(
+      [
+        { text: "gpt", mode: "and" },
+        { text: "GPT", mode: "or" },
+        { text: "off-row", mode: "off" },
+      ],
+      out,
+    );
+    expect(await loadFilterHistory(out)).toEqual([{ text: "gpt", mode: "and" }]);
+  });
+
+  test("removing one filter keeps the rest, case-insensitively", async () => {
+    const entries = [
+      { text: "gpt", mode: "and" as const },
+      { text: "deepseek", mode: "or" as const },
+    ];
+    expect(removeFilterHistory(entries, "GPT")).toEqual([{ text: "deepseek", mode: "or" }]);
+    expect(removeFilterHistory(entries, "missing")).toEqual(entries);
+    const file = path.join(await tmp(), "picker.json");
+    await saveFilterHistory(entries, file);
+    await saveFilterHistory(removeFilterHistory(await loadFilterHistory(file), "gpt"), file);
+    expect(await loadFilterHistory(file)).toEqual([{ text: "deepseek", mode: "or" }]);
+  });
+
+  test("a use front-bumps and replaces the visit's provisional entry", () => {
+    // First keystrokes of a visit: nothing provisional behind them.
+    expect(recordFilterUse([], { prev: null, text: "mus", mode: "and" })).toEqual([
+      { text: "mus", mode: "and" },
+    ]);
+    // Refined after a pause: the prefix goes, the full filter stays.
+    expect(
+      recordFilterUse([{ text: "mus", mode: "and" }], { prev: "mus", text: "muse 1.3", mode: "or" }),
+    ).toEqual([{ text: "muse 1.3", mode: "or" }]);
+  });
+
+  test("a use keeps older entries and drops only the replaced pair", () => {
+    const entries = [
+      { text: "mus", mode: "and" as const },
+      { text: "deepseek", mode: "and" as const },
+    ];
+    expect(recordFilterUse(entries, { prev: "mus", text: "muse 1.3", mode: "and" })).toEqual([
+      { text: "muse 1.3", mode: "and" },
+      { text: "deepseek", mode: "and" },
+    ]);
+  });
+
+  test("a use records nothing for empty or off-mode text", () => {
+    const entries = [{ text: "gpt", mode: "and" as const }];
+    expect(recordFilterUse(entries, { prev: null, text: "   ", mode: "and" })).toEqual(entries);
+    expect(recordFilterUse(entries, { prev: "gpt", text: "gpt", mode: "off" })).toEqual(entries);
+  });
+
+  test("a use caps the history newest-first", () => {
+    let entries: FilterEntry[] = [];
+    for (let i = 0; i < FILTER_HISTORY_MAX + 1; i++)
+      entries = recordFilterUse(entries, { prev: null, text: `m${i}`, mode: "and" });
+    expect(entries).toHaveLength(FILTER_HISTORY_MAX);
+    expect(entries[0]).toEqual({ text: `m${FILTER_HISTORY_MAX}`, mode: "and" });
   });
 });

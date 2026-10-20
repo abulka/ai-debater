@@ -162,6 +162,7 @@ supersede rule.
 | L | Picker: lock to the selected provider — the view, the filter and H all still apply inside it, and so does A. Press again to clear |
 | F | Picker: providers on/off — every provider with a checkbox for whether the picker shows it. Space toggles, `a` all on, `o` all off, Esc returns. Applies to every view and persists in `~/.config/adv/picker.json` |
 | Tab | Picker: cycle the filter AND (every word, the default) → OR (any word) → OFF (text kept, ignored) — session-only, in every view. `"…"` quotes an ordered phrase (`"deep 4.1"` lands on `deepseek-v4.1-flash`) |
+| R | Picker: filter history — every filter used on the list, newest first. Pausing, moving (↑↓ wheel pages), any command key, Enter, Esc, and `R` itself all record. One provisional entry per visit, replaced as you refine. `d` removes one, `D` clears all after `y`. Persists in `~/.config/adv/picker.json` |
 | ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |
 | < > | Cheap views: move the active ceiling — value in $0.10 steps, taskcost geometrically (×1.5 / ÷1.5). Capped at the dearest measured cost, so `>` past everything is a no-op. Saved to `~/.config/adv/picker.json` |
 | ? | Picker: what each provider bills to, whether a key is present, what the ★ ✓ ✗ marks mean, and every failure a ping has found |
@@ -311,6 +312,17 @@ decide the deliverable — a plan for a change, or an answer about the code. The
 choice is saved like the models and applies in every directory; a repository
 cannot pin it. One workflow either way: draft, have another family check it,
 settle the calls.
+
+**A filter is recorded when it is used, not when it is left.**
+`R` recalls past filters, and recording only on leaving left the history blank
+for a browse visit whose Enter is inert. So a use is anything that proves the
+filter did something: a ~800 ms pause after typing, moving through the narrowed
+list (arrows, pages, wheel), any uppercase command or `?`, Enter, Esc — and `R`
+itself, which keeps the current filter before opening history. A visit
+contributes at most one provisional entry, replaced as the filter is refined,
+so `mus` paused on the way to `muse 1.3` leaves only the full filter. Final
+commits are never replaced. Empty text and `OFF`-mode text record nothing, so
+applying an entry always narrows.
 
 Probe a model before relying on it:
 
