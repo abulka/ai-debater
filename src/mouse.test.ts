@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { decodeMouse, MOUSE_OFF, MOUSE_ON, wheelDirection, wheelRows, WHEEL_STEP } from "./mouse.ts";
+import { clickY, decodeMouse, MOUSE_OFF, MOUSE_ON, wheelDirection, wheelRows, WHEEL_STEP } from "./mouse.ts";
 
 describe("decodeMouse", () => {
   test("reads a wheel report", () => {
@@ -30,6 +30,31 @@ describe("the wheel is told apart from the buttons", () => {
     expect(wheelDirection({ button: 64, x: 1, y: 1, press: true })).toBe(-1);
     expect(wheelDirection({ button: 65, x: 1, y: 1, press: true })).toBe(1);
     expect(wheelDirection({ button: 0, x: 1, y: 1, press: true })).toBe(0);
+  });
+});
+
+describe("clickY", () => {
+  test("a left press reports its terminal row", () => {
+    expect(clickY("\u001b[<0;8;12M")).toBe(12);
+  });
+
+  test("releases, the wheel and other buttons are not clicks", () => {
+    expect(clickY("\u001b[<0;8;12m")).toBeNull();
+    expect(clickY("\u001b[<64;1;1M")).toBeNull();
+    expect(clickY("\u001b[<65;1;1M")).toBeNull();
+    expect(clickY("\u001b[<2;5;5M")).toBeNull();
+  });
+
+  test("the last press in the chunk wins", () => {
+    expect(clickY("\u001b[<0;1;3M\u001b[<0;1;9M")).toBe(9);
+  });
+
+  test("a chunk with a wheel notch and a click yields the click", () => {
+    expect(clickY("\u001b[<64;1;1M\u001b[<0;4;7M")).toBe(7);
+  });
+
+  test("plain typing is no click", () => {
+    expect(clickY("hello")).toBeNull();
   });
 });
 

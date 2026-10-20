@@ -613,7 +613,14 @@ spike/              M0
     + copy on release). It was removed: it needed the app to know its own screen
     origin — which is not row 1, because the shell's prompt is above it — and it
     fought the wheel while dragging. The terminal does selection better than we
-    did. Do not rebuild it without solving the origin first.
+    did. Do not rebuild it without solving the origin first. Click-to-select in
+    the picker (`src/click.ts`, `clickY` in `src/mouse.ts`) is the solved half
+    of that problem, not a reopening: the fullscreen alternate screen puts the
+    live region at row 1, `<Static>` is banned so nothing sits above it, Ink 8
+    omits the trailing newline when the frame fills the viewport, and each row
+    is measured with `measureElement` rather than chrome arithmetic — so a
+    terminal row minus one is a layout row. `--no-alt-screen` has no knowable
+    origin, so clicks stay off there; a click selects, never commits.
   - `startTui` turns reporting off again on the way out (`finally` plus
     `process.once("exit")`), or the reader's shell is left sending reports. There
     is no package to borrow: `ink-mouse` and `ink-mouse-events` do not exist, and

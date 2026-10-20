@@ -23,10 +23,11 @@
 /**
  * Button events, in SGR form.
  *
- * 1000 is the wheel: a notch is reported as a button press with a code of its
- * own. 1006 says the coordinates are the extended kind, which is what every
- * terminal in use sends. Nothing here asks for motion: this app does not track
- * a drag, it just wants the wheel — text selection is the terminal's job, which
+ * 1000 is normal tracking: every button press and release reports, and the
+ * wheel reports as buttons 64/65 of its own. 1006 says the coordinates are
+ * the extended kind, which is what every terminal in use sends. Nothing here
+ * asks for motion (1002): this app does not track a drag, it just wants the
+ * wheel plus discrete clicks — text selection stays the terminal's job, which
  * is what Ctrl+T hands back to it.
  */
 export const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
@@ -91,6 +92,21 @@ export function wheelRows(data: string): number {
   let rows = 0;
   for (const event of decodeMouse(data)) rows += wheelDirection(event) * WHEEL_STEP;
   return rows;
+}
+
+/**
+ * The terminal row of a left click in this chunk of stdin, if any.
+ *
+ * SGR rows are 1-based terminal coordinates. The last press wins, so a fast
+ * double-click settles on one move; releases (`m`) never count, and neither
+ * do the wheel (64/65), middle/right buttons, or drag modifiers.
+ */
+export function clickY(data: string): number | null {
+  let found: number | null = null;
+  for (const event of decodeMouse(data)) {
+    if (event.button === 0 && event.press) found = event.y;
+  }
+  return found;
 }
 
 /*

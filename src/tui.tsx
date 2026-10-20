@@ -1,4 +1,5 @@
-import { Box, Text, render, useApp, useInput } from "ink";
+import { Box, Text, measureElement, render, useApp, useInput } from "ink";
+import type { DOMElement } from "ink";
 import path from "node:path";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
@@ -50,7 +51,8 @@ import {
 import { loadAAKey, saveAAKey } from "./aa-key.ts";
 import { refreshAllBenchmarks, verifyAAKey } from "./artificialanalysis.ts";
 import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_REFRESH_DAYS, DEFAULT_TASK_CEILING, addFilterHistory, cycleRefreshDays, loadCeiling, loadDisabledProviders, loadFilterHistory, loadRefreshDays, loadTaskCeiling, recordFilterUse, refreshDaysMs, removeFilterHistory, roundCeiling, saveCeiling, saveDisabledProviders, saveFilterHistory, saveRefreshDays, saveTaskCeiling, stepCeiling, type FilterEntry } from "./prefs.ts";
-import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
+import { mouseAccepting, MOUSE_OFF, MOUSE_ON, clickY, setMouseAccepting, wheelRows } from "./mouse.ts";
+import { rowAt } from "./click.ts";
 import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES, type ProviderBill } from "./providers.ts";
 import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, probeHint, type ProbeCache } from "./probe.ts";
 import { readOpenCodeModels } from "./opencode-state.ts";
@@ -1008,6 +1010,8 @@ function Pick({
   priceBasis,
   taskCeiling,
   hintLines,
+  clicksEnabled,
+  onSelectRow,
 }: {
   role: "drafter" | "reviewer";
   /** Browse: Enter does nothing, Esc goes home. Select: Enter assigns, Esc returns to the debate screen. */
@@ -1065,6 +1069,15 @@ function Pick({
    * tail, marked with `…`.
    */
   hintLines: string[];
+  /**
+   * Whether a mouse click may move the cursor. True only on the alternate
+   * screen while the app owns the mouse: with `--no-alt-screen` the live
+   * region's origin is unknowable, and with the mouse handed to the terminal
+   * (Ctrl+T) the press never arrives here at all.
+   */
+  clicksEnabled: boolean;
+  /** Move the cursor to this item index. A click selects, never commits. */
+  onSelectRow: (itemIndex: number) => void;
 }) {  const { rows, items, favourite } = list;
   const cursor = items[index]?.row ?? 0;
   /**
@@ -1180,6 +1193,45 @@ function Pick({
   useEffect(() => {
     pickStart.current = start;
   }, [start, pickStart]);
+  /**
+   * Click-to-select: each selectable row registers its DOM node, and a click
+   * measures them against the terminal row. Group and provider headers carry
+   * no node, so clicking one is a no-op. React's null-call on unmount keeps
+   * the map exactly the mounted window — no pruning, no stale rows.
+   *
+   * The frame is the terminal on the alternate screen (root `height={termRows}`
+   * with no `<Static>` above the live region), so the live region's top is
+   * terminal row 1 and a terminal row minus one is a layout row. Inline mode
+   * (`--no-alt-screen`) has no knowable origin, so `clicksEnabled` stays off.
+   */
+  const rowNodes = useRef(new Map<number, DOMElement>());
+  const rowToItem = useMemo(() => new Map(items.map((it, idx) => [it.row, idx])), [items]);
+  const selectRef = useRef(onSelectRow);
+  selectRef.current = onSelectRow;
+  useEffect(() => {
+    if (!clicksEnabled) return;
+    const onData = (chunk: Buffer | string) => {
+      if (!mouseAccepting()) return;
+      const termY = clickY(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+      if (termY === null) return;
+      const y = termY - 1;
+      const rects: { index: number; top: number; height: number }[] = [];
+      for (const [idx, node] of rowNodes.current) {
+        try {
+          const m = measureElement(node);
+          rects.push({ index: idx, top: m.y, height: m.height });
+        } catch {
+          /* a node that cannot be measured is not clickable this frame */
+        }
+      }
+      const hit = rowAt(rects, y);
+      if (hit !== null) selectRef.current(hit);
+    };
+    process.stdin.on("data", onData);
+    return () => {
+      process.stdin.off("data", onData);
+    };
+  }, [clicksEnabled]);
   const marked = items.length === 0;
   // Counted over the view's own items, so the number stays true when the
   // filter, the view, or H narrows what is on screen. Split by source when
@@ -1363,8 +1415,16 @@ function Pick({
           const anchor = !selected && isReferenceRow(m);
           const accent = selected ? THEME.accent : anchor ? THEME.warn : undefined;
           const dimmed = !selected && !anchor;
+          const itemIndex = rowToItem.get(absolute) ?? -1;
           return (
-            <Box key={m}>
+            <Box
+              key={m}
+              ref={(el) => {
+                if (itemIndex < 0) return;
+                if (el) rowNodes.current.set(itemIndex, el);
+                else rowNodes.current.delete(itemIndex);
+              }}
+            >
               {/* Marks, not colour: a monochrome terminal loses decoration and
                   nothing else. ★ is OpenCode's own list; ✗ is a verdict. Two
                   columns of two, so a row starts at the same offset whatever
@@ -2691,7 +2751,7 @@ function callLine(info: {
   return `${what}${info.retry ? " (retry)" : ""} — ${(info.ms / 1000).toFixed(1)}s, ${cost}`;
 }
 
-function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) => void }) {
+function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; onRecap?: (text: string | null) => void }) {
   const { exit } = useApp();
   /* One handler for the whole app, in every phase, so no screen forgets it. */
   useInput((input, key) => {
@@ -5817,6 +5877,12 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         priceBasis={priceBasis}
         taskCeiling={taskCeiling}
         hintLines={hintLines}
+        clicksEnabled={mouseReporting && altScreen}
+        onSelectRow={(i) => {
+          setPingArmed(null);
+          commitFilter(false);
+          setPickIndex(i);
+        }}
       />
     );
   } else if (phase === "providers") {
@@ -6159,7 +6225,12 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
             wrap="truncate"
             spans={[
               { text: "◌ mouse: the pane", dim: true },
-              { text: " — the wheel scrolls it · Ctrl+T for text selection", dim: true },
+              {
+                text: altScreen
+                  ? " — click a row, the wheel scrolls it · Ctrl+T for text selection"
+                  : " — the wheel scrolls it · Ctrl+T for text selection",
+                dim: true,
+              },
             ]}
           />
         ) : (
@@ -6189,9 +6260,10 @@ export async function startTui(opts: { repo: string; altScreen?: boolean }): Pro
   // shell instead. Collected through the session, printed after Ink restores
   // the primary screen.
   let recap: string | null = null;
+  const alt = opts.altScreen ?? true;
   try {
-    const app = render(<App repo={opts.repo} onRecap={(text) => { recap = text; }} />, {
-      alternateScreen: opts.altScreen ?? true,
+    const app = render(<App repo={opts.repo} altScreen={alt} onRecap={(text) => { recap = text; }} />, {
+      alternateScreen: alt,
     });
     await app.waitUntilExit();
   } finally {
