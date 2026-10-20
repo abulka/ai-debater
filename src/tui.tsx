@@ -24,7 +24,7 @@ import {
   type GateItem,
 } from "./gate-model.ts";
 import { familyClash, familyOf, isReferenceRow, listModels, orderedModels, providerOf, rankModels } from "./models.ts";
-import type { PickerView } from "./models.ts";
+import type { FilterMode, PickerView } from "./models.ts";
 import { costOf, cannotUseTools, formatCostBasis, loadCatalogue, type Catalogue, type PriceBasis } from "./catalogue.ts";
 import {
   countScoredBySource,
@@ -967,8 +967,8 @@ function Pick({
   filter: string;
   /** The caret inside the filter, clamped to it where it renders. */
   filterCaret: number;
-  /** AND needs every filter word; OR needs any one. Tab flips it. */
-  filterMode: "and" | "or";
+  /** AND needs every filter word; OR needs any one; OFF ignores the text. Tab cycles. */
+  filterMode: FilterMode;
   index: number;
   /** Visible model rows, from the viewport budget: the frame must fit the terminal. */
   height: number;
@@ -1187,9 +1187,10 @@ function Pick({
         />
       </Box>
       <Box>
-        {/* AND is the default and stays unmarked; the `or` appears only when
-            Tab has flipped the mode, so the marker always means something. */}
-        <Text dimColor>{filterMode === "or" ? "filter or  " : "filter  "}</Text>
+        {/* AND is the default and stays unmarked; `or` or `off` appears only
+            when Tab has left the default, so the marker always means
+            something. */}
+        <Text dimColor>{filterMode === "and" ? "filter  " : `filter ${filterMode}  `}</Text>
         {filter ? (
           <FieldText text={filter} cursor={filterCaret} />
         ) : (
@@ -1575,7 +1576,7 @@ function providerLines(
   ]);
   lines.push([
     {
-      text: "type to filter · Tab switches AND (every word) and OR (any word) · ←→ steps the caret inside the filter · ^A ^E jump to its ends · Esc leaves the picker, it never clears the filter",
+      text: "type to filter · Tab cycles AND (every word), OR (any word), OFF (text kept, ignored) · \"…\" quotes an ordered phrase — \"deep 4.1\" lands on deepseek-v4.1-flash · ←→ steps the caret inside the filter · ^A ^E jump to its ends · Esc leaves the picker, it never clears the filter",
       dim: true,
     },
   ]);
@@ -2639,8 +2640,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [filter, setFilter] = useState("");
   /** The caret inside the filter, clamped to it on every render. */
   const [filterCaret, setFilterCaret] = useState(0);
-  /** AND needs every filter word; OR needs any one. Session-only, like `D`/`S`. */
-  const [filterMode, setFilterMode] = useState<"and" | "or">("and");
+  /** AND needs every filter word; OR needs any one; OFF ignores the text. Session-only, like `D`/`S`. */
+  const [filterMode, setFilterMode] = useState<FilterMode>("and");
   const [pickIndex, setPickIndex] = useState(0);
   const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
   /** What the picker lists: grouped providers, or a flat score-ordered view. */
@@ -4223,14 +4224,14 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setPickIndex(0);
         return;
       }
-      // Tab flips the filter between AND (every word) and OR (any word).
-      // Before the printable branch: it would otherwise type a literal tab
-      // into the filter. The list is a different list either way, so the
-      // cursor resets like every other filter edit.
+      // Tab cycles AND → OR → OFF. Before the printable branch: it would
+      // otherwise type a literal tab into the filter. The list is a different
+      // list either way, so the cursor resets like every other filter edit —
+      // and OFF keeps the text, so cycling back restores it.
       if (key.tab) {
         setPingArmed(null);
         setNotice(null);
-        setFilterMode((m) => (m === "and" ? "or" : "and"));
+        setFilterMode((m) => (m === "and" ? "or" : m === "or" ? "off" : "and"));
         setPickIndex(0);
         return;
       }

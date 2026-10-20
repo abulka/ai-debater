@@ -6,6 +6,7 @@ import {
   isReferenceRow,
   matchesFilter,
   orderedModels,
+  parseFilterTerms,
   providerOf,
   providerRank,
   rankModels,
@@ -335,6 +336,17 @@ describe("orderedModels", () => {
     // AND is still the default: the same query is empty without the flag.
     expect(models(orderedModels(refs, [], [], "muse mimo", { nameOf }).rows)).toEqual([]);
   });
+
+  test("filterMode off ignores the text: groups and headers, not the flat list", () => {
+    const refs = ["opencode-go/muse-spark-1-3-contributor", "opencode-go/mimo-v2-flash"];
+    const list = orderedModels(refs, [], [], "zzz-no-match", { filterMode: "off" });
+    // The text would match nothing; OFF shows everything, grouped by provider.
+    expect(list.items).toHaveLength(2);
+    expect(list.rows[0]).toMatchObject({ kind: "provider" });
+    // Same shape as the empty filter — OFF is an empty filter with kept text.
+    const plain = orderedModels(refs, [], [], "");
+    expect(list.rows).toEqual(plain.rows);
+  });
 });
 
 describe("matchesFilter", () => {
@@ -391,6 +403,57 @@ describe("matchesFilter", () => {
     expect(matchesFilter("x/glm-1", null, "glm -", "or")).toBe(true);
     // The separator is dead weight, not a vote: with no live token it is a miss.
     expect(matchesFilter("abc", null, "- -", "or")).toBe(false);
+  });
+});
+
+describe("parseFilterTerms", () => {
+  const words = (filter: string) => parseFilterTerms(filter);
+  test("bare words are single-word terms", () => {
+    expect(words("muse mimo")).toEqual([
+      { words: ["muse"], phrase: false },
+      { words: ["mimo"], phrase: false },
+    ]);
+  });
+  test("a quote pair is one phrase term", () => {
+    expect(words('"deep 4.1" mimo')).toEqual([
+      { words: ["deep", "4.1"], phrase: true },
+      { words: ["mimo"], phrase: false },
+    ]);
+  });
+  test("an unterminated quote takes the rest; empties and strays vanish", () => {
+    expect(words('muse "deep 4')).toEqual([
+      { words: ["muse"], phrase: false },
+      { words: ["deep", "4"], phrase: true },
+    ]);
+    expect(words('""')).toEqual([]);
+    expect(words('"')).toEqual([]);
+    expect(words("")).toEqual([]);
+  });
+});
+
+describe("matchesFilter phrases", () => {
+  test("a phrase needs its words in order, gaps allowed, separators relaxed", () => {
+    expect(matchesFilter("opencode-go/deepseek-v4.1-flash", null, '"deep 4.1"')).toBe(true);
+    expect(matchesFilter("opencode-go/deepseek-v4.1-flash", null, '"deep flash"')).toBe(true);
+    // Wrong order is a miss: 4.1 never comes before deep.
+    expect(matchesFilter("opencode-go/deepseek-v4.1-flash", null, '"4.1 deep"')).toBe(false);
+    expect(matchesFilter("opencode-go/deepseek-v4.1-flash", null, '"deep wonder"')).toBe(false);
+  });
+  test("a phrase matches by AA name too, but never across ref and name", () => {
+    expect(matchesFilter("x/y", "Muse Spark 1.3 (Max)", '"spark max"')).toBe(true);
+    expect(matchesFilter("x/y", "Muse Spark 1.3 (Max)", '"spark 1.3"')).toBe(true);
+    // "y spark": y is only in the ref, spark only in the name — split, so a miss.
+    expect(matchesFilter("x/y", "Muse Spark 1.3 (Max)", '"y spark"')).toBe(false);
+  });
+  test("a phrase is one term in OR: no bare-word explosion", () => {
+    // Bare `deep` alone would match the ref; `"q deep"` must not.
+    expect(matchesFilter("opencode-go/deepseek-v4.1-flash", null, '"q deep" mimo', "or")).toBe(false);
+    expect(matchesFilter("opencode-go/deepseek-v4.1-flash", null, '"deep 4.1" mimo', "or")).toBe(true);
+    expect(matchesFilter("x/mimo-v2", null, '"deep 4.1" mimo', "or")).toBe(true);
+  });
+  test("an all-separator phrase matches nothing", () => {
+    expect(matchesFilter("abc", null, '"- ."')).toBe(false);
+    expect(matchesFilter("abc", null, '"- ."', "or")).toBe(false);
   });
 });
 

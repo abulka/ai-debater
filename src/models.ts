@@ -195,28 +195,92 @@ export interface ModelList {
  * match, each against the ref or (when the row resolved one) the benchmark
  * display name. Separators are ignored on both sides, so `muse 1.3`,
  * `spark-1.3` and `spark 13` all land on `muse-spark-1.3` — and on
- * `Muse Spark 1.3 (Max)` by its AA name. An empty filter matches everything;
- * an all-separator token matches nothing, never everything (in OR it must
- * not become a match-all). `mode` picks AND (every token, the default) or
- * OR (any token).
+ * `Muse Spark 1.3 (Max)` by its AA name. A phrase needs its words in order
+ * with gaps allowed — `"deep 4.1"` lands on `deepseek-v4.1-flash` — against
+ * one haystack, never split across ref and name. An empty filter matches
+ * everything; an all-separator token matches nothing, never everything (in
+ * OR it must not become a match-all). `mode` picks AND (every token, the
+ * default) or OR (any token).
  */
+/** AND needs every filter term; OR needs any one; OFF ignores the text. */
+export type FilterMode = "and" | "or" | "off";
+
+/**
+ * The filter's terms: bare words, and `"…"` pairs as one phrase term. A quote
+ * pair groups its words so the mode logic treats them as a unit — `"deep 4.1"`
+ * in OR mode is phrase-rows plus the rest, not bare-`deep` rows. An
+ * unterminated quote takes the rest of the string, the search-UI convention;
+ * an empty pair and stray quote chars contribute nothing.
+ */
+export interface FilterTerm {
+  /** The term's words, lowercased, in order. */
+  words: string[];
+  /** True for a `"…"` phrase: ordered, gaps allowed. False for a bare word. */
+  phrase: boolean;
+}
+
+export function parseFilterTerms(filter: string): FilterTerm[] {
+  const terms: FilterTerm[] = [];
+  const lower = filter.toLowerCase();
+  let i = 0;
+  const pushWords = (text: string) => {
+    for (const w of text.split(/\s+/).filter(Boolean)) terms.push({ words: [w], phrase: false });
+  };
+  while (i < lower.length) {
+    const open = lower.indexOf('"', i);
+    if (open === -1) {
+      pushWords(lower.slice(i));
+      break;
+    }
+    pushWords(lower.slice(i, open));
+    const close = lower.indexOf('"', open + 1);
+    const body = close === -1 ? lower.slice(open + 1) : lower.slice(open + 1, close);
+    const words = body.split(/\s+/).filter(Boolean);
+    if (words.length > 0) terms.push({ words, phrase: true });
+    if (close === -1) break;
+    i = close + 1;
+  }
+  return terms;
+}
+
 export function matchesFilter(
   ref: string,
   name: string | null,
   filter: string,
-  mode: "and" | "or" = "and",
+  mode: FilterMode = "and",
 ): boolean {
-  const tokens = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return true;
+  const terms = parseFilterTerms(filter);
+  if (terms.length === 0) return true;
   const hay = [ref.toLowerCase(), ...(name ? [name.toLowerCase()] : [])];
   const flat = hay.map((h) => h.replace(/[-_./ ]/g, ""));
-  const hit = (t: string): boolean => {
+  const wordHit = (t: string): boolean => {
     if (hay.some((h) => h.includes(t))) return true;
     const ft = t.replace(/[-_./]/g, "");
     return ft.length > 0 && flat.some((f) => f.includes(ft));
   };
-  // AND needs every token; OR needs any one, so `muse mimo` is the union.
-  return mode === "or" ? tokens.some(hit) : tokens.every(hit);
+  // Word spans with separators ignored: find each word in turn past the last,
+  // so `"deep flash"` skips `deepseek-v4.1-` and still lands. A word that is
+  // all separators contributes nothing — it would otherwise be a free hit.
+  const phraseHit = (words: string[]): boolean => {
+    const cleaned = words
+      .map((w) => w.replace(/[-_./]/g, ""))
+      .filter((w) => w.length > 0);
+    if (cleaned.length === 0) return false;
+    return flat.some((f) => {
+      let from = 0;
+      return cleaned.every((w) => {
+        const at = f.indexOf(w, from);
+        if (at === -1) return false;
+        from = at + w.length;
+        return true;
+      });
+    });
+  };
+  const hit = (term: FilterTerm): boolean =>
+    term.phrase ? phraseHit(term.words) : wordHit(term.words[0]!);
+  // AND needs every term; OR needs any one, so `muse mimo` is the union —
+  // and a quoted phrase is one term, not its words apart.
+  return mode === "or" ? terms.some(hit) : terms.every(hit);
 }
 
 /**
@@ -258,8 +322,8 @@ export function orderedModels(
     providerLock?: string;
     /** Providers the reader switched off on the `F` screen. Composes with the lock. */
     disabled?: ReadonlySet<string>;
-    /** `or` needs any filter token to match; the default `and` needs every one. */
-    filterMode?: "and" | "or";
+    /** `or` needs any filter term to match; the default `and` needs every one. `off` ignores the text. */
+    filterMode?: FilterMode;
   } = {},
 ): ModelList {
   const pool = providerPool(all, opts.providerLock, opts.disabled);
@@ -278,7 +342,7 @@ export function orderedModels(
     rows.push({ kind: "model", ref });
   };
 
-  if (filter.trim()) {
+  if (opts.filterMode !== "off" && filter.trim()) {
     const seen = new Set<string>();
     for (const ref of [...grouped.favourites, ...grouped.recents, ...grouped.rest]) {
       if (seen.has(ref) || !matchesFilter(ref, nameOf(ref), filter, opts.filterMode)) continue;
@@ -357,8 +421,8 @@ export interface RankOptions {
    * filter. Defaults to `score`.
    */
   rankBy?: "score" | "cost";
-  /** `or` needs any filter token to match; the default `and` needs every one. */
-  filterMode?: "and" | "or";
+  /** `or` needs any filter token to match; the default `and` needs every one. `off` ignores the text. */
+  filterMode?: FilterMode;
 }
 
 const scoredOnly = (scoreOf: (ref: string) => ModelScore, refs: string[]): string[] =>
@@ -376,11 +440,12 @@ function visibleRefs(
   hideUnscored: boolean,
   scoreOf: (ref: string) => ModelScore,
   nameOf: (ref: string) => string | null = () => null,
-  filterMode: "and" | "or" = "and",
+  filterMode: FilterMode = "and",
 ): string[] {
-  const matching = filter.trim()
-    ? refs.filter((ref) => matchesFilter(ref, nameOf(ref), filter, filterMode))
-    : [...refs];
+  const matching =
+    filterMode !== "off" && filter.trim()
+      ? refs.filter((ref) => matchesFilter(ref, nameOf(ref), filter, filterMode))
+      : [...refs];
   return hideUnscored ? scoredOnly(scoreOf, matching) : matching;
 }
 

@@ -66,9 +66,10 @@ describe("buildHintText", () => {
     expect(buildHintText({ ...base, disabledCount: 2 })).toContain("F providers (2 off)");
   });
 
-  test("the Tab key names its destination, both ways", () => {
+  test("the Tab key names its destination, all three ways", () => {
     expect(buildHintText(base)).toContain("Tab\u00A0filter:\u00A0OR");
-    expect(buildHintText({ ...base, filterMode: "or" })).toContain("Tab\u00A0filter:\u00A0AND");
+    expect(buildHintText({ ...base, filterMode: "or" })).toContain("Tab\u00A0filter:\u00A0OFF");
+    expect(buildHintText({ ...base, filterMode: "off" })).toContain("Tab\u00A0filter:\u00A0AND");
   });
 });
 
