@@ -129,7 +129,7 @@ import {
   scrollerHeight,
 } from "./viewport.ts";
 import { copyMarkdown, copyNotice } from "./clipboard.ts";
-import { buildHintText, hintWidth, wrapHintLines, type HintState } from "./hints.ts";
+import { buildHintText, hintRowSpans, hintWidth, wrapHintLines, type HintState } from "./hints.ts";
 import { isKillToEnd, isWordLeft, isWordRight, killToEnd, wordLeft, wordRight } from "./lineedit.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 
@@ -1527,9 +1527,18 @@ function Pick({
           narrow terminal shows every row, paid for by the log window first. */}
       {hintLines.map((line, i) => (
         <Box key={i}>
-          <Text dimColor wrap="truncate">
-            {line}
-          </Text>
+          {/* Keys take the key colour, labels recede: the eye finds "which key"
+              without reading "what it does". Green, not the cyan every other
+              footer uses: the picker's selection, headers and view mode are all
+              cyan, so cyan keys would dissolve into the chrome. `hintRowSpans`
+              reproduces the row byte-for-byte, so the one-row budget is
+              untouched. */}
+          <Line
+            wrap="truncate"
+            spans={hintRowSpans(line).map((s) =>
+              s.key ? { text: s.text, color: THEME.key, bold: true } : { text: s.text, dim: true },
+            )}
+          />
         </Box>
       ))}
       {notice && (

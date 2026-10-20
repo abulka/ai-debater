@@ -106,6 +106,64 @@ export function hintWidth(cols: number = process.stdout.columns ?? 100): number 
   return Math.max(24, cols - 1);
 }
 
+/** One run of a hint row: a command key, or the grey around it. */
+export interface HintSpan {
+  text: string;
+  key: boolean;
+}
+
+/**
+ * A key is a command letter, `Tab`, `?`, the whole `< >` ceiling chord — or
+ * navigation (`Enter`, `Esc`, `↑↓`, `^F/^B` chords). Movement is highlighted
+ * too: a footer where half the keys glow and half don't reads as broken, not
+ * as hierarchy.
+ */
+const HINT_KEY_HEAD = /^(?:[A-Z]|Tab|\?|Enter|Esc|[↑↓←→]+|\^[A-Z]\/\^[A-Z])$/;
+/** The ceiling chord, glued with a non-breaking space like every other pair. */
+const CEIL_WORD = "<" + "\u00A0" + ">";
+
+/**
+ * One wrapped hint row as key/label spans, for the `Pick` footer.
+ *
+ * Only the part before a word's first non-breaking space can be a key — that
+ * is where `buildHintText` puts the command (the `D` of a `D sort by` pair,
+ * the `Tab` of a `Tab filter: OR` pair), while the tail holds lookalikes that
+ * must stay grey (`AA`, `OR`). The `< >` chord matches whole instead: splitting it would
+ * light `<` and abandon `>`.
+ *
+ * Concatenating the span texts reproduces the row byte-for-byte: separators
+ * pass through as grey spans, so no row gains or loses a character and the
+ * viewport's one-element-is-one-row budget is untouched.
+ */
+export function hintRowSpans(row: string): HintSpan[] {
+  const out: HintSpan[] = [];
+  for (const part of row.split(/([ ]+)/)) {
+    if (!part) continue;
+    // A separator run, passed through grey and whole.
+    if (/^[ ]+$/.test(part)) {
+      out.push({ text: part, key: false });
+      continue;
+    }
+    if (part === CEIL_WORD) {
+      out.push({ text: part, key: true });
+      continue;
+    }
+    const nbsp = part.indexOf("\u00A0");
+    if (nbsp >= 0) {
+      const head = part.slice(0, nbsp);
+      if (HINT_KEY_HEAD.test(head)) {
+        out.push({ text: head, key: true });
+        out.push({ text: part.slice(nbsp), key: false });
+      } else {
+        out.push({ text: part, key: false });
+      }
+      continue;
+    }
+    out.push({ text: part, key: HINT_KEY_HEAD.test(part) });
+  }
+  return out;
+}
+
 /**
  * Greedy word-wrap the hint text to the width. Rows break at spaces, never
  * mid-word; a word longer than the row is sliced rather than overhanging.

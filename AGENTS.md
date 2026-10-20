@@ -473,6 +473,14 @@ spike/              M0
   `recordProbe` reads the whole file and writes one entry back, so a field the
   reader drops is a field every subsequent write erases. That bug silently
   un-marked every `T`.
+- **Every footer lights its keys the same way.** The picker's hint area used to
+  be one grey string while every other footer styled its keys; now
+  `hintRowSpans` (in `hints.ts`) splits a wrapped row into key/label spans and
+  the `Pick` footer renders keys in green + bold (`THEME.key`) through `Line` —
+  deliberately not `hints()` accent cyan, which the picker already spends on
+  selection, headers and the view mode. Only the part before a word’s first NBSP can be a key (`D`, `Tab` —
+  never the `AA`/`OR` in the tail), and concatenating the spans reproduces the row
+  byte-for-byte, so the one-row budget is untouched.
 - **A model row must never exceed the terminal's real width.** The picker lays
   out marks + ref + price + status, and every part is truncated rather than
   allowed to wrap, because the window counts lines. Two bugs lived here: a

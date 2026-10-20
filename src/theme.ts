@@ -34,6 +34,15 @@ export const THEME = {
   code: "green",
   /** Confirmations: saved, copied, "this is the answer you gave before". */
   ok: "green",
+  /**
+   * Pressable command keys in the picker footer (`V`, `Tab`, `?`). Green, not
+   * the cyan that `accent` uses everywhere else on the screen: selection,
+   * headers and the view mode are all cyan, so cyan keys would dissolve into
+   * the chrome instead of reading as "press me". `ok` is the same green, but
+   * the two never share a screen — confirmations live on committed screens,
+   * keys on choosing ones.
+   */
+  key: "green",
   /** The actively-sorted column header. Purple: neither chrome nor warning. */
   sort: "magenta",
   warn: "yellow",

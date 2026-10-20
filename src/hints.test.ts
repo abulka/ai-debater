@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildHintText, hintWidth, wrapHintLines, type HintState } from "./hints.ts";
+import { buildHintText, hintRowSpans, hintWidth, wrapHintLines, type HintState } from "./hints.ts";
 
 const base: HintState = {
   pickMode: "select",
@@ -143,5 +143,50 @@ describe("wrapHintLines", () => {
   test("hintWidth never drops below the row floor", () => {
     expect(hintWidth(10)).toBe(24);
     expect(hintWidth(100)).toBe(99);
+  });
+});
+
+describe("hintRowSpans", () => {
+  test("concatenating the spans reproduces every real row byte-for-byte", () => {
+    // Every combination that changes the hint text: views, ranks, lock, modes.
+    const states: HintState[] = [
+      base,
+      { ...base, pickMode: "browse" },
+      { ...base, pickMode: "build", buildStep: "reviewer" },
+      { ...base, view: "provider", providerLock: "groq", disabledCount: 2, filterMode: "off" },
+      { ...base, view: "value", rankAcd: true, filterMode: "or" },
+      { ...base, view: "taskcost", rankCost: true, rankAcd: true },
+    ];
+    for (const s of states) {
+      const text = buildHintText(s);
+      for (const width of [44, 60, 100]) {
+        for (const row of wrapHintLines(text, width)) {
+          expect(hintRowSpans(row).map((p) => p.text).join("")).toBe(row);
+        }
+      }
+    }
+  });
+
+  test("only the command head is a key — lookalikes in the tail stay grey", () => {
+    const spans = hintRowSpans("D\u00A0sort\u00A0by\u00A0AA\u00A0intelligence");
+    expect(spans[0]).toEqual({ text: "D", key: true });
+    expect(spans.some((p) => p.key && p.text !== "D")).toBe(false);
+    const tab = hintRowSpans("Tab\u00A0filter:\u00A0OR");
+    expect(tab[0]).toEqual({ text: "Tab", key: true });
+    expect(tab.some((p) => p.text.includes("OR") && p.key)).toBe(false);
+  });
+
+  test("bare keys light — commands and navigation alike", () => {
+    const spans = hintRowSpans("↑↓ choose · Enter select · V switch view · ? providers");
+    expect(spans.filter((p) => p.key).map((p) => p.text)).toEqual(["↑↓", "Enter", "V", "?"]);
+    expect(hintRowSpans("^F/^B page · ^D/^U half · Esc back").filter((p) => p.key).map((p) => p.text)).toEqual([
+      "^F/^B",
+      "^D/^U",
+      "Esc",
+    ]);
+    // The ceiling chord lights whole, never split.
+    expect(hintRowSpans("<\u00A0> value ceiling: $0.80").filter((p) => p.key).map((p) => p.text)).toEqual([
+      "<\u00A0>",
+    ]);
   });
 });
