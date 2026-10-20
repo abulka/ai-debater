@@ -34,7 +34,7 @@ import type { Catalogue } from "./catalogue.ts";
 /** The leaderboard. One keyless GET carries every scored model. */
 export const ACD_URL = "https://aicodingdaily.com/leaderboard";
 
-/** Refresh when the cache is older than this — same weekly window as the AA/OpenRouter cache. */
+/** Refresh when the cache is older than this — the reader's window (settings), shared with the AA/OpenRouter cache. */
 export { isStale as isAcdStale };
 
 /** One model's ceiling row: highest total points across its effort variants. */

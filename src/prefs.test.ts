@@ -4,19 +4,25 @@ import os from "node:os";
 import path from "node:path";
 import {
   addFilterHistory,
+  cycleRefreshDays,
   DEFAULT_CEILING,
+  DEFAULT_REFRESH_DAYS,
   DEFAULT_TASK_CEILING,
   FILTER_HISTORY_MAX,
   loadCeiling,
   loadDisabledProviders,
   loadFilterHistory,
+  loadRefreshDays,
   loadTaskCeiling,
   recordFilterUse,
+  REFRESH_DAY_CHOICES,
+  refreshDaysMs,
   removeFilterHistory,
   roundCeiling,
   saveCeiling,
   saveDisabledProviders,
   saveFilterHistory,
+  saveRefreshDays,
   saveTaskCeiling,
   stepCeiling,
   type FilterEntry,
@@ -222,5 +228,34 @@ describe("picker prefs", () => {
       entries = recordFilterUse(entries, { prev: null, text: `m${i}`, mode: "and" });
     expect(entries).toHaveLength(FILTER_HISTORY_MAX);
     expect(entries[0]).toEqual({ text: `m${FILTER_HISTORY_MAX}`, mode: "and" });
+  });
+});
+
+describe("refreshDays", () => {
+  test("a missing or wayward file is the 7-day default", async () => {
+    const dir = await tmp();
+    expect(await loadRefreshDays(path.join(dir, "nope.json"))).toBe(DEFAULT_REFRESH_DAYS);
+    const bad = path.join(dir, "bad.json");
+    await writeFile(bad, JSON.stringify({ refreshDays: "often" }));
+    expect(await loadRefreshDays(bad)).toBe(DEFAULT_REFRESH_DAYS);
+    // A hand-edited number off the choice list is a default, not a window.
+    await writeFile(bad, JSON.stringify({ refreshDays: 10 }));
+    expect(await loadRefreshDays(bad)).toBe(DEFAULT_REFRESH_DAYS);
+  });
+
+  test("a choice round-trips, and the cycle walks the list and wraps", async () => {
+    const file = path.join(await tmp(), "p.json");
+    await saveRefreshDays(3, file);
+    expect(await loadRefreshDays(file)).toBe(3);
+    expect(cycleRefreshDays(1)).toBe(3);
+    expect(cycleRefreshDays(3)).toBe(7);
+    expect(cycleRefreshDays(30)).toBe(1);
+    expect(cycleRefreshDays(10)).toBe(DEFAULT_REFRESH_DAYS);
+  });
+
+  test("days size the window in whole days", () => {
+    expect(refreshDaysMs(1)).toBe(24 * 60 * 60 * 1000);
+    expect(refreshDaysMs(7)).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(REFRESH_DAY_CHOICES).toContain(DEFAULT_REFRESH_DAYS);
   });
 });

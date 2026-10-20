@@ -25,7 +25,7 @@ import {
 } from "./gate-model.ts";
 import { familyClash, familyOf, isReferenceRow, listModels, orderedModels, providerOf, rankModels } from "./models.ts";
 import type { FilterMode, PickerView } from "./models.ts";
-import { CATALOGUE_STALE_AFTER_MS, costOf, cannotUseTools, fetchCatalogue, formatCostBasis, loadBestCatalogue, type Catalogue, type PriceBasis } from "./catalogue.ts";
+import { costOf, cannotUseTools, fetchCatalogue, formatCostBasis, loadBestCatalogue, type Catalogue, type PriceBasis } from "./catalogue.ts";
 import {
   countScoredBySource,
   emptyBenchmarks,
@@ -49,7 +49,7 @@ import {
 } from "./aicodingdaily.ts";
 import { loadAAKey, saveAAKey } from "./aa-key.ts";
 import { refreshAllBenchmarks, verifyAAKey } from "./artificialanalysis.ts";
-import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_TASK_CEILING, addFilterHistory, loadCeiling, loadDisabledProviders, loadFilterHistory, loadTaskCeiling, recordFilterUse, removeFilterHistory, roundCeiling, saveCeiling, saveDisabledProviders, saveFilterHistory, saveTaskCeiling, stepCeiling, type FilterEntry } from "./prefs.ts";
+import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_REFRESH_DAYS, DEFAULT_TASK_CEILING, addFilterHistory, cycleRefreshDays, loadCeiling, loadDisabledProviders, loadFilterHistory, loadRefreshDays, loadTaskCeiling, recordFilterUse, refreshDaysMs, removeFilterHistory, roundCeiling, saveCeiling, saveDisabledProviders, saveFilterHistory, saveRefreshDays, saveTaskCeiling, stepCeiling, type FilterEntry } from "./prefs.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
 import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES, type ProviderBill } from "./providers.ts";
 import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, probeHint, type ProbeCache } from "./probe.ts";
@@ -845,6 +845,7 @@ function Settings({
   saved,
   pair,
   aaKey,
+  refreshDays,
 }: {
   selection: number;
   saved: string | null;
@@ -852,6 +853,8 @@ function Settings({
   pair: string | null;
   /** Whether an Artificial Analysis key is stored — the picker's benchmark source. */
   aaKey: boolean;
+  /** The reader's cache window in days: the auto-refresh staleness for every keyless cache. */
+  refreshDays: number;
 }) {
   const rows: { label: string; value: string }[] = [
     // Matched by model, not by position: a pair saved under another name is
@@ -861,6 +864,8 @@ function Settings({
       label: "benchmarks",
       value: aaKey ? "artificialanalysis.ai · key set" : "artificialanalysis.ai · no key — OpenRouter benchmarks",
     },
+    { label: "auto-refresh caches", value: formatRefreshDays(refreshDays) },
+    { label: "refresh caches now", value: "benchmarks · ACD · prices" },
     { label: "back", value: "" },
   ];
 
@@ -883,12 +888,31 @@ function Settings({
           <Text color={THEME.ok}>{saved}</Text>
         </Box>
       )}
+      {/*
+       * How freshness works, where the reader configures it. Caches fetch
+       * themselves keyless; pings never fire on their own — the window above
+       * only governs the caches, never a model call.
+       */}
+      <Box marginTop={1} flexDirection="column">
+        <Text dimColor wrap="truncate">
+          caches refresh themselves: benchmarks, ACD, prices — keyless, no calls
+        </Text>
+        <Text dimColor wrap="truncate">
+          pings are never automatic: P one model · T with tools · A up to 40, confirmed
+        </Text>
+        <Text dimColor wrap="truncate">
+          ✓ ages to "6d ago" after 7 days, ✗ after 1 day — nothing re-pings by itself
+        </Text>
+      </Box>
       <Box marginTop={1}>
         <Text dimColor>↑↓ move · Enter choose · Esc home</Text>
       </Box>
     </Box>
   );
 }
+
+/** `every day` for 1, `every 14 days` otherwise — the settings row's value. */
+const formatRefreshDays = (days: number): string => (days === 1 ? "every day" : `every ${days} days`);
 
 /** Above this a ping-all is refused by name rather than silently costing 100 calls. */
 const PING_MAX = 40;
@@ -2070,7 +2094,7 @@ function AAKey({
       <Text dimColor>
         an artificialanalysis.ai key, so the picker reads scores direct instead of the OpenRouter benchmarks.
       </Text>
-      <Text dimColor>one verification request, then only a few per weekly refresh — inside the free 100/day.</Text>
+      <Text dimColor>one verification request, then only a few per auto-refresh — inside the free 100/day.</Text>
       {/* Stored state in green, not dim: the field always opens empty, so this
           line is the only thing that says a key is already here. */}
       {hasKey ? (
@@ -2723,6 +2747,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [setupSelection, setSetupSelection] = useState(0);
   const [answers, setAnswers] = useState<GateAnswer[]>([]);
   const [settingsSel, setSettingsSel] = useState(0);
+  /** The reader's cache window in days. Read fresh in `ensureModelData`, shown on the settings row. */
+  const [refreshDays, setRefreshDays] = useState(DEFAULT_REFRESH_DAYS);
   const [homeSel, setHomeSel] = useState(0);
   /** Debate-screen cursor: 0 pair · 1 drafter · 2 reviewer · 3 subject · 4 prompt. Starts on the prompt. */
   const [deskSel, setDeskSel] = useState(4);
@@ -2828,13 +2854,14 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [probes, setProbes] = useState<ProbeCache>({});
   /**
    * Benchmark scores, keyed by normalised OpenRouter id. Read when the picker
-   * opens, refreshed in the background past 7 days, on demand with `B`.
+   * opens, refreshed in the background past the reader's window (settings).
    * Empty until the first fetch lands — rows render blank, never `?`.
    */
   const [benchmarks, setBenchmarks] = useState<Benchmarks>(emptyBenchmarks());
   /**
    * AI Coding Daily's coding leaderboard, same lifecycle as the benchmarks:
-   * read when the picker opens, refreshed in the background past 7 days.
+   * read when the picker opens, refreshed in the background past the reader's
+   * window (settings).
    * Empty until the first fetch lands — rows render no `D` badge, never `?`.
    */
   const [acd, setAcd] = useState<AcdIndex>(emptyAcd());
@@ -3037,6 +3064,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
 
   /** Load everything the model list needs, shared by both its doors. */
   async function ensureModelData() {
+    // The reader's refresh window, read fresh every visit: the settings row
+    // writes the file this reads, so state would lag a change by one visit.
+    const days = await loadRefreshDays();
+    setRefreshDays(days);
+    const staleAfter = refreshDaysMs(days);
     if (allModels.length === 0) {
       // The listing must resolve *before* the credential lookup: the provider
       // ids come from it, and passing the stale `[]` this closure captured made
@@ -3067,30 +3099,30 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       void loadFilterHistory().then(setFilterHistory);
     }
     // The catalogue likewise: OpenCode's copy or `adv`'s own, whichever is
-    // newer — and past a week, `adv` fetches models.dev itself in the
-    // background, because nothing else refreshes that file on any schedule.
+    // newer — and past the reader's window, `adv` fetches models.dev itself
+    // in the background, because nothing else refreshes that file on any schedule.
     void loadBestCatalogue().then((r) => {
       setCatalogue(r.catalogue);
-      if (r.ageMs === null || r.ageMs > CATALOGUE_STALE_AFTER_MS) void refreshCatalogue(true);
+      if (r.ageMs === null || r.ageMs > staleAfter) void refreshCatalogue(true);
     });
     void loadProbes().then(setProbes);
     // Whether an AA key is stored decides the benchmark source. Never throws.
     void loadAAKey().then((k) => setAAKeySet(!!k));
     // Benchmarks likewise. A stale cache refreshes in the background once the
     // stored scores are on screen — keyed or keyless, the refresh is a few
-    // requests against a weekly cache, so unlike a ping it needs no keypress,
-    // only a week-old cache.
+    // requests against a cache the reader's window sizes, so unlike a ping it
+    // needs no keypress, only a cache older than the window.
     void loadScores().then((r) => {
       setBenchmarks(r.scores);
       setBenchMeta((m) => ({ ...m, at: r.at, indexVersion: r.indexVersion }));
-      if (isStale(r.at)) void refreshBenchmarks(true);
+      if (isStale(r.at, Date.now(), staleAfter)) void refreshBenchmarks(true);
     });
     // AI Coding Daily likewise, on its own cache and staleness — one source
     // failing never blocks the other.
     void loadAcd().then((r) => {
       setAcd(r.entries);
       setBenchMeta((m) => ({ ...m, acdAt: r.at }));
-      if (isStale(r.at)) void refreshAcd(true);
+      if (isStale(r.at, Date.now(), staleAfter)) void refreshAcd(true);
     });
     // What settings names, without a visit: the pair the current models are.
     void loadPairs().then(setSavedPairs).catch(() => {});
@@ -3183,8 +3215,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
    *
    * Silent when automatic (a stale cache on opening the model list): the old scores
    * stay until the new ones land, and a failed fetch keeps them with nothing
-   * said — offline is not an error worth a notice. Loud on `B`: the reader
-   * asked, so the reader hears the answer either way.
+   * said — offline is not an error worth a notice. Loud from settings: the
+   * reader asked, so the reader hears the answer either way.
    */
   async function refreshBenchmarks(silent = false) {
     if (benchFetching.current) return;
@@ -3372,8 +3404,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     setPhase("pairs");
   }
 
-  /* Settings: a saved pair, or the benchmarks key. The key lives in the user's
-     config dir alone, never in a repo. */
+  /* Settings: pairs, the benchmarks key, the cache window, a manual refresh.
+     The key lives in the user's config dir alone, never in a repo. */
   useInput(
     (_input, key) => {
       if (!cfg) return;
@@ -3386,7 +3418,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         return;
       }
       if (key.downArrow) {
-        setSettingsSel((s) => Math.min(2, s + 1));
+        setSettingsSel((s) => Math.min(4, s + 1));
         return;
       }
       if (!key.return) return;
@@ -3401,6 +3433,27 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setAAKeyCaret(0);
         setNotice(null);
         setPhase("aakey");
+        return;
+      }
+      if (settingsSel === 2) {
+        const next = cycleRefreshDays(refreshDays);
+        void (async () => {
+          await saveRefreshDays(next);
+          setRefreshDays(next);
+          setSaved(`caches auto-refresh ${formatRefreshDays(next)}`);
+          // The window just moved: a cache the old window trusted may now be
+          // stale, so re-evaluate immediately rather than on the next visit.
+          void ensureModelData();
+        })();
+        return;
+      }
+      if (settingsSel === 3) {
+        // Loud, all three at once: the reader asked, so each reports — the
+        // per-cache notices land on the next screen, the confirmation stays here.
+        setSaved("refreshing benchmarks, AI Coding Daily and prices…");
+        void Promise.all([refreshBenchmarks(false), refreshAcd(false), refreshCatalogue(false)]).then(() =>
+          setSaved("caches refreshed"),
+        );
         return;
       }
       setPhase("home");
@@ -4320,19 +4373,6 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setExportArm(null);
         commitFilter(true);
         void exportVisible(visible, "window");
-        return;
-      }
-      // `B` refreshes the benchmark caches: OpenRouter plus Artificial Analysis
-      // direct when a key is stored, merged Artificial-Analysis-first — and AI
-      // Coding Daily's coding leaderboard alongside, on its own cache. Unlike
-      // `P`/`T`/`A` it asks nothing twice — a few requests against weekly
-      // caches. Uppercase like the rest, so lowercase keeps typing into the
-      // filter.
-      if (input === "B") {
-        setPingArmed(null);
-        commitFilter(true);
-        void refreshBenchmarks(false);
-        void refreshAcd(false);
         return;
       }
       // `C` toggles the price basis: the base price (`low`) or the
@@ -5741,7 +5781,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     );
   } else if (phase === "settings" && cfg) {
     content = (
-      <Settings selection={settingsSel} saved={saved} pair={currentPairName} aaKey={aaKeySet} />
+      <Settings selection={settingsSel} saved={saved} pair={currentPairName} aaKey={aaKeySet} refreshDays={refreshDays} />
     );
   } else if (phase === "aakey") {
     content = <AAKey value={aaKeyInput} caret={aaKeyCaret} busy={aaKeyBusy} notice={notice} hasKey={aaKeySet} />;

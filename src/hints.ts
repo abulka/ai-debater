@@ -92,7 +92,6 @@ export function buildHintText(s: HintState): string {
         ? `${CEIL_KEYS} task ceiling: $${s.taskCeiling.toFixed(2)}/task${s.rankAcd ? " (ACD)" : ""}`
         : null;
   const actions = [
-    "B refresh benchmarks",
     "A ping visible",
     "P ping",
     "T tools ping",

@@ -604,11 +604,11 @@ export async function loadScores(file: string = benchmarksFile()): Promise<Loade
 }
 
 /** True when there is no cache, its date is unreadable, or it is past the window. */
-export function isStale(at: string | null, now = Date.now()): boolean {
+export function isStale(at: string | null, now = Date.now(), afterMs = STALE_AFTER_MS): boolean {
   if (!at) return true;
   const when = Date.parse(at);
   if (!Number.isFinite(when)) return true;
-  return now - when > STALE_AFTER_MS;
+  return now - when > afterMs;
 }
 
 export interface FetchedScores {

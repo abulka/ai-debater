@@ -43,6 +43,34 @@ export function stepCeiling(n: number, dir: 1 | -1): number {
 
 export const pickerPrefsFile = (): string => path.join(configDir(), "adv", "picker.json");
 
+/**
+ * How often the picker refetches its keyless caches — benchmark scores, AI
+ * Coding Daily, the price catalogue. Personal, like the ceilings: one
+ * reader's patience with staleness is not another's.
+ */
+export const DEFAULT_REFRESH_DAYS = 7;
+/** The choices Enter cycles through: a day, a few days, weeks. */
+export const REFRESH_DAY_CHOICES = [1, 3, 7, 14, 30];
+
+/** A day-count as the milliseconds the staleness checks compare against. */
+export const refreshDaysMs = (days: number): number => days * 24 * 60 * 60 * 1000;
+
+/** Next choice up, wrapping round. Unknown values restart at the default. */
+export function cycleRefreshDays(days: number): number {
+  const i = REFRESH_DAY_CHOICES.indexOf(days);
+  if (i < 0) return DEFAULT_REFRESH_DAYS;
+  return REFRESH_DAY_CHOICES[(i + 1) % REFRESH_DAY_CHOICES.length] ?? DEFAULT_REFRESH_DAYS;
+}
+
+export async function loadRefreshDays(file: string = pickerPrefsFile()): Promise<number> {
+  const v = (await readPrefs(file)).refreshDays;
+  return typeof v === "number" && REFRESH_DAY_CHOICES.includes(v) ? v : DEFAULT_REFRESH_DAYS;
+}
+
+export async function saveRefreshDays(days: number, file: string = pickerPrefsFile()): Promise<void> {
+  await writePrefs(file, { refreshDays: days });
+}
+
 /** Rounded to cents: a float that has been stepped ten times reads 0.799999. */
 export const roundCeiling = (n: number): number => Math.round(n * 100) / 100;
 

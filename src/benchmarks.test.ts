@@ -597,6 +597,13 @@ describe("isStale", () => {
     expect(isStale(new Date().toISOString())).toBe(false);
     expect(isStale(new Date(Date.now() - STALE_AFTER_MS - 1000).toISOString())).toBe(true);
   });
+
+  test("the caller can size the window", () => {
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    expect(isStale(threeDaysAgo)).toBe(false);
+    expect(isStale(threeDaysAgo, Date.now(), 1 * 24 * 60 * 60 * 1000)).toBe(true);
+    expect(isStale(threeDaysAgo, Date.now(), 30 * 24 * 60 * 60 * 1000)).toBe(false);
+  });
 });
 
 describe("countScored", () => {

@@ -104,13 +104,6 @@ export const advCatalogueFile = (): string => path.join(advDataRoot(), "catalogu
 export const MODELS_DEV_URL = "https://models.dev/api.json";
 
 /**
- * Refresh when the cache is older than this. A week, the same threshold the
- * benchmark caches use — models.dev moves slowly, and the picker already
- * refreshes on that cadence.
- */
-export const CATALOGUE_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
  * Split a ref the way the catalogue is keyed.
  *
  * Provider first, everything after it is the model id — which may itself

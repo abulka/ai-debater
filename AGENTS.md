@@ -145,7 +145,7 @@ supersede rule.
 | Key | Action |
 | --- | --- |
 | m / n / p / s / q | Home — models browser · new debate · past runs · settings · quit (↑↓ · Enter works too; cursor starts on models browser) |
-| Ctrl+P | Settings — **edit drafter/reviewer pairs** or the benchmarks key (from home or the debate screen; Esc home) |
+| Ctrl+P | Settings — pairs, the benchmarks key, the cache window, a manual refresh (from home or the debate screen; Esc home) |
 | ↑↓ · Enter | Settings: on **edit drafter/reviewer pairs**, the list — saved pairs last used first, then pairs past runs used, then `new pair…` (pick a drafter, a reviewer, name it), then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it (settings only — inert from the debate screen). A pair that belongs to a run is not stored here and goes when the run does |
 | r / R | Pairs: rename the highlighted saved pair — `r` edits its name, `R` prefills a name suggested from its models (settings only). The name prompt prefills a suggestion for new saves too |
@@ -153,7 +153,7 @@ supersede rule.
 | models browser | Home's first row: the same model list — Enter does nothing, Esc home. Everything else (filter, views, ping, export) works as in the picker |
 | P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
 | A | Picker: ping every model shown — the list after the filter, the lock, F, the view and H. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown, and it says how to narrow |
-| B | Picker: refresh the benchmark caches — OpenRouter plus Artificial Analysis direct when a key is stored, merged Artificial-Analysis-first, and AI Coding Daily's coding leaderboard alongside on its own cache. Auto-refreshes in the background past 7 days |
+| auto-refresh | Settings: **auto-refresh caches**, 1/3/7/14/30 days (default 7) — the staleness window for the benchmark scores, AI Coding Daily and the price catalogue, background and keyless. **refresh caches now** refetches all three at once, loud. The picker has no refresh key: the caches refresh themselves |
 | V | Picker: cycle the view — provider groups, intelligence-ranked, value (cheap per output token under the ceiling), taskcost (cheap per measured task under its own ceiling). Both cheap views rank by intelligence |
 | C | Picker: toggle the price basis — base price or the above-threshold price a long session pays. Cells and the value-view ceiling move together; the count line says `price: high tier` when high |
 | D | Picker: rank the flat views by AI Coding Daily (points for the order, ACD $/task for the taskcost ceiling) instead of Artificial Analysis/OpenRouter — session-only, ignored in the provider view |
@@ -428,10 +428,11 @@ spike/              M0
   overrides a listed price, and a bare `free` is a name, not a tier.
 - **The price catalogue refreshes itself.** OpenCode's
   `~/.cache/opencode/models.json` has no refresh owner — nothing fetches it
-  on any schedule (a 6-day-old file proved it). Past a week stale `adv`
-  fetches models.dev into its own `~/.local/share/adv/catalogue.json` in the
-  background at picker open and reads whichever copy is newer, falling back
-  to the older when the newer parses to nothing. Never writes OpenCode's file.
+  on any schedule (a 6-day-old file proved it). Past the reader's window (7
+  days by default, changed in settings) `adv` fetches models.dev into its own
+  `~/.local/share/adv/catalogue.json` in the background at picker open and
+  reads whichever copy is newer, falling back to the older when the newer
+  parses to nothing. Never writes OpenCode's file.
 - **The serving-tier strip is shared, not copied.** The ACD resolver once had
   its own weaker chain and lost every `-contributor` serving while the
   benchmarks kept theirs. `stripTier` is now exported from `benchmarks.ts`

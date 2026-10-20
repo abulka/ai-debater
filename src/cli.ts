@@ -39,6 +39,7 @@ import {
 import { refreshAllBenchmarks } from "./artificialanalysis.ts";
 import { fetchAcd, formatPromptCost, loadAcd, resolveAcd } from "./aicodingdaily.ts";
 import { listModels } from "./models.ts";
+import { loadRefreshDays, refreshDaysMs } from "./prefs.ts";
 import { loadPairs } from "./pairs.ts";
 import { pingModel } from "./probe.ts";
 import type { Claims, Gate, Review } from "./contracts.ts";
@@ -828,7 +829,9 @@ async function cmdBenchmarks(flags: Map<string, string | true>, positional: stri
     return;
   }
 
-  const age = at ? ` · fetched ${at.slice(0, 10)}${isStale(at) ? " (stale — --refresh)" : ""}` : "";
+  const age = at
+    ? ` · fetched ${at.slice(0, 10)}${isStale(at, Date.now(), refreshDaysMs(await loadRefreshDays())) ? " (stale — --refresh)" : ""}`
+    : "";
   const version = indexVersion ? ` · AA Intelligence Index v${indexVersion}` : "";
   const via = (r: NonNullable<ReturnType<typeof scoresFor>>) =>
     r.source === "aa" ? "Artificial Analysis" : "OpenRouter relay";
