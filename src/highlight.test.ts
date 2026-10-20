@@ -11,7 +11,7 @@ import {
   isUsablePattern,
   nextFreeHighlightColour,
 } from "./highlight.ts";
-import { HIGHLIGHT_PALETTE } from "./theme.ts";
+import { HIGHLIGHT_PALETTE, SELECTION_BG, SELECTION_FG } from "./theme.ts";
 
 describe("isUsablePattern", () => {
   test("accepts ordinary filter texts, including quoted phrases", () => {
@@ -147,5 +147,10 @@ describe("highlight colours", () => {
     expect(isPaletteColour(HIGHLIGHT_PALETTE[0]!.value)).toBe(true);
     expect(isPaletteColour("cyan")).toBe(false);
     expect(HIGHLIGHT_VALUES).toHaveLength(HIGHLIGHT_PALETTE.length);
+  });
+  test("no palette colour hides on the selection band", () => {
+    for (const c of HIGHLIGHT_PALETTE) expect(c.value).not.toBe(SELECTION_BG);
+    expect(SELECTION_FG).not.toBe(SELECTION_BG);
+    for (const s of [SELECTION_BG, SELECTION_FG]) expect(s).toMatch(/^ansi256\(\d+\)$/);
   });
 });

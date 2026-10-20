@@ -83,6 +83,17 @@ export const HIGHLIGHT_PALETTE = [
   { value: "ansi256(111)", name: "sky" },
 ] as const;
 
+/**
+ * The selected model row's band. A background, not a role: it must sit
+ * behind both the default foreground and a highlight hue, so it is neutral
+ * grey rather than a hue — a coloured band would compete with the highlight
+ * exactly as the old cyan row did. TUI-only; the CLI never draws this list,
+ * so these stay out of `ANSI_CODES`.
+ */
+export const SELECTION_BG = "ansi256(238)";
+/** Foreground for a selected row with no highlight hue, readable on the band in any theme. */
+export const SELECTION_FG = "ansi256(252)";
+
 export type Role = keyof typeof THEME;
 /** A colour the palette names. */
 export type Colour = (typeof THEME)[Role];

@@ -110,7 +110,7 @@ import {
   type Span,
   type StyledLine,
 } from "./markdown.ts";
-import { THEME } from "./theme.ts";
+import { SELECTION_BG, SELECTION_FG, THEME } from "./theme.ts";
 import { exportModelsMd } from "./export-models.ts";
 import {
   altScreenEnabled,
@@ -1332,7 +1332,7 @@ function Pick({
             columns the width yielded, exactly as the rows below do, so the
             labels always sit over their column. The ranking's column rides in
             purple — the score, or the measured cost with `S` — so the sort
-            reads apart from the cyan chrome and the highlight rows;
+            reads apart from the cyan chrome and the highlight hues;
             the count line still names it in words, so a monochrome terminal
             loses nothing. */}
         <Line
@@ -1410,17 +1410,18 @@ function Pick({
             ? "… pinging"
             : (probeBadge(probes, m)?.badge ?? probeHint(probes, m));
           const cost = dead ? "—" : formatCostBasis(costOf(catalogue, m), priceBasis);
+          const resolved = scoresFor(catalogue, benchmarks, m);
           // Benchmarks are context, not a verdict: no colour encodes a score,
           // and the `≈` marks a match that needed normalisation. Blank on most
           // rows, which is why the column vanishes before the ref does.
-          const bench = benchW > 0 ? formatResolved(scoresFor(catalogue, benchmarks, m)) : "";
+          const bench = benchW > 0 ? formatResolved(resolved) : "";
           // AI Coding Daily's score in its own column: appending `D68` to the
           // score read as one number on a different scale. Blank on all but
           // ~40 rows — the ACD pair yields as a unit when narrow.
           const dbadge = acdW > 0 ? formatAcdBadge(resolveAcd(catalogue, acd, m)) : "";
           // Measured $/task, AA rows only. Blank means unmeasured, never free —
           // an OpenRouter row never has one, however cheap its list price.
-          const task = taskW > 0 ? formatTaskCost(scoresFor(catalogue, benchmarks, m)?.taskCost) : "";
+          const task = taskW > 0 ? formatTaskCost(resolved?.taskCost) : "";
           // Measured $/task on AI Coding Daily's suite — the same concept as
           // $/task (measured dollars per benchmark task), measured on different
           // tasks. The taskcost view filters on one or the other (`D`
@@ -1430,18 +1431,19 @@ function Pick({
           // Truncated, not wrapped: a row that spills is two rows, and the
           // window here counts lines. The full sentence is in `?`.
           const status = (badge || (note ? "· note" : "")).slice(0, badgeW - 1);
-          // The whole row lights up, not just the ref. With the price and status
-          // in fixed columns 60 characters away, a cursor on the ref alone left
-          // the reader guessing which price belonged to which model.
-          // Highlighted rows light up in their pattern's colour instead, so a
-          // pinned comparison line reads at a glance. The cursor keeps its
-          // own colour — selection beats highlight — and the name on the row
-          // still says what it is, so monochrome loses nothing.
-          const hl = !selected
-            ? highlightFor(m, scoresFor(catalogue, benchmarks, m)?.name ?? null, rules)
-            : null;
-          const accent = selected ? THEME.accent : (hl?.colour ?? undefined);
+          // The selected row is a surface, not a hue. The band runs unbroken
+          // from the gutter through price, intelligence, $/task, ACD and ping
+          // — every cell and every separator space carries it, including the
+          // two-space gap after the price — so the model still lines up with
+          // everything on the right. The highlight hue stays on the text
+          // instead of being repainted, and a row with no hue reads
+          // near-white on the band. No cyan anywhere on the row: cyan is the
+          // chrome around the list, not the cursor in it. The ❯ stays as the
+          // textual marker, and monochrome still loses nothing but the band.
+          const hl = highlightFor(m, resolved?.name ?? null, rules);
+          const fg = selected ? (hl?.colour ?? SELECTION_FG) : hl?.colour;
           const dimmed = !selected && !hl;
+          const band: { backgroundColor?: string } = selected ? { backgroundColor: SELECTION_BG } : {};
           const itemIndex = rowToItem.get(absolute) ?? -1;
           return (
             <Box
@@ -1456,52 +1458,52 @@ function Pick({
                   nothing else. ★ is OpenCode's own list; ✗ is a verdict. Two
                   columns of two, so a row starts at the same offset whatever
                   is in them. */}
-              <Text dimColor={!selected}>{favourite.has(m) ? "★ " : "  "}</Text>
-              <Text color={accent}>{selected ? "❯ " : "  "}</Text>
-              <Text color={accent} bold={selected} dimColor={dead && !selected && !hl} wrap="truncate">
+              <Text dimColor={!selected} {...band}>{favourite.has(m) ? "★ " : "  "}</Text>
+              <Text color={fg} {...band}>{selected ? "❯ " : "  "}</Text>
+              <Text color={fg} bold={selected} dimColor={dead && !selected && !hl} wrap="truncate" {...band}>
                 {pad(shorten(m, refWidth - 1), refWidth)}
               </Text>
-              <Text color={accent} dimColor={dimmed && !dead} wrap="truncate">{pad(cost, costW)}</Text>
+              <Text color={fg} dimColor={dimmed && !dead} wrap="truncate" {...band}>{pad(cost, costW)}</Text>
               {/* The gap the badge cannot eat: `pad` leaves none when the cell
                   is exactly full, which a `+1.5x` price is. Two spaces —
                   everything reads crammed at one. */}
-              <Text>{"  "}</Text>
+              <Text {...band}>{"  "}</Text>
               {benchW > 0 && (
                 <>
-                  <Text color={accent} dimColor={dimmed} wrap="truncate">
+                  <Text color={fg} dimColor={dimmed} wrap="truncate" {...band}>
                     {pad(bench, benchW)}
                   </Text>
                   {/* Every boundary carries its space, in rows exactly as in
                       the header: without it an exact-fill cell touches the
                       next column — the old `prompt $ping` collision. */}
-                  <Text> </Text>
+                  <Text {...band}> </Text>
                 </>
               )}
               {taskW > 0 && (
                 <>
-                  <Text color={accent} dimColor={dimmed} wrap="truncate">
+                  <Text color={fg} dimColor={dimmed} wrap="truncate" {...band}>
                     {pad(task, taskW)}
                   </Text>
-                  <Text> </Text>
+                  <Text {...band}> </Text>
                 </>
               )}
               {acdW > 0 && (
                 <>
-                  <Text color={accent} dimColor={dimmed} wrap="truncate">
+                  <Text color={fg} dimColor={dimmed} wrap="truncate" {...band}>
                     {pad(dbadge, acdW)}
                   </Text>
-                  {sepAcd && <Text> </Text>}
+                  {sepAcd && <Text {...band}> </Text>}
                 </>
               )}
               {promptW > 0 && (
                 <>
-                  <Text color={accent} dimColor={dimmed} wrap="truncate">
+                  <Text color={fg} dimColor={dimmed} wrap="truncate" {...band}>
                     {pad(prompt, promptW)}
                   </Text>
-                  {sepPrompt && <Text> </Text>}
+                  {sepPrompt && <Text {...band}> </Text>}
                 </>
               )}
-              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead && !hl} wrap="truncate">
+              <Text color={dead ? THEME.warn : fg} dimColor={!selected && !dead && !hl} wrap="truncate" {...band}>
                 {pad(status, badgeW)}
               </Text>
             </Box>
@@ -1781,7 +1783,7 @@ function providerLines(
   ]);
   lines.push([
     {
-      text: "rows matching your auto-highlight patterns read in their own colours — M mutes them for this session, settings → auto-highlight models to edit them. The cursor keeps its own colour; the name on the row still says what it is.",
+      text: "rows matching your auto-highlight patterns read in their own colours — M mutes them for this session, settings → auto-highlight models to edit them. The selected row keeps its band over any hue; the name on the row still says what it is.",
       dim: true,
     },
   ]);

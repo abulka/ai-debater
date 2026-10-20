@@ -498,9 +498,17 @@ spike/              M0
   screen, because Ink re-measures on the next render rather than on resize. And
   the price and status columns must yield before the ref does: held at 14 and 16
   on a 44-column terminal they left nine characters of model name.
-- **The whole row lights up, not just the ref.** The price and status sit in
+- **The whole row is a band, not just the ref.** The price and status sit in
   fixed columns 60 characters to the right; a cursor on the ref alone left the
-  reader guessing which price belonged to which model.
+  reader guessing which price belonged to which model. The band is a neutral
+  background (`SELECTION_BG`) across every cell — gutter, gaps and separator
+  spaces included, so it has no holes — and the highlight hue stays on the
+  text instead of being repainted; a selected row with no hue reads
+  `SELECTION_FG`. A coloured band would compete with the highlight exactly
+  as the old cyan row did, which is why the band is grey. `❯` takes the
+  row's foreground and stays the textual marker; monochrome loses the band
+  and nothing else. The band adds no width, so the padded columns still line
+  up with the model.
 - **A failure writes `state: "failed"` plus the error.** A run left at
   `created` means the process died before it could record anything — that is
   different from a run parked at the gate, and used to be indistinguishable.
