@@ -12,10 +12,12 @@ import {
   pairRows,
   pairsFile,
   recentPairs,
+  renamePair,
   savePair,
   sortedPairs,
+  suggestPairName,
 } from "./pairs.ts";
-import type { RecentPair } from "./pairs.ts";
+import type { PairRow, RecentPair } from "./pairs.ts";
 import type { RunSummary } from "./orchestrator.ts";
 
 let tmp = "";
@@ -125,6 +127,48 @@ describe("saved pairs", () => {
     expect(pairKey(models("a/one", "b/two"))).toBe(pairKey(models("a/one", "b/two")));
     expect(pairKey(models("a/one", "b/two"))).not.toBe(pairKey(models("a/one", "b/two x")));
   });
+
+  test("renaming keeps the models and the dates, under the new name", async () => {
+    await savePair({ name: "old", ...models("a/one", "b/two") });
+    await markPairUsed("old", "2026-10-18T12:00:00Z");
+    const before = (await loadPairs())[0]!;
+
+    await renamePair("old", "new", pairModels(before));
+
+    const loaded = await loadPairs();
+    expect(loaded.map((p) => p.name)).toEqual(["new"]);
+    expect(loaded[0]!.drafter.ref).toBe("a/one");
+    expect(loaded[0]!.savedAt).toBe(before.savedAt);
+    expect(loaded[0]!.lastUsedAt).toBe("2026-10-18T12:00:00Z");
+  });
+
+  test("renaming onto an existing name replaces that pair", async () => {
+    await savePair({ name: "old", ...models("a/one", "b/two") });
+    await savePair({ name: "taken", ...models("c/three", "d/four") });
+
+    await renamePair("old", "taken", models("a/one", "b/two"));
+
+    const loaded = await loadPairs();
+    expect(loaded.map((p) => p.name)).toEqual(["taken"]);
+    expect(loaded[0]!.drafter.ref).toBe("a/one");
+  });
+});
+
+describe("suggested pair names", () => {
+  test("the short end of each ref, joined without spaces", () => {
+    expect(suggestPairName(models("anthropic/claude-haiku-5-5", "openrouter/openai/gpt-6-luna"))).toBe(
+      "claude-haiku-5-5 -> gpt-6-luna",
+    );
+  });
+
+  test("refs without a provider still suggest something", () => {
+    expect(suggestPairName(models("one", "b/two"))).toBe("one -> two");
+  });
+
+  test("a blank ref suggests nothing — the prompt still requires a name", () => {
+    expect(suggestPairName(models("", "b/two"))).toBe("");
+    expect(suggestPairName(models("a/one", "  "))).toBe("");
+  });
 });
 
 describe("ordering pairs by use", () => {
@@ -190,7 +234,7 @@ describe("the rows the pair screen draws", () => {
     ...over,
   });
 
-  test("saved pairs first (last used first), then the runs, then saving", () => {
+  test("saved pairs first (last used first), then the runs, then the two ways to make one", () => {
     const rows = pairRows(
       [
         pair("unused", { lastUsedAt: undefined }),
@@ -200,19 +244,47 @@ describe("the rows the pair screen draws", () => {
       [run("1", { models: models("c/three", "d/four") })],
       new Set(),
     );
-    expect(rows.map((r) => (r.kind === "saved" ? r.pair.name : r.kind === "recent" ? r.recent.run : "save"))).toEqual([
+    expect(rows.map((r) => (r.kind === "saved" ? r.pair.name : r.kind === "recent" ? r.recent.run : r.kind))).toEqual([
       "used-today",
       "used-yesterday",
       "unused",
+      "gap",
       "1",
+      "gap",
+      "new",
       "save",
     ]);
+  });
+
+  test("gaps only sit between non-empty groups — never leading, trailing, or doubled", () => {
+    const kinds = (rows: PairRow[]) => rows.map((r) => r.kind);
+    // Saved only: one gap before the two action rows.
+    expect(kinds(pairRows([pair("a")], [], new Set()))).toEqual(["saved", "gap", "new", "save"]);
+    // Runs only: one gap before the two action rows.
+    expect(kinds(pairRows([], [run("1", { models: models("c/three", "d/four") })], new Set()))).toEqual([
+      "recent",
+      "gap",
+      "new",
+      "save",
+    ]);
+    // Neither: just the two action rows, no gaps at all.
+    expect(kinds(pairRows([], [], new Set()))).toEqual(["new", "save"]);
+  });
+
+  test("the preset scope lists saved pairs only — no runs, no way to make one", () => {
+    const rows = pairRows(
+      [pair("trial")],
+      [run("1", { models: models("c/three", "d/four") })],
+      new Set(),
+      "preset",
+    );
+    expect(rows.map((r) => (r.kind === "saved" ? r.pair.name : r.kind))).toEqual(["trial"]);
   });
 
   test("a saved pair is not repeated by the run that used it", () => {
     const rows = pairRows([pair("trial")], [run("1", { models: models("a/one", "b/two") })], new Set());
     expect(rows.filter((r) => r.kind === "recent")).toHaveLength(0);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(4);
   });
 
   test("a same-family pair is marked, not hidden", () => {

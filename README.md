@@ -103,12 +103,13 @@ runs, settings — then keys.
 | --- | --- |
 | m / n / p / s / q | Home — models browser · new debate · past runs · settings · quit (↑↓ · Enter works too; cursor starts on models browser) |
 | models browser | Home's first row: the model list — browse, ping, compare. Enter does nothing; Esc home |
-| ↑↓ · Enter | New debate: on **pair**, choose a preset (saving and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt |
+| ↑↓ · Enter | New debate: on **drafter/reviewer preset**, choose a saved preset (creating and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt |
 | Tab | New debate: switch subject — **this repository** or a **general question** (also the subject row, Enter toggles) |
 | Enter | New debate: on the prompt, run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
-| Ctrl+P | Settings — a saved **pair** or the benchmarks key (from home or the debate screen; Esc home) |
-| ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
+| Ctrl+P | Settings — **edit drafter/reviewer pairs** or the benchmarks key (from home or the debate screen; Esc home) |
+| ↑↓ · Enter | Settings: on **edit drafter/reviewer pairs**, the list — saved pairs last used first, then pairs past runs used, then `new pair…` (pick a drafter, a reviewer, name it), then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it |
+| r / R | Pairs: rename the highlighted saved pair — `r` edits its name, `R` prefills a name suggested from its models. The name prompt prefills a suggestion for new saves too |
 | P · T | Picker: **ping** the highlighted model. `P` asks one word — does this account reach it? `T` asks it to read a file — does it also use tools? The row says which ran |
 | A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30 models). Press twice; refused above 40 |
 | ? | Picker: what each provider bills to, whether a key is present, and every failure a ping found |
@@ -134,6 +135,7 @@ runs, settings — then keys.
 | Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `n` is a new debate, `q` quits (the run stays on disk — reopen it with Ctrl+R from home) |
 | Ctrl+R | Past runs — open a finished or parked run, from home, the debate screen, the gate, a result or an error |
 | Ctrl+U | New debate: clear the prompt |
+| ←→ · ^A · ^E | Every text field: step within the line, jump to start/end — prompt, filter, pair name, key. Backspace deletes before, Del under |
 | ↑↓ · q | Scroll the result; `q` quits |
 
 The first-run screen appears when the directory has no `.adv/`: choose
@@ -142,8 +144,10 @@ built-in config). Models are chosen on the debate screen (↑↓ to drafter /
 reviewer, Enter opens the picker); the models browser on home is the
 read-only way in.
 
-The pair you use most is worth a name: save it from the **pair** row and it is
-one keystroke away next time, listed last-used first. Pairs live in
+The pair you use most is worth a name: build it from **drafter/reviewer
+pairs** (`new pair…` — pick a drafter, a reviewer, name it) or name the current
+two with `save current as…`, and it is one keystroke away next time, listed
+last-used first. Pairs live in
 `~/.config/adv/pairs.json` and follow you between directories; the pairs past
 runs used are offered from the run records themselves, so deleting a run
 withdraws its pair from that list. The model picker marks the models you have

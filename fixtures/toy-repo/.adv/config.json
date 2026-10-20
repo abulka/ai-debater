@@ -4,12 +4,12 @@
   "familyCheck": "warn",
   "models": {
     "drafter": {
-      "ref": "openai/gpt-6-luna",
-      "family": "gpt"
+      "ref": "anthropic/claude-haiku-5-5",
+      "family": "claude"
     },
     "reviewer": {
-      "ref": "opencode-go/deepseek-v4.1-flash",
-      "family": "deepseek"
+      "ref": "openrouter/openai/gpt-6-luna",
+      "family": "openai"
     }
   }
 }

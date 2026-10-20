@@ -62,7 +62,9 @@ import {
   pairKey,
   pairModels,
   pairRows,
+  renamePair,
   savePair,
+  suggestPairName,
   type Models as PairModels,
   type Pair,
   type PairRow,
@@ -116,11 +118,13 @@ import {
   LOG_MAX_ROWS,
   MIN_CONTENT_ROWS,
   pairsListHeight,
+  pickHintTake,
   pickListHeight,
   runsListHeight,
   scrollerHeight,
 } from "./viewport.ts";
 import { copyMarkdown, copyNotice } from "./clipboard.ts";
+import { buildHintText, hintWidth, wrapHintLines, type HintState } from "./hints.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 
 type Phase =
@@ -577,6 +581,24 @@ function Home({
   );
 }
 
+/**
+ * A text field with a visible cursor: the character under it rides inverse,
+ * and past the end a block stands in the same place. Every editable field
+ * here renders through this, so the cursor looks and behaves one way — the
+ * prompt, the filter, the pair name, the key — instead of each inventing it.
+ */
+function FieldText({ text, cursor }: { text: string; cursor: number }) {
+  const cur = Math.max(0, Math.min(cursor, text.length));
+  const atEnd = cur >= text.length;
+  return (
+    <Text>
+      {text.slice(0, cur)}
+      <Text inverse>{atEnd ? " " : text[cur]}</Text>
+      {atEnd ? "" : text.slice(cur + 1)}
+    </Text>
+  );
+}
+
 function Start({
   repo,
   cfg,
@@ -612,6 +634,11 @@ function Start({
   onSettings: () => void;
   onHome: () => void;
 }) {
+  // The caret inside the prompt: the prompt outlives this screen (the draft
+  // is kept across visits), so the caret clamps to the text on every render
+  // rather than trusting a length from an earlier visit.
+  const [caret, setCaret] = useState(task.length);
+  const cur = Math.max(0, Math.min(caret, task.length));
   useInput((input, key) => {
     if (key.escape) {
       onHome();
@@ -629,7 +656,26 @@ function Start({
     // Ctrl+U clears the draft, readline-style.
     if (key.ctrl && input === "u") {
       setTask("");
+      setCaret(0);
       setDeskSel(4);
+      return;
+    }
+    // Line editing, readline-style: arrows step, ^A/^E jump. Free keys here —
+    // rows move on up/down, and nothing else answers to left/right.
+    if (key.ctrl && input === "a") {
+      setCaret(0);
+      return;
+    }
+    if (key.ctrl && input === "e") {
+      setCaret(task.length);
+      return;
+    }
+    if (key.leftArrow) {
+      setCaret((c) => Math.max(0, Math.min(c, task.length) - 1));
+      return;
+    }
+    if (key.rightArrow) {
+      setCaret((c) => Math.min(task.length, Math.max(0, c) + 1));
       return;
     }
     if (key.upArrow) {
@@ -656,8 +702,16 @@ function Start({
       onToggleMode();
       return;
     }
-    if (key.backspace || key.delete) {
-      setTask(task.slice(0, -1));
+    if (key.backspace) {
+      if (cur > 0) {
+        setTask(task.slice(0, cur - 1) + task.slice(cur));
+        setCaret(cur - 1);
+      }
+      setDeskSel(4);
+      return;
+    }
+    if (key.delete) {
+      if (cur < task.length) setTask(task.slice(0, cur) + task.slice(cur + 1));
       setDeskSel(4);
       return;
     }
@@ -666,7 +720,8 @@ function Start({
     // task can never land on a row and Enter can never mean choose by accident.
     // Mouse reports arrive as input too — they must not type into the question.
     if (input && !input.startsWith("\x1b[<")) {
-      setTask(task + input);
+      setTask(task.slice(0, cur) + input + task.slice(cur));
+      setCaret(cur + input.length);
       setDeskSel(4);
     }
   });
@@ -681,12 +736,13 @@ function Start({
       <Box>
         <Text color={deskSel === 0 ? THEME.accent : undefined}>{deskSel === 0 ? "❯ " : "  "}</Text>
         <Text color={deskSel === 0 ? THEME.accent : undefined} bold={deskSel === 0}>
-          {"pair    ".padEnd(9)}
+          {"drafter/reviewer preset".padEnd(24)}
         </Text>
-        <Text>{pair ?? "—"}</Text>
-        <Text dimColor>  preset only — manage in settings</Text>
+        <Text>{pair ? `current preset: ${pair}` : "—"}</Text>
       </Box>
-      <Box>
+      {/* The preset stands apart from the models it names: one blank row groups
+          preset-choosing away from drafter/reviewer/subject below. */}
+      <Box marginTop={1}>
         <Text color={deskSel === 1 ? THEME.accent : undefined}>{deskSel === 1 ? "❯ " : "  "}</Text>
         <Text color={deskSel === 1 ? THEME.accent : undefined} bold={deskSel === 1}>
           {"drafter ".padEnd(9)}
@@ -726,10 +782,7 @@ function Start({
       )}
       <Box borderStyle="round" borderColor={deskSel === 4 ? "cyan" : "gray"} paddingX={1} marginTop={1}>
         {task ? (
-          <Text>
-            {task}
-            <Text inverse> </Text>
-          </Text>
+          <FieldText text={task} cursor={cur} />
         ) : (
           <Text dimColor>
             {mode === "answer" ? "Type your question, then press Enter…" : "Describe the task, then press Enter…"}
@@ -754,7 +807,7 @@ function Start({
       <Box marginTop={1}>
         <Text dimColor wrap="truncate">
           Enter {deskSel === 4 ? "run" : "choose"} · ↑↓ pick a row · Tab subject · Esc home · Ctrl+R runs ·
-          Ctrl+P settings · Ctrl+U clear
+          Ctrl+P settings · Ctrl+U clear · ^A ^E ends
         </Text>
       </Box>
       <Box marginTop={1}>
@@ -783,7 +836,7 @@ function Settings({
   const rows: { label: string; value: string }[] = [
     // Matched by model, not by position: a pair saved under another name is
     // still the pair in use, and showing nothing would read as "no pair".
-    { label: "pair", value: pair ?? "—" },
+    { label: "edit drafter/reviewer pairs", value: `current pair: ${pair ?? "—"}` },
     {
       label: "benchmarks",
       value: aaKey ? "artificialanalysis.ai · key set" : "artificialanalysis.ai · no key — OpenRouter benchmarks",
@@ -800,7 +853,7 @@ function Settings({
         <Box key={r.label}>
           <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
           <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
-            {r.label.padEnd(11)}
+            {r.label.padEnd(28)}
           </Text>
           <Text>{r.value}</Text>
         </Box>
@@ -844,7 +897,7 @@ const TASK_W = 8;
  * never appended to it: two scales in one cell read as one number. Yields
  * with `ACD $/task` as a unit (below), before the score does.
  */
-const ACD_W = 4;
+const ACD_W = 9;
 /**
  * AI Coding Daily's measured $/task, e.g. `$0.79` — the same concept as
  * `$/task` (measured dollars per benchmark task), measured on their 4-project
@@ -878,13 +931,17 @@ function Pick({
   pickMode,
   list,
   filter,
+  filterCaret,
   index,
   height,
+  pickStart,
   catalogue,
   probes,
   benchmarks,
   acd,
   rankAcd,
+  rankCost,
+  buildStep,
   view,
   hideUnscored,
   ceiling,
@@ -896,15 +953,20 @@ function Pick({
   aaKey,
   priceBasis,
   taskCeiling,
+  hintLines,
 }: {
   role: "drafter" | "reviewer";
   /** Browse: Enter does nothing, Esc goes home. Select: Enter assigns, Esc returns to the debate screen. */
-  pickMode: "browse" | "select";
+  pickMode: "browse" | "select" | "build";
   list: ReturnType<typeof orderedModels>;
   filter: string;
+  /** The caret inside the filter, clamped to it where it renders. */
+  filterCaret: number;
   index: number;
   /** Visible model rows, from the viewport budget: the frame must fit the terminal. */
   height: number;
+  /** Where the picker's window starts, reported back — what `Y` means by "visible". */
+  pickStart: { current: number };
   catalogue: Catalogue;
   probes: ProbeCache;
   benchmarks: Benchmarks;
@@ -927,10 +989,23 @@ function Pick({
    * view, which is grouped rather than ranked.
    */
   rankAcd: boolean;
+  /**
+   * Rank the flat views by measured cost (`S`) instead of by score.
+   * Session-only. Inert in the provider view, which is grouped, not ranked.
+   */
+  rankCost: boolean;
+  /** Which half of a hand-built pair this pick is: the drafter first, then the reviewer. */
+  buildStep: "drafter" | "reviewer" | null;
   /** Which tier of a tiered price the rows show: base (`low`) or the above-threshold price (`high`). */
   priceBasis: PriceBasis;
   /** Measured $/task ceiling for the taskcost view's count line. */
   taskCeiling: number;
+  /**
+   * The hint rows, wrapped to the terminal width by the App (see `hints.ts`)
+   * and sliced to what the viewport budget reserved. Rendered as-is: each
+   * element is one row, so the budget and the screen cannot disagree.
+   */
+  hintLines: string[];
 }) {  const { rows, items, favourite } = list;
   const cursor = items[index]?.row ?? 0;
   /**
@@ -956,14 +1031,19 @@ function Pick({
   // 44-column terminal leaves nine characters of model name and a price you
   // cannot use — the ref is the thing being chosen, so it gets the floor.
   // The ACD pair yields first of all: newest, blank on all but ~40 rows, and
-  // one source reads as one block. The score yields second, $/task third — a
-  // missing column never misleads while a missing ref would. Below ~70
-  // columns all three are gone rather than the ref.
+  // one source reads as one block. Intelligence yields second, $/task third —
+  // a missing column never misleads while a missing ref would. The ping badge
+  // never yields: it is the narrowest signal on the row. Below ~70 columns
+  // the numbers are gone rather than the ref.
   //
-  // The task column only exists in the taskcost view. Elsewhere ~70% of rows
-  // are blank — AA publishes a measured task for about a quarter of its index
-  // — and a mostly-blank column is noise. The Y export still carries it
-  // everywhere, with the legend saying which rows can have one.
+  // Column order on screen: price, intelligence (I/C/A badges), $/task,
+  // ACD score, ACD $/task, ping. Costs and scores read left to right in the
+  // order the count line names them; the ping badge rides last, next to no
+  // number it could collide with.
+  //
+  // The $/task column shows on every view, not just taskcost: it was blank
+  // noise there once, but a measured cost that vanishes outside one view is
+  // a cost the reader stops trusting. AA rows carry one; the rest are blank.
   //
   // Price sizes to the longest cell on screen: a fixed width truncates
   // `$10.00/$50.00+1.5x` mid-badge, and padding to a constant wastes the ref
@@ -975,7 +1055,7 @@ function Pick({
   let costW = Math.min(COST_MAX_W, Math.max(COST_MIN_W, needCost));
   let badgeW = BADGE_W;
   let benchW = BENCH_W;
-  let taskW = view === "taskcost" ? TASK_W : 0;
+  let taskW = TASK_W;
   let acdW = ACD_W;
   let promptW = PROMPT_W;
   // Every column boundary carries a single space (two after the price, which
@@ -985,8 +1065,9 @@ function Pick({
   // the same separators, so labels always sit over their column.
   //
   // Yield order, narrowest first: the ACD pair as a unit (blank on all but
-  // ~40 rows, and one source reads as one block), then the score, then $/task
-  // — a missing column never misleads while a missing ref would.
+  // ~40 rows, and one source reads as one block), then intelligence, then
+  // $/task — a missing column never misleads while a missing ref would. The
+  // ping badge never yields: it is the narrowest signal on the row.
   const spare = width - 4 - 24;
   if (spare < costW + badgeW + benchW + taskW + acdW + promptW) {
     acdW = 0;
@@ -998,24 +1079,28 @@ function Pick({
     costW = Math.max(9, Math.floor(spare * 0.45));
     badgeW = Math.max(9, spare - costW);
   }
-  // Separators after a cell only when a later cell follows: a trailing space
-  // wastes a column the ref could use.
+  // The ping column is always last, so every column before it always has a
+  // cell after it: a shown column always carries its separator, and a dropped
+  // one simply isn't there. No trailing space is ever emitted.
+  const sepBench = benchW > 0 ? 1 : 0;
   const sepTask = taskW > 0 ? 1 : 0;
-  const sepPing = benchW > 0 || acdW > 0 || promptW > 0 ? 1 : 0;
-  const sepBench = benchW > 0 && (acdW > 0 || promptW > 0) ? 1 : 0;
-  const sepAcd = acdW > 0 && promptW > 0 ? 1 : 0;
+  const sepAcd = acdW > 0 ? 1 : 0;
+  const sepPrompt = promptW > 0 ? 1 : 0;
   /**
-   * The ranking's column, for the header highlight. Every flat view ranks on
-   * the score — AA's index, or ACD points with `D` — and filters on a cost
-   * (price in value, measured $/task in taskcost). The provider view is
+   * The ranking's column, for the header highlight. Score order ranks on the
+   * score — AA's index, or ACD points with `D` — and cost order (`S`, every
+   * flat view) ranks on the measured cost instead: $/task, or ACD $/task with
+   * `D`. The other columns are filters, never the order; the provider view is
    * grouped, not ranked, so nothing highlights there.
    */
-  const sortCol: "score" | "acd" | null = view === "provider" ? null : rankAcd ? "acd" : "score";
+  const costRank = rankCost && view !== "provider";
+  const sortCol: "score" | "acd" | "task" | "prompt" | null =
+    view === "provider" ? null : costRank ? (rankAcd ? "prompt" : "task") : rankAcd ? "acd" : "score";
   // `- 7` leaves the leading four plus the two-space structural gap after the
   // price; every other boundary adds its own single space above.
   const refWidth = Math.max(
     8,
-    width - 7 - costW - badgeW - benchW - taskW - acdW - promptW - sepTask - sepPing - sepBench - sepAcd,
+    width - 7 - costW - badgeW - benchW - taskW - acdW - promptW - sepBench - sepTask - sepAcd - sepPrompt,
   );
   // The window is sticky: it stays put until the cursor would leave it, then
   // follows — down pins the cursor to the last line, and reversing back up
@@ -1030,6 +1115,12 @@ function Pick({
   const start =
     cursor < prev ? cursor : cursor >= prev + height ? Math.min(cursor - height + 1, maxStart) : prev;
   startRef.current = start;
+  // Report the window back, so `Y` can export just what is on screen. An
+  // effect, not a render write: the render stays pure and the ref is fresh
+  // for any keypress handled after the commit.
+  useEffect(() => {
+    pickStart.current = start;
+  }, [start, pickStart]);
   const marked = items.length === 0;
   // Counted over the view's own items, so the number stays true when the
   // filter, the view, or H narrows what is on screen. Split by source when
@@ -1057,48 +1148,91 @@ function Pick({
   const rankedAcd = rankAcd && view !== "provider"
     ? items.filter((i) => resolveAcd(catalogue, acd, i.ref) !== null).length
     : 0;
+  // The ranking, in words: the dimension (`S`) and the source (`D`) compose,
+  // and the header highlight alone cannot say both.
+  const rankText =
+    view === "provider"
+      ? null
+      : costRank && rankAcd
+        ? " · rank: ACD $/task"
+        : costRank
+          ? " · rank: $/task"
+          : rankAcd
+            ? " · rank: AI Coding Daily"
+            : null;
 
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Header right={pickMode === "browse" ? "models browser" : `pick ${role}`} />
+        <Header
+          right={
+            pickMode === "browse"
+              ? "models browser"
+              : pickMode === "build"
+                ? buildStep === "reviewer"
+                  ? "pick reviewer — new pair 2/2"
+                  : "pick drafter — new pair 1/2"
+                : `pick ${role}`
+          }
+        />
       </Box>
       <Box>
         <Text dimColor>filter  </Text>
-        <Text>{filter || "type to filter…"}</Text>
-        <Text inverse> </Text>
+        {filter ? (
+          <FieldText text={filter} cursor={filterCaret} />
+        ) : (
+          <Text>
+            <Text dimColor>type to filter…</Text>
+            <Text inverse> </Text>
+          </Text>
+        )}
       </Box>
       <Box marginTop={1}>
         {/* Column labels, in the rows' own widths — positional columns with no
             header is how a $/task figure stopped meaning anything. Skips the
             columns the width yielded, exactly as the rows below do, so the
             labels always sit over their column. The ranking's column rides in
-            green — score, or ACD with `D` — so the sort reads apart from the
-            cyan chrome; the count line still names it in words, so a
-            monochrome terminal loses nothing. */}
+            purple — the score, or the measured cost with `S` — so the sort
+            reads apart from the cyan chrome and the yellow reference rows;
+            the count line still names it in words, so a monochrome terminal
+            loses nothing. */}
         <Line
           wrap="truncate"
           spans={[
             { text: " ".repeat(4) + pad("model", refWidth) + pad("price", costW) + "  ", dim: true },
-            ...(taskW > 0 ? [{ text: pad("$/task", taskW) + " ", dim: true } as const] : []),
-            { text: pad("ping", badgeW) + (sepPing ? " " : ""), dim: true },
             ...(benchW > 0
               ? [
                   {
-                    text: pad("score", benchW) + (sepBench ? " " : ""),
+                    text: pad("intelligence", benchW) + (sepBench ? " " : ""),
                     ...(sortCol === "score" ? { color: THEME.sort } : { dim: true }),
+                  } as const,
+                ]
+              : []),
+            ...(taskW > 0
+              ? [
+                  {
+                    text: pad("$/task", taskW) + " ",
+                    ...(sortCol === "task" ? { color: THEME.sort } : { dim: true }),
                   } as const,
                 ]
               : []),
             ...(acdW > 0
               ? [
                   {
-                    text: pad("ACD", acdW) + (sepAcd ? " " : ""),
+                    text: pad("ACD score", acdW) + (sepAcd ? " " : ""),
                     ...(sortCol === "acd" ? { color: THEME.sort } : { dim: true }),
                   } as const,
                 ]
               : []),
-            ...(promptW > 0 ? [{ text: pad("ACD $/task", promptW), dim: true } as const] : []),
+            ...(promptW > 0
+              ? [
+                  {
+                    text: pad("ACD $/task", promptW) + (sepPrompt ? " " : ""),
+                    ...(sortCol === "prompt" ? { color: THEME.sort } : { dim: true }),
+                  } as const,
+                ]
+              : []),
+            { text: pad("ping", badgeW), dim: true },
           ]}
         />
       </Box>
@@ -1183,10 +1317,10 @@ function Pick({
                   is exactly full, which a `+1.5x` price is. Two spaces —
                   everything reads crammed at one. */}
               <Text>{"  "}</Text>
-              {taskW > 0 && (
+              {benchW > 0 && (
                 <>
                   <Text color={accent} dimColor={dimmed} wrap="truncate">
-                    {pad(task, taskW)}
+                    {pad(bench, benchW)}
                   </Text>
                   {/* Every boundary carries its space, in rows exactly as in
                       the header: without it an exact-fill cell touches the
@@ -1194,16 +1328,12 @@ function Pick({
                   <Text> </Text>
                 </>
               )}
-              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead && !anchor} wrap="truncate">
-                {pad(status, badgeW)}
-              </Text>
-              {sepPing && <Text> </Text>}
-              {benchW > 0 && (
+              {taskW > 0 && (
                 <>
                   <Text color={accent} dimColor={dimmed} wrap="truncate">
-                    {pad(bench, benchW)}
+                    {pad(task, taskW)}
                   </Text>
-                  {sepBench && <Text> </Text>}
+                  <Text> </Text>
                 </>
               )}
               {acdW > 0 && (
@@ -1215,10 +1345,16 @@ function Pick({
                 </>
               )}
               {promptW > 0 && (
-                <Text color={accent} dimColor={dimmed} wrap="truncate">
-                  {pad(prompt, promptW)}
-                </Text>
+                <>
+                  <Text color={accent} dimColor={dimmed} wrap="truncate">
+                    {pad(prompt, promptW)}
+                  </Text>
+                  {sepPrompt && <Text> </Text>}
+                </>
               )}
+              <Text color={dead ? THEME.warn : accent} dimColor={!selected && !dead && !anchor} wrap="truncate">
+                {pad(status, badgeW)}
+              </Text>
             </Box>
           );
         })}
@@ -1248,9 +1384,7 @@ function Pick({
                   { text: `view: ${view}`, color: THEME.accent },
                   // Its own span, with its own leading separator: folded into
                   // the view span it read `view: intelligencerank: …`.
-                  ...(rankAcd && view !== "provider"
-                    ? [{ text: " · rank: AI Coding Daily", color: THEME.accent } as const]
-                    : []),
+                  ...(rankText ? [{ text: rankText, color: THEME.accent } as const] : []),
                   {
                     text:
                       `${providerLock ? ` · locked to: ${providerLock}` : ""}` +
@@ -1265,21 +1399,17 @@ function Pick({
           }
         />
       </Box>
-      {/* Two hint lines, not one: the picker answers to fifteen keys and one
-          line fits eight. Both truncate — the budget counts two rows. */}
-      <Box>
-        <Text dimColor wrap="truncate">
-          {pickMode === "browse"
-            ? `browsing — choose a model on the debate screen · ^F/^B page · ^D/^U half · Esc home`
-            : `↑↓ choose · Enter select · ^F/^B page · ^D/^U half · Esc back`}
-        </Text>
-      </Box>
-      <Box>
-        <Text dimColor wrap="truncate">
-          {`V view · C price basis · H hide unscored · D rank: ACD · L ${providerLock ? `unlock (locked to: ${providerLock})` : "lock to selected provider"} · B refresh benchmarks · A ping visible · P ping · T tools ping · Y export · ? providers` +
-            `${view === "value" ? " · < > value ceiling" : view === "taskcost" ? " · < > task ceiling" : ""}`}
-        </Text>
-      </Box>
+      {/* The hints, wrapped to the width by the App and sliced to the budget:
+          one element is one row, so this renders exactly what was reserved.
+          Priority-ordered in `hints.ts` — a narrow terminal loses the tail,
+          never the navigation. */}
+      {hintLines.map((line, i) => (
+        <Box key={i}>
+          <Text dimColor wrap="truncate">
+            {line}
+          </Text>
+        </Box>
+      ))}
       {notice && (
         <Box marginTop={1}>
           {/* One row, like the count and hints: the budget counts it as one, and
@@ -1427,7 +1557,25 @@ function providerLines(
   ]);
   lines.push([
     {
-      text: "the green column header is the ranking — score, or ACD with D. Price and measured cost are ceilings (the count line names them), never the order.",
+      text: "S ranks the flat views by measured cost — $/task, or ACD $/task with D — cheapest first, unmeasured trailing. Session-only; ignored in the provider view, which is grouped rather than ranked.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "type to filter · ←→ steps the caret inside the filter · ^A ^E jump to its ends · Esc leaves the picker, it never clears the filter",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "Y exports the table — the whole shown table, or just the visible window. Nothing here spends a model call.",
+      dim: true,
+    },
+  ]);
+  lines.push([
+    {
+      text: "the purple column header is the ranking — intelligence (ACD score with D), or the measured cost with S ($/task, ACD $/task with D). Price and the ceilings are filters (the count line names them), never the order.",
       dim: true,
     },
   ]);
@@ -1533,9 +1681,10 @@ function Pairs({
   index,
   height,
   current,
+  currentLine,
+  scope,
   notice,
   loading,
-  allowManage,
 }: {
   rows: PairRow[];
   index: number;
@@ -1543,16 +1692,16 @@ function Pairs({
   height: number;
   /** The pair in use, so the row it names can be marked. */
   current: PairModels | null;
+  /** The two models on the debate screen, as text — what "save current as…" names. */
+  currentLine: string | null;
+  /** Managing (settings): everything. Choosing (debate): saved presets only. */
+  scope: "manage" | "preset";
   notice: string | null;
   /** The file is being read; an empty list is not yet an answer. */
   loading: boolean;
-  /** False from the debate screen: choosing only — the save row is hidden and `d` is inert. */
-  allowManage: boolean;
 }) {
   const width = Math.max(8, useTerminalWidth() - 6);
-  // Choose-only hides the row that saves the current two: creating a pair
-  // lives in settings, and a list that offers it here would lie about that.
-  const visible = allowManage ? rows : rows.filter((r) => r.kind !== "save");
+  const visible = rows;
   // Sticky like the picker: the window holds while the cursor walks its rows,
   // and follows only at an edge — down pins to the last line, up to the top.
   const startRef = useRef(0);
@@ -1566,38 +1715,59 @@ function Pairs({
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Header right="pairs" />
+        <Header right={scope === "preset" ? "drafter/reviewer preset" : "drafter/reviewer pairs"} />
       </Box>
       <Text dimColor>
-        {allowManage
-          ? "two models at once, under a name — the pair you used last is first"
-          : "choose a preset — saving and deleting live in settings"}
+        {scope === "preset"
+          ? "choose a saved preset — creating and deleting live in settings"
+          : "two models at once, under a name — the pair you used last is first"}
       </Text>
+      {scope === "manage" && currentLine && (
+        <Box marginTop={1}>
+          <Text dimColor>
+            current <Text>{currentLine}</Text>
+          </Text>
+        </Box>
+      )}
       <Box marginTop={1} flexDirection="column">
         {visible.slice(start, start + height).map((row, i) => {
           const absolute = start + i;
           const selected = absolute === index;
+          // A grouping gap is a blank row, nothing more: the cursor never
+          // rests on it (the handlers skip gaps), so it is never selected.
+          if (row.kind === "gap") return <Box key={row.key} height={1} />;
           const models = row.kind === "saved" ? row.pair : row.kind === "recent" ? row.recent : null;
           const inUse = models !== null && current !== null && pairKey(models) === pairKey(current);
           // The two models are the point of the row, so they get the space and
           // the task is clipped to what is left. One element is one row: a
           // wrapped row moves every cursor below it, which is the scroll bug the
           // panes are built to avoid.
-          const fullDetail = !models
-            ? ""
-            : `  ${models.drafter.ref} -> ${models.reviewer.ref}` +
-              (row.kind === "recent" ? `  [run ${row.recent.run}]` : "") +
-              (row.kind === "saved" && row.warnings.length === 0
-                ? `  [${row.pair.lastUsedAt ? "used" : "never used"}]`
-                : "") +
-              (row.kind === "saved" && row.warnings.length ? "  !" : "");
+          const fullDetail =
+            row.kind === "new"
+              ? "  pick a drafter and a reviewer, then name it"
+              : row.kind === "save"
+                ? currentLine
+                  ? `  the current two — ${currentLine}`
+                  : ""
+                : `  ${models!.drafter.ref} -> ${models!.reviewer.ref}` +
+                  (row.kind === "recent" ? `  [run ${row.recent.run}]` : "") +
+                  (row.kind === "saved" && row.warnings.length === 0
+                    ? `  [${row.pair.lastUsedAt ? "used" : "never used"}]`
+                    : "") +
+                  (row.kind === "saved" && row.warnings.length ? "  !" : "");
           // Both halves are clipped, each from its own budget: a long detail
           // alone used to push the row past the pane even with the label at
           // its ten-character floor, and a row that fills the width wraps.
           const maxDetail = Math.max(10, width - 1 - 4 - 10);
           const detail = fullDetail.length > maxDetail ? shorten(fullDetail, maxDetail) : fullDetail;
           const label =
-            row.kind === "saved" ? row.pair.name : row.kind === "recent" ? row.recent.task : "save current as…";
+            row.kind === "saved"
+              ? row.pair.name
+              : row.kind === "recent"
+                ? row.recent.task
+                : row.kind === "new"
+                  ? "new pair…"
+                  : "save current as…";
           const room = Math.max(8, width - 4 - detail.length - 1);
           const text = label.length > room ? `${label.slice(0, room - 1)}…` : label;
           return (
@@ -1619,7 +1789,7 @@ function Pairs({
         {loading && <Text dimColor>reading the pairs…</Text>}
         {!loading && visible.length === 0 && (
           <Text dimColor>
-            {allowManage ? "no pairs saved, and no runs to learn one from" : "no pairs saved yet — save one in settings"}
+            {scope === "preset" ? "no pairs saved yet — save one in settings" : "no pairs saved, and no runs to learn one from"}
           </Text>
         )}
       </Box>
@@ -1640,7 +1810,13 @@ function Pairs({
           <Line
             spans={hints(
               ["Enter", "use this pair"],
-              ...(allowManage ? [["d", "delete"] as [string, string]] : []),
+              ...(scope === "manage"
+                ? [
+                    ["r", "rename"] as [string, string],
+                    ["R", "auto-name"] as [string, string],
+                    ["d", "delete"] as [string, string],
+                  ]
+                : []),
               ["Esc", "back"],
             )}
           />
@@ -1653,11 +1829,14 @@ function Pairs({
 /** The Artificial Analysis key prompt. Typing is handled by the app; this draws the field. */
 function AAKey({
   value,
+  caret,
   busy,
   notice,
   hasKey,
 }: {
   value: string;
+  /** The caret inside the key field, clamped to it where it renders. */
+  caret: number;
   busy: boolean;
   notice: string | null;
   /** Whether a key is already stored — the field always starts empty, so without
@@ -1685,7 +1864,16 @@ function AAKey({
         <Text dimColor>no key stored — scores come from OpenRouter until one is saved.</Text>
       )}
       <Box marginTop={1}>
-        <Text inverse>{` ${shown} `}</Text>
+        {value ? (
+          // One bullet per character, so the caret index maps one-to-one onto
+          // the masked text.
+          <FieldText text={shown} cursor={caret} />
+        ) : (
+          <Text>
+            <Text dimColor>{shown}</Text>
+            <Text inverse> </Text>
+          </Text>
+        )}
         {busy && <Text dimColor> verifying…</Text>}
       </Box>
       {notice && (
@@ -1695,7 +1883,9 @@ function AAKey({
       )}
       <Box marginTop={1}>
         <Text>
-          <Line spans={hints(["Enter", "save & verify"], ["Ctrl+U", "clear"], ["Esc", "cancel"])} />
+          <Line
+            spans={hints(["←→", "move"], ["^A ^E", "ends"], ["Enter", "save & verify"], ["Ctrl+U", "clear"], ["Esc", "cancel"])}
+          />
         </Text>
       </Box>
     </Box>
@@ -1703,15 +1893,47 @@ function AAKey({
 }
 
 /** The name prompt. Typing is handled by the app; this draws the field. */
-function PairName({ value, known, maxShown }: { value: string; known: string[]; maxShown: number }) {
+function PairName({
+  value,
+  caret,
+  known,
+  maxShown,
+  models,
+  renameFrom,
+}: {
+  value: string;
+  /** The caret inside the name, clamped to it where it renders. */
+  caret: number;
+  known: string[];
+  maxShown: number;
+  /** The two models being named — the builder's draft, or the current two. */
+  models: string | null;
+  /** Renaming this pair, not saving a new one: the prompt opened prefilled. */
+  renameFrom: string | null;
+}) {
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Header right="save this pair" />
+        <Header right={renameFrom ? "rename this pair" : "save this pair"} />
       </Box>
-      <Text dimColor>name it, so the next one is a keystroke away:</Text>
+      <Text dimColor>
+        {renameFrom ? `was "${renameFrom}" — Enter renames, Esc keeps it:` : "name it, so the next one is a keystroke away:"}
+      </Text>
+      {models && (
+        <Box>
+          <Text dimColor>naming </Text>
+          <Text>{models}</Text>
+        </Box>
+      )}
       <Box marginTop={1}>
-        <Text inverse>{` ${value} `}</Text>
+        {value ? (
+          <FieldText text={value} cursor={caret} />
+        ) : (
+          <Text>
+            <Text dimColor>type a name…</Text>
+            <Text inverse> </Text>
+          </Text>
+        )}
       </Box>
       {known.length > 0 && (
         <Box marginTop={1} flexDirection="column">
@@ -1723,7 +1945,7 @@ function PairName({ value, known, maxShown }: { value: string; known: string[]; 
       )}
       <Box marginTop={1}>
         <Text>
-          <Line spans={hints(["Enter", "save"], ["Esc", "cancel"])} />
+          <Line spans={hints(["←→", "move"], ["^A ^E", "ends"], ["Enter", "save"], ["Esc", "cancel"])} />
         </Text>
       </Box>
     </Box>
@@ -2291,8 +2513,15 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [deskSel, setDeskSel] = useState(4);
   /** Where the pairs list was opened from: the debate screen only chooses, settings manages. */
   const [pairOrigin, setPairOrigin] = useState<"settings" | "debate">("settings");
-  /** The model list's mode: browse from home (Enter does nothing), select from the debate screen. */
-  const [pickMode, setPickMode] = useState<"browse" | "select">("select");
+  /** The model list's mode: browse from home (Enter does nothing), select one model, or build a pair step by step. */
+  const [pickMode, setPickMode] = useState<"browse" | "select" | "build">("select");
+  /** The pair being built by hand: the drafter is picked first, then the reviewer. */
+  const [pairDraft, setPairDraft] = useState<{ drafter: ModelRef | null; reviewer: ModelRef | null }>({
+    drafter: null,
+    reviewer: null,
+  });
+  /** Which half of the pair the builder is picking now. Null outside a build. */
+  const [buildStep, setBuildStep] = useState<"drafter" | "reviewer" | null>(null);
   const [allModels, setAllModels] = useState<string[]>([]);
   /**
    * OpenCode's own favourites and recents, read on demand from its state file.
@@ -2305,6 +2534,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     recents: [],
   });
   const [filter, setFilter] = useState("");
+  /** The caret inside the filter, clamped to it on every render. */
+  const [filterCaret, setFilterCaret] = useState(0);
   const [pickIndex, setPickIndex] = useState(0);
   const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
   /** What the picker lists: grouped providers, or a flat score-ordered view. */
@@ -2321,6 +2552,13 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
    * grouped, not ranked.
    */
   const [rankAcd, setRankAcd] = useState(false);
+  /**
+   * Rank the flat views by measured cost instead of score: `S` swaps the
+   * dimension behind the order — $/task, or ACD $/task with `D` — cheapest
+   * first, unmeasured trailing. Session-only, like `D`. Only the provider
+   * view stays out: grouped, not ranked.
+   */
+  const [rankCost, setRankCost] = useState(false);
   /** The provider the picker is locked to, or null for every provider. `L`
      locks the highlighted model's provider; the view, the filter and `H` all
      still apply inside it. */
@@ -2370,6 +2608,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   /** The exact refs a ping-all is armed for, so `y` pings what `A` named — a
      count alone would fire on a different list of the same length. */
   const [pingArmed, setPingArmed] = useState<string[] | null>(null);
+  /** An armed export: the whole shown table, and just the picker's window, so
+     `e` exports what `Y` named — a count alone would fire on a stale list. */
+  const [exportArm, setExportArm] = useState<{ entire: string[]; visible: string[] } | null>(null);
+  /** The picker's window start, reported by `Pick` — what "visible" means to `Y`. */
+  const pickStart = useRef(0);
   /* Saved pairs, and the runs the recent-pair rows come from. The runs are a
      separate list from the past-runs screen's: that one is a snapshot with its
      own tags and scroll, and opening pairs must not disturb it. */
@@ -2378,12 +2621,22 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   const [pairIndex, setPairIndex] = useState(0);
   const [pairLoading, setPairLoading] = useState(false);
   const [pairName, setPairName] = useState("");
+  /** The caret inside the pair name, set to the end wherever the prompt opens. */
+  const [pairCaret, setPairCaret] = useState(0);
   const [pairAsk, setPairAsk] = useState<{ ask: "delete" | "overwrite"; pair: Pair } | null>(null);
+  /**
+   * Renaming, not saving: the name prompt's Enter moves this pair's models and
+   * dates onto the typed name instead of storing the current two. Set by `r`
+   * and `R`, cleared everywhere the prompt is entered for a fresh save.
+   */
+  const [pairRename, setPairRename] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   /** An Artificial Analysis key is stored: the picker reads scores direct, OpenRouter fills gaps. */
   const [aaKeySet, setAAKeySet] = useState(false);
   /** The key being typed. Masked on screen, never logged, verified before saving. */
   const [aaKeyInput, setAAKeyInput] = useState("");
+  /** The caret inside the key field, clamped to it where it renders. */
+  const [aaKeyCaret, setAAKeyCaret] = useState(0);
   /** A verification request in flight: the keystroke handler stands aside. */
   const [aaKeyBusy, setAAKeyBusy] = useState(false);
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -2592,6 +2845,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   async function openBrowser() {
     setPickMode("browse");
     setFilter("");
+    setFilterCaret(0);
     setPickIndex(0);
     setNotice(null);
     setPhase("pick");
@@ -2603,6 +2857,24 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     setPickMode("select");
     setPickRole(role);
     setFilter("");
+    setFilterCaret(0);
+    setPickIndex(0);
+    setNotice(null);
+    setPhase("pick");
+    void ensureModelData();
+  }
+
+  /**
+   * Pairs list → build a pair by hand: the picker first, for the drafter,
+   * then again for the reviewer, then the name prompt. Only from settings —
+   * the debate door lists presets and builds nothing.
+   */
+  async function openBuild() {
+    setPickMode("build");
+    setBuildStep("drafter");
+    setPairDraft({ drafter: null, reviewer: null });
+    setFilter("");
+    setFilterCaret(0);
     setPickIndex(0);
     setNotice(null);
     setPhase("pick");
@@ -2708,9 +2980,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
 
   /** The rows on the pair screen, recomputed from what is loaded. */
   const pairScreen = useMemo(
-    () => pairRows(savedPairs, pairRuns, new Set(allModels)),
-    [savedPairs, pairRuns, allModels],
+    () => pairRows(savedPairs, pairRuns, new Set(allModels), pairOrigin === "debate" ? "preset" : "manage"),
+    [savedPairs, pairRuns, allModels, pairOrigin],
   );
+  /** The rows the cursor can land on: the debate door lists saved presets only. */
+  const pairVisible = pairScreen;
   /**
    * The name of the saved pair the current two models are, or null.
    *
@@ -2736,11 +3010,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     return cfg ? pairModels(cfg.models) : null;
   }
 
-  /** Store the current two models under a name, then go back to the list. */
-  async function commitPair(name: string) {
-    const models = currentModels();
-    if (!models) return;
-    await savePair({ name, ...models });
+  /** Store two models under a name, then go back to the list. */
+  async function commitPair(name: string, models?: PairModels) {
+    const named = models ?? currentModels();
+    if (!named) return;
+    await savePair({ name, ...named });
     const pairs = await loadPairs();
     setSavedPairs(pairs);
     // The cursor follows the pair you just made, not the row that happened to be
@@ -2749,6 +3023,22 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     const at = rows.findIndex((row) => row.kind === "saved" && row.pair.name === name);
     if (at >= 0) setPairIndex(at);
     setNotice(`saved pair "${name}"`);
+    setPairDraft({ drafter: null, reviewer: null });
+    setBuildStep(null);
+    setPhase("pairs");
+  }
+
+  /** Rename a saved pair: its models and dates move onto the new name. */
+  async function commitRename(from: string, to: string) {
+    const prev = savedPairs.find((p) => p.name === from);
+    if (!prev) return;
+    const pairs = await renamePair(from, to, pairModels(prev));
+    setSavedPairs(pairs);
+    const rows = pairRows(pairs, pairRuns, new Set(allModels));
+    const at = rows.findIndex((row) => row.kind === "saved" && row.pair.name === to);
+    if (at >= 0) setPairIndex(at);
+    setNotice(`renamed "${from}" to "${to}"`);
+    setPairRename(null);
     setPhase("pairs");
   }
 
@@ -2760,7 +3050,9 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   async function usePair(models: PairModels, name?: string) {
     if (!cfg) return;
     await persist({ ...cfg, models }, mode);
-    addLog(`pair${name ? ` "${name}"` : " from a run"} · ${models.drafter.ref} -> ${models.reviewer.ref}`);
+    // Not logged: the choice is confirmed by the notice and the rows, and a
+    // log line would follow every later screen — including a past run that
+    // used another pair, where it would read as a false claim.
     setSavedPairs(name ? await markPairUsed(name) : await loadPairs());
     if (pairOrigin === "debate") {
       // Choosing only: back to the debate screen, which shows notices.
@@ -2771,6 +3063,27 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     setSettingsSel(0);
     setSaved(name ? `using pair "${name}"` : "using a pair a run used");
     setPhase("settings");
+  }
+
+  /**
+   * Save a hand-built pair and start using it: the name prompt's Enter lands
+   * here with both models, so one naming writes the preset and switches to it —
+   * and stays on the pairs list, where the new row is now the cursor.
+   */
+  async function commitBuiltPair(name: string, models: PairModels) {
+    if (!cfg) return;
+    await savePair({ name, ...models });
+    const pairs = await loadPairs();
+    setSavedPairs(await markPairUsed(name));
+    await persist({ ...cfg, models }, mode);
+    // Not logged, like every other pair choice: the notice confirms it inline.
+    const rows = pairRows(pairs, pairRuns, new Set(allModels));
+    const at = rows.findIndex((row) => row.kind === "saved" && row.pair.name === name);
+    if (at >= 0) setPairIndex(at);
+    setNotice(`saved and using "${name}"`);
+    setPairDraft({ drafter: null, reviewer: null });
+    setBuildStep(null);
+    setPhase("pairs");
   }
 
   /* Settings: a saved pair, or the benchmarks key. The key lives in the user's
@@ -2799,6 +3112,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (settingsSel === 1) {
         // A fresh field every visit: a key left on screen is a key photographed.
         setAAKeyInput("");
+        setAAKeyCaret(0);
         setNotice(null);
         setPhase("aakey");
         return;
@@ -2861,13 +3175,39 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         return;
       }
       // Ctrl+U clears, readline-style — a pasted key with a stray character
-      // is easier to redo than to edit blind behind bullets.
+      // is easier to redo than to fix blind behind bullets.
       if (key.ctrl && input === "u") {
         setAAKeyInput("");
+        setAAKeyCaret(0);
         return;
       }
-      if (key.backspace || key.delete) {
-        setAAKeyInput((v) => v.slice(0, -1));
+      // Line editing, readline-style: arrows step, ^A/^E jump.
+      const kcur = Math.max(0, Math.min(aaKeyCaret, aaKeyInput.length));
+      if (key.ctrl && input === "a") {
+        setAAKeyCaret(0);
+        return;
+      }
+      if (key.ctrl && input === "e") {
+        setAAKeyCaret(aaKeyInput.length);
+        return;
+      }
+      if (key.leftArrow) {
+        setAAKeyCaret((c) => Math.max(0, Math.min(c, aaKeyInput.length) - 1));
+        return;
+      }
+      if (key.rightArrow) {
+        setAAKeyCaret((c) => Math.min(aaKeyInput.length, Math.max(0, c) + 1));
+        return;
+      }
+      if (key.backspace) {
+        if (kcur > 0) {
+          setAAKeyInput(aaKeyInput.slice(0, kcur - 1) + aaKeyInput.slice(kcur));
+          setAAKeyCaret(kcur - 1);
+        }
+        return;
+      }
+      if (key.delete) {
+        if (kcur < aaKeyInput.length) setAAKeyInput(aaKeyInput.slice(0, kcur) + aaKeyInput.slice(kcur + 1));
         return;
       }
       if (key.return) {
@@ -2877,7 +3217,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (key.ctrl || key.meta) return;
       if (input) {
         setNotice(null);
-        setAAKeyInput((v) => v + input);
+        setAAKeyInput(aaKeyInput.slice(0, kcur) + input + aaKeyInput.slice(kcur));
+        setAAKeyCaret(kcur + input.length);
       }
     },
     { isActive: phase === "aakey" },
@@ -2888,10 +3229,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
    *
    * Both are read on the way in rather than kept warm, so what is on screen is
    * what is on disk — including after another `adv`, or a hand edit. From the
-   * debate screen the list is choose-only; managing lives in settings.
+   * debate screen the list is saved presets only; managing lives in settings.
    */
   async function openPairs(origin: "settings" | "debate") {
     setPairName("");
+    setPairCaret(0);
     setPairAsk(null);
     setNotice(null);
     setPairOrigin(origin);
@@ -2902,9 +3244,12 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     setSavedPairs(pairs);
     setPairRuns(runs);
     // The cursor opens on the pair in use, so "the last one" is where Enter
-    // lands without moving anything.
+    // lands without moving anything. Searched in the rows on screen, not the
+    // full list: the debate door lists presets only, and an index into the
+    // wrong list lands the cursor on the wrong row.
     const current = currentPairKey();
-    const at = pairRows(pairs, runs, new Set(allModels)).findIndex((row) => {
+    const scope = origin === "debate" ? "preset" : "manage";
+    const at = pairRows(pairs, runs, new Set(allModels), scope).findIndex((row) => {
       const models = row.kind === "saved" ? row.pair : row.kind === "recent" ? row.recent : null;
       return models !== null && pairKey(models) === current;
     });
@@ -2913,12 +3258,6 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
 
   const currentPairKey = () => (cfg ? pairKey(cfg.models) : "");
 
-  /** The rows the cursor can land on: choose-only from the debate screen hides the save row. */
-  const pairVisible = useMemo(
-    () => (pairOrigin === "debate" ? pairScreen.filter((r) => r.kind !== "save") : pairScreen),
-    [pairScreen, pairOrigin],
-  );
-
   /* Pair list. Every key its footer names is answered here: Enter, `d`, Esc. */
   useInput(
     (input, key) => {
@@ -2926,19 +3265,39 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setPhase(pairOrigin === "debate" ? "start" : "settings");
         return;
       }
+      // Grouping gaps are rows on screen but never cursor stops: stepping
+      // onto one keeps going the same way. Safe without a bound — a gap
+      // always sits between two real rows, so one extra step always lands.
+      const stepSkip = (i: number, dir: -1 | 1): number => {
+        let at = clampIndex(i + dir, pairVisible.length);
+        while (pairVisible[at]?.kind === "gap") at = clampIndex(at + dir, pairVisible.length);
+        return at;
+      };
       if (key.upArrow || input === "k") {
-        setPairIndex((i) => clampIndex(i - 1, pairVisible.length));
+        setPairIndex((i) => stepSkip(i, -1));
         return;
       }
       if (key.downArrow || input === "j") {
-        setPairIndex((i) => clampIndex(i + 1, pairVisible.length));
+        setPairIndex((i) => stepSkip(i, 1));
         return;
       }
       const row = pairVisible[pairIndex];
       if (key.return) {
-        if (!row) return;
+        if (!row || row.kind === "gap") return;
+        if (row.kind === "new") {
+          void openBuild();
+          return;
+        }
         if (row.kind === "save") {
-          setPairName("");
+          // Naming the current two, not a draft: a builder left on the
+          // name prompt must not leak its models into this save.
+          setPairDraft({ drafter: null, reviewer: null });
+          setBuildStep(null);
+          setPairRename(null);
+          const current = currentModels();
+          const suggestion = current ? suggestPairName(current) : "";
+          setPairName(suggestion);
+          setPairCaret(suggestion.length);
           setPhase("pairname");
           return;
         }
@@ -2953,7 +3312,44 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           setPhase("pairconfirm");
         } else if (row?.kind === "recent")
           setNotice("that pair belongs to a run — it is not stored here, and goes when the run does");
-        else setNotice("this is the current two models; there is nothing saved to delete");
+        else if (row?.kind === "gap") return;
+        else setNotice("a new pair is built, not deleted — pick it to start");
+      }
+      // `r` renames the saved pair under the cursor, opening the prompt with
+      // its name; `R` opens it with a name suggested from its models instead.
+      // Managing lives in settings, so both are inert from the debate screen.
+      if (input === "r" || input === "R") {
+        if (pairOrigin === "debate") {
+          setNotice("saved pairs are managed in settings");
+          return;
+        }
+        if (row?.kind !== "saved") {
+          setNotice("only a saved pair can be renamed — Enter uses anything here");
+          return;
+        }
+        // A rename names the pair's own models, never a builder's leftovers.
+        setPairDraft({ drafter: null, reviewer: null });
+        setBuildStep(null);
+        setPairRename(row.pair.name);
+        if (input === "R") {
+          const suggestion = suggestPairName(pairModels(row.pair));
+          if (suggestion && suggestion !== row.pair.name) {
+            setPairName(suggestion);
+            setPairCaret(suggestion.length);
+            setPhase("pairname");
+            return;
+          }
+          setNotice(
+            suggestion
+              ? `already named "${suggestion}" — press r to edit it`
+              : "no name suggests itself from those models — press r to type one",
+          );
+          setPairRename(null);
+          return;
+        }
+        setPairName(row.pair.name);
+        setPairCaret(row.pair.name.length);
+        setPhase("pairname");
       }
     },
     { isActive: phase === "pairs" },
@@ -2964,16 +3360,43 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
    *
    * Esc cancels back to the list rather than carrying on to settings: this
    * screen has its own parent one level in, and a stray Esc must not throw away
-   * the list behind it as well.
+   * the list behind it as well. A builder's draft is kept on Esc — the two
+   * models are still there when the prompt is reopened — and cleared on save.
    */
   useInput(
     (input, key) => {
       if (key.escape) {
+        setPairRename(null);
         setPhase("pairs");
         return;
       }
-      if (key.backspace || key.delete) {
-        setPairName((n) => n.slice(0, -1));
+      // Line editing, readline-style: arrows step, ^A/^E jump.
+      const ncur = Math.max(0, Math.min(pairCaret, pairName.length));
+      if (key.ctrl && input === "a") {
+        setPairCaret(0);
+        return;
+      }
+      if (key.ctrl && input === "e") {
+        setPairCaret(pairName.length);
+        return;
+      }
+      if (key.leftArrow) {
+        setPairCaret((c) => Math.max(0, Math.min(c, pairName.length) - 1));
+        return;
+      }
+      if (key.rightArrow) {
+        setPairCaret((c) => Math.min(pairName.length, Math.max(0, c) + 1));
+        return;
+      }
+      if (key.backspace) {
+        if (ncur > 0) {
+          setPairName(pairName.slice(0, ncur - 1) + pairName.slice(ncur));
+          setPairCaret(ncur - 1);
+        }
+        return;
+      }
+      if (key.delete) {
+        if (ncur < pairName.length) setPairName(pairName.slice(0, ncur) + pairName.slice(ncur + 1));
         return;
       }
       if (key.return) {
@@ -2982,8 +3405,38 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           setNotice("a pair needs a name — that is how you find it again");
           return;
         }
+        // Renaming moves the pair's own models onto the typed name — never
+        // the current two, never a builder's draft.
+        if (pairRename) {
+          if (name === pairRename) {
+            setNotice(`kept "${name}"`);
+            setPairRename(null);
+            setPhase("pairs");
+            return;
+          }
+          const from = savedPairs.find((p) => p.name === pairRename);
+          if (!from) {
+            setPairRename(null);
+            setPhase("pairs");
+            return;
+          }
+          const clash = savedPairs.find((p) => p.name === name);
+          if (clash) {
+            setPairAsk({ ask: "overwrite", pair: { ...clash, ...pairModels(from) } });
+            setPhase("pairconfirm");
+            return;
+          }
+          void commitRename(pairRename, name);
+          return;
+        }
+        // A hand-built pair names its own two models; "save current as…"
+        // names the two on screen.
+        const built =
+          pairDraft.drafter && pairDraft.reviewer
+            ? pairModels({ drafter: pairDraft.drafter, reviewer: pairDraft.reviewer })
+            : null;
+        const models = built ?? currentModels();
         const existing = savedPairs.find((p) => p.name === name);
-        const models = currentModels();
         if (existing) {
           if (models) {
             setPairAsk({ ask: "overwrite", pair: { ...existing, ...models } });
@@ -2991,11 +3444,15 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
           }
           return;
         }
-        void commitPair(name);
+        if (built) void commitBuiltPair(name, built);
+        else void commitPair(name);
         return;
       }
       if (key.ctrl || key.meta) return;
-      if (input) setPairName((n) => n + input);
+      if (input) {
+        setPairName(pairName.slice(0, ncur) + input + pairName.slice(ncur));
+        setPairCaret(ncur + input.length);
+      }
     },
     { isActive: phase === "pairname" },
   );
@@ -3014,15 +3471,28 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     if (!ask) return;
     if (!ok) {
       setNotice(null);
+      setPairRename(null);
       return;
     }
     if (ask.ask === "delete") {
       const gone = await deletePair(ask.pair.name);
       setSavedPairs(await loadPairs());
       setNotice(gone ? `deleted pair "${ask.pair.name}"` : `no pair called "${ask.pair.name}"`);
+    } else if (pairRename) {
+      // Renaming onto a taken name: the old name goes, its models move onto
+      // the confirmed one. The confirm already carries those models.
+      await commitRename(pairRename, ask.pair.name);
     } else {
-      await commitPair(ask.pair.name);
-      setNotice(`replaced pair "${ask.pair.name}"`);
+      // The confirm carries the two models it would store — the builder's
+      // when it built them, the current two otherwise — so overwriting reuses
+      // the same path as naming, rather than re-reading the config.
+      const built =
+        pairDraft.drafter && pairDraft.reviewer
+          ? pairModels({ drafter: pairDraft.drafter, reviewer: pairDraft.reviewer })
+          : null;
+      if (built) await commitBuiltPair(ask.pair.name, built);
+      else await commitPair(ask.pair.name, pairModels(ask.pair));
+      setNotice(built ? `saved and using "${ask.pair.name}"` : `replaced pair "${ask.pair.name}"`);
     }
   }
 
@@ -3107,8 +3577,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       scoreOf,
       outputOf,
       taskCostOf,
+      // Cost ranking answers in every flat view; only the provider branch never
+      // gets here, grouped rather than ranked.
+      rankBy: rankCost ? "cost" : "score",
     });
-  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, providerLock, priceBasis]);
+  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, priceBasis]);
 
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
@@ -3195,11 +3668,18 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     // proceed, and what cancels. Names first, so a short list reads whole.
     const names =
       reachable.slice(0, 4).join(", ") + (reachable.length > 4 ? ` +${reachable.length - 4} more` : "");
+    const costRankScope = rankCost && view !== "provider";
     const scope = [
       filter.trim() ? `matching "${filter.trim()}"` : "",
       providerLock ? `locked to ${providerLock}` : "",
       view !== "provider" ? `${view} view` : "",
-      rankAcd && view !== "provider" ? "ranked by AI Coding Daily" : "",
+      rankAcd && view !== "provider"
+        ? costRankScope
+          ? "ranked by ACD $/task"
+          : "ranked by AI Coding Daily"
+        : costRankScope
+          ? "ranked by $/task"
+          : "",
       hideUnscored ? "hiding unscored" : "",
     ]
       .filter(Boolean)
@@ -3213,14 +3693,18 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   }
 
   /**
-   * `Y` — the visible list as a Markdown table, for a second opinion elsewhere.
-   * Clipboard first, `models.md` in the data dir always (the copy that works in
-   * every terminal). Nothing here spends a model call: it only formats what the
+   * `Y` — the table as Markdown, for a second opinion elsewhere. Clipboard
+   * first, `models.md` in the data dir always (the copy that works in every
+   * terminal). Nothing here spends a model call: it only formats what the
    * picker already knows.
+   *
+   * The refs decide the scope: the whole shown table, or just the picker's
+   * window. Callers name which — the context line in the Markdown says it, so
+   * a pasted table never misleads about what it covers.
    */
-  async function exportVisible() {
+  async function exportVisible(refs: string[], scope: "entire" | "window") {
     const md = exportModelsMd({
-      refs: modelRows.items.map((i) => i.ref),
+      refs,
       total: allModels.length,
       view,
       filter,
@@ -3238,15 +3722,34 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       indexVersion: benchMeta.indexVersion,
       acdAt: benchMeta.acdAt,
       rankAcd,
+      rankCost,
+      scope,
     });
     const file = path.join(advDataRoot(), "models.md");
     const result = await copyMarkdown(md, file);
     // The full path in both branches: `models.md` alone never says where, and
     // the notice is the only thing that does. Truncated to one row like the
     // rest of the chrome.
-    const n = modelRows.items.length;
     if (result.via === "file") setNotice(`no clipboard here — the markdown is in ${file}`);
-    else setNotice(`exported ${n} models to the clipboard · also ${file}`);
+    else setNotice(`exported ${refs.length} models to the clipboard · also ${file}`);
+  }
+
+  /**
+   * Arm the export choice: the whole shown table, or just the rows in the
+   * picker's window. `Y` arms rather than fires, because "the table" is now
+   * ambiguous — and like the ping-all, the notice names both options with
+   * their counts, so `e`/`v` spend exactly what was named.
+   */
+  function armExport() {
+    const entire = modelRows.items.map((i) => i.ref);
+    const visible = modelRows.rows
+      .slice(pickStart.current, pickStart.current + pickH)
+      .filter((r): r is { kind: "model"; ref: string } => r.kind === "model")
+      .map((r) => r.ref);
+    setExportArm({ entire, visible });
+    setNotice(
+      `export ${entire.length} shown or just the ${visible.length} visible rows? — e all shown · v visible · Esc cancels`,
+    );
   }
 
   /** The provider pane scrolls and closes itself; `Scroller` owns its keys. */
@@ -3259,12 +3762,35 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       const items = modelRows.items;
       const chosen = items[pickIndex]?.ref;
 
+      // An armed export answers `e`/`v`/`Esc`, handled below; any other key
+      // stands it down first, then behaves normally. Otherwise a re-filtered
+      // list could fire an arm that named something else — and the notice is
+      // the arm's own (nothing async writes notices while one is up), so
+      // clearing it loses nothing.
+      if (exportArm !== null && input !== "e" && input !== "v" && !key.escape) {
+        setExportArm(null);
+        setNotice(null);
+      }
+
       if (key.escape) {
-        // Armed first: Esc stands down the ping-all and stays, so `n`/`Esc`
-        // both mean no. Unarmed, Esc leaves for where this list was opened.
+        // Armed first: Esc stands down the ping-all or the export choice and
+        // stays, so `n`/`Esc` both mean no to a ping and Esc means never mind
+        // to an export. Unarmed, Esc leaves for where this list was opened —
+        // and a half-built pair is dropped, so a cancelled build leaves nothing.
         if (pingArmed !== null) {
           setPingArmed(null);
           setNotice(null);
+          return;
+        }
+        if (exportArm !== null) {
+          setExportArm(null);
+          setNotice(null);
+          return;
+        }
+        if (pickMode === "build") {
+          setPairDraft({ drafter: null, reviewer: null });
+          setBuildStep(null);
+          setPhase("pairs");
           return;
         }
         setPhase(pickMode === "browse" ? "home" : "start");
@@ -3283,6 +3809,30 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (key.return) {
         // Browsing: Enter is inert — this list assigns nothing from home.
         if (pickMode === "browse") return;
+        // Building: the first pick is the drafter, the second the reviewer,
+        // and only the pair of them is ever named or saved.
+        if (pickMode === "build") {
+          if (!chosen) return;
+          const picked: ModelRef = { ref: chosen, family: familyOf(chosen) };
+          if (buildStep !== "reviewer") {
+            setPairDraft({ drafter: picked, reviewer: null });
+            setBuildStep("reviewer");
+            setFilter("");
+            setFilterCaret(0);
+    setFilterCaret(0);
+            setPickIndex(0);
+            return;
+          }
+          if (!pairDraft.drafter) return;
+          setPairDraft({ drafter: pairDraft.drafter, reviewer: picked });
+          setPairRename(null);
+          const builtName = suggestPairName({ drafter: pairDraft.drafter, reviewer: picked });
+          setPairName(builtName);
+          setPairCaret(builtName.length);
+          setNotice(null);
+          setPhase("pairname");
+          return;
+        }
         if (chosen) {
           const next: Config = {
             ...cfg,
@@ -3330,12 +3880,26 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setNotice(null);
         return;
       }
-      // `Y` exports the visible list — the table for a second opinion. Uppercase
-      // like the rest, so lowercase keeps typing into the filter. Disarms
-      // first: an export is not a confirmation.
+      // `Y` arms the export choice — entire shown table or just the visible
+      // window — rather than firing: "the table" is ambiguous now. `e`/`v`
+      // spend what the notice named; anything else stands down and behaves
+      // normally. Uppercase like the rest, so lowercase keeps typing into
+      // the filter. Disarms the ping first: an export is not a confirmation.
       if (input === "Y") {
         setPingArmed(null);
-        void exportVisible();
+        armExport();
+        return;
+      }
+      if (input === "e" && exportArm !== null) {
+        const { entire } = exportArm;
+        setExportArm(null);
+        void exportVisible(entire, "entire");
+        return;
+      }
+      if (input === "v" && exportArm !== null) {
+        const { visible } = exportArm;
+        setExportArm(null);
+        void exportVisible(visible, "window");
         return;
       }
       // `B` refreshes the benchmark caches: OpenRouter plus Artificial Analysis
@@ -3387,6 +3951,17 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         if (view === "provider") return;
         setPingArmed(null);
         setRankAcd((r) => !r);
+        setPickIndex(0);
+        return;
+      }
+      // `S` ranks the flat views by measured cost — $/task, or ACD $/task
+      // with `D` — instead of by score. Cheapest first, unmeasured trailing.
+      // Ignored in the provider view, which is grouped rather than ranked.
+      // Like `D` the state persists across views, so coming back restores it.
+      if (input === "S") {
+        if (view === "provider") return;
+        setPingArmed(null);
+        setRankCost((r) => !r);
         setPickIndex(0);
         return;
       }
@@ -3451,10 +4026,39 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setPickIndex((i) => clampIndex(i - Math.ceil(pickH / 2), items.length));
         return;
       }
-      if (key.backspace || key.delete) {
+      // Line editing for the filter, readline-style. ^B/^D/^U page above, so
+      // ^A/^E are free, and rows move on up/down — left/right belong to the text.
+      const fcur = Math.max(0, Math.min(filterCaret, filter.length));
+      if (key.ctrl && input === "a") {
+        setFilterCaret(0);
+        return;
+      }
+      if (key.ctrl && input === "e") {
+        setFilterCaret(filter.length);
+        return;
+      }
+      if (key.leftArrow) {
+        setFilterCaret((c) => Math.max(0, Math.min(c, filter.length) - 1));
+        return;
+      }
+      if (key.rightArrow) {
+        setFilterCaret((c) => Math.min(filter.length, Math.max(0, c) + 1));
+        return;
+      }
+      if (key.backspace) {
         setPingArmed(null);
         setNotice(null);
-        setFilter(filter.slice(0, -1));
+        if (fcur > 0) {
+          setFilter(filter.slice(0, fcur - 1) + filter.slice(fcur));
+          setFilterCaret(fcur - 1);
+        }
+        setPickIndex(0);
+        return;
+      }
+      if (key.delete) {
+        setPingArmed(null);
+        setNotice(null);
+        if (fcur < filter.length) setFilter(filter.slice(0, fcur) + filter.slice(fcur + 1));
         setPickIndex(0);
         return;
       }
@@ -3463,7 +4067,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       if (input) {
         setPingArmed(null);
         setNotice(null);
-        setFilter(filter + input);
+        setFilter(filter.slice(0, fcur) + input + filter.slice(fcur));
+        setFilterCaret(fcur + input.length);
         setPickIndex(0);
       }
     },
@@ -3710,7 +4315,12 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   );
   useWheelScroll(
     (rows) =>
-      setPairIndex((i) => clampIndex(i + Math.sign(rows), pairVisible.length)),
+      setPairIndex((i) => {
+        const dir = Math.sign(rows) >= 0 ? 1 : -1;
+        let at = clampIndex(i + dir, pairVisible.length);
+        while (pairVisible[at]?.kind === "gap") at = clampIndex(at + dir, pairVisible.length);
+        return at;
+      }),
     phase === "pairs",
   );
 
@@ -3785,7 +4395,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
    * drafter that wrote the plan, not whatever the config says today.
    */
   async function openRun(run: RunSummary) {
-    const { name, dir } = run;
+    const { dir } = run;
     setOpenedFrom("runs");
     const p = runPaths(repo, dir);
     try {
@@ -3800,11 +4410,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         return;
       }
       const art = await loadArtifacts(p);
-      const thing = state.mode === "answer" ? "question" : "task";
-      addLog(
-        `opening ${name} — ${thing} "${state.task.slice(0, 80)}" · was ${state.state} · ` +
-          `${state.models.drafter.ref} -> ${state.models.reviewer.ref}`,
-      );
+      // Not logged: the gate and result screens show this run's own task,
+      // models and state, and a log line would follow every later screen.
       setHead(headFromArtifacts(repo, p, art));
       setPreviousGate(art.gate);
       setReopened(true);
@@ -4408,7 +5015,23 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
   });
   const contentH = Math.max(1, usable - logTake - (logLabel !== null ? 1 : 0));
   const scrollerH = scrollerHeight(contentH, notice !== null);
-  const pickH = pickListHeight(contentH, notice !== null);
+  // The hints wrap to the terminal width (see `hints.ts`), so the list budget
+  // follows the wrapped rows — and `Pick` renders exactly the slice reserved
+  // here. A resize re-renders (same `resize` event as the rows), so the two
+  // can never disagree about how many rows the hints take.
+  const hintState: HintState = {
+    pickMode,
+    buildStep,
+    view,
+    rankAcd,
+    rankCost,
+    providerLock,
+    ceiling,
+    taskCeiling,
+  };
+  const hintFull = wrapHintLines(buildHintText(hintState), hintWidth());
+  const hintTake = pickHintTake(contentH, notice !== null, hintFull.length);
+  const pickH = pickListHeight(contentH, notice !== null, hintFull.length);
   const runsH = runsListHeight(contentH);
 
   /* The exit recap: the alternate screen leaves with the log, so the shell
@@ -4444,7 +5067,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       <Settings selection={settingsSel} saved={saved} pair={currentPairName} aaKey={aaKeySet} />
     );
   } else if (phase === "aakey") {
-    content = <AAKey value={aaKeyInput} busy={aaKeyBusy} notice={notice} hasKey={aaKeySet} />;
+    content = <AAKey value={aaKeyInput} caret={aaKeyCaret} busy={aaKeyBusy} notice={notice} hasKey={aaKeySet} />;
   } else if (phase === "pick") {
     content = (
       <Pick
@@ -4452,8 +5075,10 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         pickMode={pickMode}
         list={modelRows}
         filter={filter}
+        filterCaret={filterCaret}
         index={pickIndex}
         height={pickH}
+        pickStart={pickStart}
         catalogue={catalogue}
         probes={probes}
         benchmarks={benchmarks}
@@ -4468,8 +5093,11 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         providerLock={providerLock}
         aaKey={aaKeySet}
         rankAcd={rankAcd}
+        rankCost={rankCost}
+        buildStep={buildStep}
         priceBasis={priceBasis}
         taskCeiling={taskCeiling}
+        hintLines={hintFull.slice(0, hintTake)}
       />
     );
   } else if (phase === "providers") {
@@ -4496,14 +5124,33 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         index={pairIndex}
         height={pairsListHeight(contentH, pairWarn, notice !== null)}
         current={cfg?.models ?? null}
+        currentLine={
+          cfg ? `${cfg.models.drafter.ref} [${cfg.models.drafter.family}]  ->  ${cfg.models.reviewer.ref} [${cfg.models.reviewer.family}]` : null
+        }
+        scope={pairOrigin === "debate" ? "preset" : "manage"}
         notice={notice}
         loading={pairLoading}
-        allowManage={pairOrigin !== "debate"}
       />
     );
   } else if (phase === "pairname") {
+    const renaming = pairRename ? savedPairs.find((p) => p.name === pairRename) : undefined;
+    const naming =
+      renaming != null
+        ? `${renaming.drafter.ref} -> ${renaming.reviewer.ref}`
+        : pairDraft.drafter && pairDraft.reviewer
+          ? `${pairDraft.drafter.ref} -> ${pairDraft.reviewer.ref}`
+          : cfg
+            ? `${cfg.models.drafter.ref} -> ${cfg.models.reviewer.ref}`
+            : null;
     content = (
-      <PairName value={pairName} known={savedPairs.map((p) => p.name)} maxShown={cappedLines(contentH, 8)} />
+      <PairName
+        value={pairName}
+        caret={pairCaret}
+        known={savedPairs.map((p) => p.name)}
+        maxShown={cappedLines(contentH, 8)}
+        models={naming}
+        renameFrom={pairRename}
+      />
     );
   } else if (phase === "pairconfirm" && pairAsk) {
     content = <ConfirmPair ask={pairAsk.ask} pair={pairAsk.pair} onAnswer={(ok) => void answerPairAsk(ok)} />;

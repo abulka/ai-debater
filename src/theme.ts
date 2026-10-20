@@ -17,8 +17,9 @@
  *   The tool does not colour a confirmed claim green: a verdict says a file
  *   matched, and whether that is good is the human's call, which is the whole
  *   point of this tool.
- * - `sort` marks the actively-sorted column header — green, deliberately not
- *   the cyan the structure uses, so the ranking reads apart from the chrome.
+ * - `sort` marks the actively-sorted column header — purple, deliberately
+ *   neither the cyan the structure uses nor the yellow of warnings and
+ *   reference rows, so the ranking reads apart from both.
  * - `muted` is scaffolding: quotes, hints, counters, the scroll position.
  *
  * Colour never carries meaning on its own. Every signal keeps its textual
@@ -33,8 +34,8 @@ export const THEME = {
   code: "green",
   /** Confirmations: saved, copied, "this is the answer you gave before". */
   ok: "green",
-  /** The actively-sorted column header. Green, not cyan: the ranking is not chrome. */
-  sort: "green",
+  /** The actively-sorted column header. Purple: neither chrome nor warning. */
+  sort: "magenta",
   warn: "yellow",
   danger: "red",
 } as const;

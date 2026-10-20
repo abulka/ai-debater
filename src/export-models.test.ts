@@ -49,7 +49,7 @@ describe("exportModelsMd", () => {
     const md = exportModelsMd({ ...base, refs: ["openrouter/free-model", "opencode-go/glm-5.3-flash"] });
     const lines = md.split("\n");
     expect(lines).toContain(
-      "| model | provider | price in/out | task $/task | intelligence | coding | agentic | D points | ACD $/task | scores from | ping | notes |",
+      "| model | provider | price in/out | intelligence | coding | agentic | task $/task | ACD score | ACD $/task | scores from | ping | notes |",
     );
     const rows = lines.filter((l) => l.startsWith("| openrouter/") || l.startsWith("| opencode-go/"));
     expect(rows).toHaveLength(2);
@@ -97,8 +97,8 @@ describe("exportModelsMd", () => {
       acdAt: "2026-10-20",
     });
     const opus = md.split("\n").find((l) => l.startsWith("| anthropic/claude-opus-5-5"))!;
-    // Two different scales, two different columns: D points beside I/C/A,
-    // prompt-$ beside task-$.
+    // Two different scales, two different columns: ACD score beside I/C/A,
+    // ACD $/task beside task $/task.
     expect(opus).toContain("| 67 |");
     expect(opus).toContain("| $0.79 |");
     // The ceiling row's method travels with it, marked when normalised.
@@ -109,6 +109,29 @@ describe("exportModelsMd", () => {
     expect(md).toContain("- AI Coding Daily scores fetched 2026-10-20");
     expect(md).toContain("a different scale from intelligence/coding/agentic");
     expect(md).toContain("measured on different tasks. The taskcost view filters on one or the other");
+  });
+
+  test("the export says which table it is — entire or window", () => {
+    const entire = exportModelsMd({ ...base, refs: ["opencode-go/glm-5.3-flash"], scope: "entire" });
+    expect(entire).toContain("- entire shown table");
+    const window = exportModelsMd({ ...base, refs: ["opencode-go/glm-5.3-flash"], scope: "window" });
+    expect(window).toContain("- visible window only");
+    // Older callers pass no scope: no line, same Markdown as before.
+    expect(exportModelsMd({ ...base, refs: ["opencode-go/glm-5.3-flash"] })).not.toContain("- entire shown table");
+  });
+
+  test("the export names the ranking — score, cost, and their ACD variants", () => {
+    const md = exportModelsMd({ ...base, refs: ["opencode-go/glm-5.3-flash"] });
+    expect(md).not.toContain("- ranked by");
+    expect(exportModelsMd({ ...base, refs: ["opencode-go/glm-5.3-flash"], rankAcd: true })).toContain(
+      "- ranked by AI Coding Daily (D on",
+    );
+    expect(exportModelsMd({ ...base, refs: ["opencode-go/glm-5.3-flash"], rankCost: true })).toContain(
+      "- ranked by $/task (S on",
+    );
+    expect(
+      exportModelsMd({ ...base, refs: ["opencode-go/glm-5.3-flash"], rankAcd: true, rankCost: true }),
+    ).toContain("- ranked by ACD $/task (D and S on");
   });
 
   test("favourites and ping verdicts travel with their rows", () => {

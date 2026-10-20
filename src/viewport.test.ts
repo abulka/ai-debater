@@ -8,6 +8,7 @@ import {
   LOG_MAX_ROWS,
   MIN_CONTENT_ROWS,
   pairsListHeight,
+  pickHintTake,
   pickListHeight,
   runsListHeight,
   scrollerHeight,
@@ -80,10 +81,27 @@ describe("screen budgets", () => {
     expect(pickListHeight(contentRows(50), false)).toBe(40);
     expect(pickListHeight(contentRows(50), true)).toBe(38);
   });
+  test("picker follows the wrapped hint rows", () => {
+    // Four hint rows on a narrow terminal cost two model rows.
+    expect(pickListHeight(contentRows(50), false, 4)).toBe(38);
+    expect(pickListHeight(contentRows(50), true, 4)).toBe(36);
+    // The default is the old two-line budget: same numbers as before.
+    expect(pickListHeight(contentRows(50), false, 2)).toBe(pickListHeight(contentRows(50), false));
+  });
+  test("hints cap at four and never starve the list", () => {
+    expect(pickHintTake(49, false, 9)).toBe(4);
+    expect(pickHintTake(49, false, 2)).toBe(2);
+    // A crowded screen loses hint rows first: 12 content rows leave 5, the
+    // list keeps 3 and the hints take 2 of 4 wanted.
+    expect(pickHintTake(12, false, 4)).toBe(2);
+    expect(pickListHeight(12, false, 4)).toBe(3);
+    // Below even that, the list floors at one row rather than vanishing.
+    expect(pickListHeight(3, true, 4)).toBe(1);
+  });
   test("pairs subtract warnings", () => {
-    expect(pairsListHeight(40, 0, false)).toBe(34);
-    expect(pairsListHeight(40, 3, false)).toBe(31);
-    expect(pairsListHeight(40, 0, true)).toBe(32);
+    expect(pairsListHeight(40, 0, false)).toBe(33);
+    expect(pairsListHeight(40, 3, false)).toBe(30);
+    expect(pairsListHeight(40, 0, true)).toBe(31);
   });
   test("runs counts its chrome", () => {
     expect(runsListHeight(40)).toBe(33);

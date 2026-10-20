@@ -168,6 +168,46 @@ export async function markPairUsed(name: string, at = new Date().toISOString()):
   return loadPairs();
 }
 
+/**
+ * Rename a pair, keeping its models and its dates.
+ *
+ * The name is the identity everywhere else — the list order, the "in use"
+ * mark — so a rename carries `savedAt` and `lastUsedAt` across rather than
+ * looking brand-new. Renaming onto an existing name replaces that pair,
+ * the same answer the name prompt gives a fresh save.
+ */
+export async function renamePair(from: string, to: string, models: Models): Promise<Pair[]> {
+  const pairs = await loadPairs();
+  const prev = pairs.find((p) => p.name === from);
+  const now = new Date().toISOString();
+  const next: Pair = {
+    name: to,
+    ...models,
+    savedAt: prev?.savedAt ?? now,
+    ...(prev?.lastUsedAt ? { lastUsedAt: prev.lastUsedAt } : {}),
+  };
+  await write([...pairs.filter((p) => p.name !== from && p.name !== to), next]);
+  return loadPairs();
+}
+
+/**
+ * A name suggested from the two models: the short end of each ref.
+ *
+ * `anthropic/claude-haiku-5-5 -> openrouter/openai/gpt-6-luna` becomes
+ * `claude-haiku-5-5 -> gpt-6-luna` — a starting point, always editable, and a
+ * collision still goes through the overwrite confirm like a typed name.
+ */
+export function suggestPairName(models: Models): string {
+  const short = (ref: string): string => {
+    const last = ref.split("/").pop() ?? "";
+    return last.trim();
+  };
+  const drafter = short(models.drafter.ref);
+  const reviewer = short(models.reviewer.ref);
+  if (!drafter || !reviewer) return "";
+  return `${drafter} -> ${reviewer}`;
+}
+
 /** Forget a pair. Returns false when there was nothing by that name. */
 export async function deletePair(name: string): Promise<boolean> {
   const pairs = await loadPairs();
@@ -187,15 +227,20 @@ export async function deletePair(name: string): Promise<boolean> {
  *
  * Pure, and takes the list, so the ordering is testable without a disk.
  */
-/** One row of the pair list: a saved pair, a pair a run used, or save-this. */
+/** One row of the pair list: a saved pair, a pair a run used, the two ways to make one, or a blank grouping row. */
 export type PairRow =
   | { kind: "saved"; key: string; pair: Pair; warnings: string[] }
   | { kind: "recent"; key: string; recent: RecentPair }
-  | { kind: "save"; key: string };
+  | { kind: "new"; key: string }
+  | { kind: "save"; key: string }
+  | { kind: "gap"; key: string };
 
 /**
- * The rows, in order: saved pairs (last used first), then pairs runs have used,
- * then the row that saves the current two.
+ * The rows, in order. Managing (the settings door): saved pairs (last used
+ * first), then pairs runs have used, then the two ways to make one — pick
+ * two models by hand, or name the two already in use. Choosing (the debate
+ * door): saved pairs only, so a preset is always a keystroke and creating
+ * one never happens by accident.
  *
  * A saved pair duplicates a run's pair, so the runs skip those — one pair is one
  * row, named rather than shown twice.
@@ -207,7 +252,12 @@ export type PairRow =
  * dropped: hiding it because a provider went away would be losing the reader's
  * decision to a config change.
  */
-export function pairRows(saved: Pair[], runs: RunSummary[], listed: Set<string>): PairRow[] {
+export function pairRows(
+  saved: Pair[],
+  runs: RunSummary[],
+  listed: Set<string>,
+  scope: "manage" | "preset" = "manage",
+): PairRow[] {
   const stale = (pair: { drafter: ModelRef; reviewer: ModelRef }): string[] => {
     const out: string[] = [];
     const clash = familyClash(pair);
@@ -228,13 +278,27 @@ export function pairRows(saved: Pair[], runs: RunSummary[], listed: Set<string>)
     warnings: stale(pair),
   }));
   const known = new Set(stored.map((r) => (r.kind === "saved" ? pairKey(r.pair) : "")));
+  if (scope === "preset") return stored;
   const fromRuns: PairRow[] = recentPairs(runs)
     .filter((r) => !known.has(pairKey(r)))
     .map((recent) => ({ kind: "recent", key: `recent:${pairKey(recent)}`, recent }));
-  return [...stored, ...fromRuns, { kind: "save", key: "save" }];
+  // Blank grouping rows: presets, then the runs, then the two ways to make
+  // one. A gap is a real row — the cursor skips it, the height budget counts
+  // it — so a group never reads as one undifferentiated list, and the scroll
+  // arithmetic stays honest. No leading or trailing gaps, and no doubles:
+  // a gap only sits between two non-empty groups.
+  const gap = (n: number): PairRow => ({ kind: "gap", key: `gap:${n}` });
+  const out: PairRow[] = [...stored];
+  // The two action rows always follow in this scope, so a non-empty group
+  // above them always earns its gap; an empty group earns nothing.
+  if (stored.length > 0) out.push(gap(1));
+  out.push(...fromRuns);
+  if (fromRuns.length > 0) out.push(gap(2));
+  out.push({ kind: "new", key: "new" }, { kind: "save", key: "save" });
+  return out;
 }
 
-export function recentPairs(runs: RunSummary[], limit = 8): RecentPair[] {
+export function recentPairs(runs: RunSummary[], limit = 24): RecentPair[] {
   const seen = new Set<string>();
   const out: RecentPair[] = [];
   for (const run of runs) {

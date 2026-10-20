@@ -16,5 +16,6 @@ describe("the palette", () => {
     expect(toAnsi([[{ text: "x", color: THEME.danger }]])).toBe("\u001b[31mx\u001b[0m");
     expect(toAnsi([[{ text: "x", color: THEME.accent }]])).toBe("\u001b[36mx\u001b[0m");
     expect(toAnsi([[{ text: "x", color: THEME.code }]])).toBe("\u001b[32mx\u001b[0m");
+    expect(toAnsi([[{ text: "x", color: THEME.sort }]])).toBe("\u001b[35mx\u001b[0m");
   });
 });

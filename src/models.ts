@@ -274,8 +274,15 @@ export interface RankOptions {
   scoreOf: (ref: string) => ModelScore;
   /** Output $/M, `undefined` when the catalogue is silent. Not "free": free is 0. */
   outputOf: (ref: string) => number | undefined;
-  /** Measured $/task, `undefined` when AA never measured it. The taskcost view ranks on this. */
+  /** Measured $/task, `undefined` when AA never measured it. The taskcost view filters on this. */
   taskCostOf?: (ref: string) => number | undefined;
+  /**
+   * What decides the order. `score` ranks by intelligence, highest first;
+   * `cost` ranks by measured $/task, cheapest first — the `S` toggle. Both
+   * put unmeasured rows last, alphabetically; the views still decide the
+   * filter. Defaults to `score`.
+   */
+  rankBy?: "score" | "cost";
 }
 
 const scoredOnly = (scoreOf: (ref: string) => ModelScore, refs: string[]): string[] =>
@@ -307,6 +314,16 @@ const byIntelligenceDesc =
       (scoreOf(a)?.intelligence ?? Number.NEGATIVE_INFINITY) || (a < b ? -1 : a > b ? 1 : 0);
 
 /**
+ * Cheapest measured task first. Unmeasured rows never reach this comparator —
+ * the caller filters them into the trailing alphabetical tail — so there is
+ * no `undefined` branch to get wrong.
+ */
+const byTaskCostAsc =
+  (taskCostOf: (ref: string) => number | undefined) =>
+  (a: string, b: string): number =>
+    taskCostOf(a)! - taskCostOf(b)! || (a < b ? -1 : a > b ? 1 : 0);
+
+/**
  * What the picker lists, and in what order. `provider` is the grouped list
  * the picker has always shown; the flat views rank by benchmark instead.
  * `value` is cheap per token (output $/M under a ceiling); `taskcost` is
@@ -318,15 +335,16 @@ const byIntelligenceDesc =
 export type PickerView = "provider" | "intelligence" | "value" | "taskcost";
 
 /**
- * A flat, score-ordered list for the intelligence, value and taskcost views.
+ * A flat, ordered list for the intelligence, value and taskcost views.
  *
- * Every flat view ranks by intelligence, highest first; unscored rows follow
- * alphabetically — findable, never ranked above a measured one. The views
- * differ only in what they filter on: value keeps models with a known output
- * cost at or under the ceiling, taskcost keeps models with a measured task
- * at or under theirs. In both, an unknown cost cannot be called cheap, so
- * unmeasured rows are excluded rather than trailing last — the `?` pane says
- * where the measurement comes from when the view is empty for it.
+ * Score order ranks by intelligence, highest first; cost order ranks by
+ * measured $/task, cheapest first. Unranked rows follow alphabetically —
+ * findable, never ranked above a measured one. The views differ only in what
+ * they filter on: value keeps models with a known output cost at or under
+ * the ceiling, taskcost keeps models with a measured task at or under
+ * theirs. In both, an unknown cost cannot be called cheap, so unmeasured
+ * rows are excluded rather than trailing last — the `?` pane says where the
+ * measurement comes from when the view is empty for it.
  * Ties break alphabetically, so the order is stable between refreshes.
  */
 export function rankModels(
@@ -344,6 +362,7 @@ export function rankModels(
     scoreOf,
     outputOf,
     taskCostOf = () => undefined,
+    rankBy = "score",
   } = opts;
   const pool = providerLock ? refs.filter((ref) => providerOf(ref) === providerLock) : refs;
   const visible = visibleRefs(pool, filter, hideUnscored, scoreOf);
@@ -362,10 +381,19 @@ export function rankModels(
             return t !== undefined && t <= taskCeiling;
           })
         : visible;
-  const ranked = inView.filter((ref) => scoreOf(ref) !== null).sort(byIntelligenceDesc(scoreOf));
+  // Cost order ranks on the same measurement the taskcost view filters on —
+  // `D` swaps its source with the score's, so the two switch together. Score
+  // order ranks on intelligence; both leave the unmeasurable trailing,
+  // alphabetical, and `H` keeps meaning "has a score" either way.
+  const ranked =
+    rankBy === "cost"
+      ? inView.filter((ref) => taskCostOf(ref) !== undefined).sort(byTaskCostAsc(taskCostOf))
+      : inView.filter((ref) => scoreOf(ref) !== null).sort(byIntelligenceDesc(scoreOf));
   const unranked = hideUnscored
     ? []
-    : inView.filter((ref) => scoreOf(ref) === null).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    : rankBy === "cost"
+      ? inView.filter((ref) => taskCostOf(ref) === undefined).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+      : inView.filter((ref) => scoreOf(ref) === null).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const ordered = [...ranked, ...unranked];
 
   const rows: ModelRow[] = [];

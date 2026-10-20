@@ -145,10 +145,11 @@ supersede rule.
 | Key | Action |
 | --- | --- |
 | m / n / p / s / q | Home — models browser · new debate · past runs · settings · quit (↑↓ · Enter works too; cursor starts on models browser) |
-| Ctrl+P | Settings — a saved **pair** or the benchmarks key (from home or the debate screen; Esc home) |
-| ↑↓ · Enter | Settings: on **pair**, open the pair list — saved pairs last used first, then pairs past runs used, then `save current as…` |
+| Ctrl+P | Settings — **edit drafter/reviewer pairs** or the benchmarks key (from home or the debate screen; Esc home) |
+| ↑↓ · Enter | Settings: on **edit drafter/reviewer pairs**, the list — saved pairs last used first, then pairs past runs used, then `new pair…` (pick a drafter, a reviewer, name it), then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it (settings only — inert from the debate screen). A pair that belongs to a run is not stored here and goes when the run does |
-| ↑↓ · Enter | New debate: on **pair**, choose a preset (saving and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt and snaps the cursor back to it |
+| r / R | Pairs: rename the highlighted saved pair — `r` edits its name, `R` prefills a name suggested from its models (settings only). The name prompt prefills a suggestion for new saves too |
+| ↑↓ · Enter | New debate: on **drafter/reviewer preset**, choose a saved preset (creating and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt and snaps the cursor back to it |
 | models browser | Home's first row: the same model list — Enter does nothing, Esc home. Everything else (filter, views, ping, export) works as in the picker |
 | P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
 | A | Picker: ping every model shown — the list after the filter, the lock, the view and H. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown, and it says how to narrow |
@@ -156,12 +157,13 @@ supersede rule.
 | V | Picker: cycle the view — provider groups, intelligence-ranked, value (cheap per output token under the ceiling), taskcost (cheap per measured task under its own ceiling). Both cheap views rank by intelligence |
 | C | Picker: toggle the price basis — base price or the above-threshold price a long session pays. Cells and the value-view ceiling move together; the count line says `price: high tier` when high |
 | D | Picker: rank the flat views by AI Coding Daily (points for the order, ACD $/task for the taskcost ceiling) instead of Artificial Analysis/OpenRouter — session-only, ignored in the provider view |
+| S | Picker: rank the flat views by measured cost ($/task, or ACD $/task with D) instead of by score, cheapest first — session-only, ignored in the provider view |
 | H | Picker: hide models with no benchmark, in every view |
 | L | Picker: lock to the selected provider — the view, the filter and H all still apply inside it, and so does A. Press again to clear |
 | ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |
 | < > | Cheap views: move the active ceiling — value in $0.10 steps, taskcost geometrically (×1.5 / ÷1.5). Capped at the dearest measured cost, so `>` past everything is a no-op. Saved to `~/.config/adv/picker.json` |
 | ? | Picker: what each provider bills to, whether a key is present, what the ★ ✓ ✗ marks mean, and every failure a ping has found |
-| Y | Picker: export the visible list as a Markdown table with a legend — for a second opinion in another LLM — to the clipboard and `~/.local/share/adv/models.md` (overwritten each time) |
+| Y | Picker: export the table as Markdown with a legend — for a second opinion in another LLM — to the clipboard and `~/.local/share/adv/models.md` (overwritten each time). Arms a choice: `e` entire shown table, `v` just the visible window |
 | Tab | New debate: switch subject — **this repository** or a **general question** (also the subject row, Enter toggles) |
 | Enter | New debate: on the prompt, run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
 | ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus "leave it open" |
@@ -181,7 +183,7 @@ supersede rule.
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
 | r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
 | n | Result/Gate/Runs: back to the debate screen — the draft, subject and models you had are kept |
-| Esc | Back, one level: home is the root (debate · runs · settings → home; pick browse → home, pick select → debate; pairs → settings). A panel closes; a result or gate opened from the past-runs list returns to that list (tags, scroll and all). `n` is the unconditional way to the debate screen, `q` quits |
+| Esc | Back, one level: home is the root (debate · runs · settings → home; pick browse → home, pick select/build → debate screen/pairs screen; pairs → settings or debate screen). A panel closes; a result or gate opened from the past-runs list returns to that list (tags, scroll and all). `n` is the unconditional way to the debate screen, `q` quits |
 | n · Esc · q | Error: the same rule — Esc back where you came from, n to the debate screen, q quits. This screen had no handler at all, which is how a reader got stuck on it |
 | Ctrl+R | Past runs — open a finished or parked run, from home, the debate screen, the gate, a result or an error |
 | space | Runs: tag the highlighted run (`●`), and move on — tag several in a row |
@@ -189,6 +191,7 @@ supersede rule.
 | d | Runs: delete the tagged runs, or the highlighted one when none are tagged |
 | D | Runs: delete every run listed, questions included — the confirmation states the split |
 | Ctrl+U | New debate: clear the prompt |
+| ←→ · ^A · ^E | Every text field: step within the line, jump to start/end — prompt, filter, pair name, key. Backspace deletes before, Del under |
 | ↑↓ · j/k | Scroll a line |
 | space · f | Page down (both do the same; `space` is what a reader tries first) |
 | b · u · Ctrl+D · Ctrl+U | Page up · half up · half down · half up |
@@ -283,7 +286,7 @@ new repository from it. A repository's own file still wins, field by field.
 `{name, drafter, reviewer, savedAt, lastUsedAt}` — its own file
 because `saveConfig` writes the whole config to both the user file *and* the
 repository's, so a pair list on `Config` would be stamped into every `.adv/` the
-moment a model was chosen. The settings screen's **pair** row names the pair the
+moment a model was chosen. The settings screen's **edit drafter/reviewer pairs** row names the pair the
 current two models are, matched by model rather than by name. Pairs sort by
 `lastUsedAt`, so the pair you used last is first. Pairs a past run used are
 derived from `state.json` and not stored anywhere: **deleting a run deletes its
@@ -613,6 +616,12 @@ spike/              M0
   restores the shell — the alt screen leaves with everything else. The escape
   hatch is `--no-alt-screen` / `ADV_NO_ALT_SCREEN=1`, for terminals that
   misbehave with the alternate screen.
+- **Only run progress is logged, never navigation.** A log line follows every
+  later screen until pushed out, so logging "opening …" or `pair "x" · a -> b`
+  stamped settled screens with claims that misled on runs using another pair —
+  and the pair already appears where it belongs (the debate screen, the pairs
+  list). Choosing a pair and opening a run confirm inline (notice, rows, the
+  run's own screens) and stay out of the log.
 - **On the alternate screen there is no scrollback.** The handed-over mouse mode
   promises selection only — "wheel scrolls back" is false there and the line
   must not say it. The current wording is "drag to select text · Ctrl+T takes

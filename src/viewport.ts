@@ -74,19 +74,43 @@ export function scrollerHeight(contentH: number, notice: boolean): number {
 
 /**
  * Picker chrome: header (2) + filter (1) + column labels (1) + list margin (1)
- * + count (2) + hints (2). The notice takes two rows (margin + line).
+ * + count (2) + hints. The notice takes two rows (margin + line).
+ *
+ * Hint rows are variable now: the hints wrap to the terminal width (see
+ * `hints.ts`), so a narrow terminal spends more rows on them. Capped at
+ * `PICK_HINT_MAX_ROWS`, and never enough to starve the list below
+ * `PICK_LIST_MIN_ROWS` — a crowded screen loses hint rows, never model rows.
  */
-export function pickListHeight(contentH: number, notice: boolean): number {
-  return Math.max(1, contentH - 9 - (notice ? 2 : 0));
+export const PICK_HINT_MAX_ROWS = 4;
+
+/** The list keeps this many rows whenever the terminal allows it. */
+export const PICK_LIST_MIN_ROWS = 3;
+
+/**
+ * How many of the wanted hint rows the budget actually reserves. `Pick`
+ * renders exactly this many — the callers slice, so the budget and the
+ * screen cannot disagree.
+ */
+export function pickHintTake(contentH: number, notice: boolean, wanted: number): number {
+  const available = contentH - 7 - (notice ? 2 : 0);
+  return Math.max(
+    0,
+    Math.min(Math.max(0, wanted), PICK_HINT_MAX_ROWS, Math.max(0, available - PICK_LIST_MIN_ROWS)),
+  );
+}
+
+export function pickListHeight(contentH: number, notice: boolean, hintRows = 2): number {
+  const available = contentH - 7 - (notice ? 2 : 0);
+  return Math.max(1, available - pickHintTake(contentH, notice, hintRows));
 }
 
 /**
- * Pairs chrome: header (2) + subtitle (1) + list margin (1) + hints (2).
+ * Pairs chrome: header (2) + subtitle (1) + current line (1) + list margin (1) + hints (2).
  * Warnings, when the selected pair has them, take a row each; the notice
  * takes two rows (margin + line).
  */
 export function pairsListHeight(contentH: number, warnings: number, notice: boolean): number {
-  return Math.max(1, contentH - 6 - Math.max(0, warnings) - (notice ? 2 : 0));
+  return Math.max(1, contentH - 7 - Math.max(0, warnings) - (notice ? 2 : 0));
 }
 
 /**

@@ -362,6 +362,44 @@ describe("rankModels", () => {
     expect(models(rankModels(locked, "intelligence", { ...qOpts, providerLock: "nope" }))).toEqual([]);
   });
 
+  test("rankBy cost: cheapest measured task first, unmeasured trailing", () => {
+    const trefs = ["p/dumb-cheap", "p/smart-mid", "p/unscored-cheap", "p/smart-unmeasured"];
+    const tScore = (ref: string) => {
+      if (ref.endsWith("smart-mid")) return { intelligence: 90 };
+      if (ref.endsWith("dumb-cheap")) return { intelligence: 40 };
+      return null;
+    };
+    const tTask = (ref: string) => {
+      if (ref.endsWith("smart-mid")) return 0.8;
+      if (ref.endsWith("dumb-cheap")) return 0.05;
+      if (ref.endsWith("unscored-cheap")) return 0.05;
+      return undefined;
+    };
+    const tOpts = { ...opts, scoreOf: tScore, taskCostOf: tTask, taskCeiling: 1, rankBy: "cost" as const };
+    // Cost ranks now: the two $0.05 rows alphabetically, then $0.80 — smarts
+    // buys nothing. The unmeasured row trails, score or no score.
+    expect(models(rankModels(trefs, "taskcost", tOpts))).toEqual([
+      "p/dumb-cheap",
+      "p/unscored-cheap",
+      "p/smart-mid",
+    ]);
+    // The score default is untouched: same inputs, intelligence first.
+    expect(models(rankModels(trefs, "taskcost", { ...tOpts, rankBy: "score" as const }))).toEqual([
+      "p/smart-mid",
+      "p/dumb-cheap",
+      "p/unscored-cheap",
+    ]);
+    // Cost order composes with the ceiling, the lock and H — and H still
+    // means "has a score", so the unscored-cheap row goes however cheap.
+    expect(models(rankModels(trefs, "taskcost", { ...tOpts, taskCeiling: 0.2 }))).toEqual([
+      "p/dumb-cheap",
+      "p/unscored-cheap",
+    ]);
+    expect(
+      models(rankModels(trefs, "taskcost", { ...tOpts, hideUnscored: true })),
+    ).toEqual(["p/dumb-cheap", "p/smart-mid"]);
+  });
+
   test("taskcost view filters on task, ranks on intelligence like value does", () => {
     const trefs = ["p/dumb-cheap", "p/smart-mid", "p/unscored-cheap", "p/smart-unmeasured"];
     const tScore = (ref: string) => {
