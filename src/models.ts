@@ -164,6 +164,26 @@ export interface ModelList {
 }
 
 /**
+ * One shared filter rule for every list: all whitespace-separated tokens must
+ * match, each against the ref or (when the row resolved one) the benchmark
+ * display name. Separators are ignored on both sides, so `muse 1.3`,
+ * `spark-1.3` and `spark 13` all land on `muse-spark-1.3` — and on
+ * `Muse Spark 1.3 (Max)` by its AA name. An empty filter matches everything;
+ * an all-separator token matches nothing, never everything.
+ */
+export function matchesFilter(ref: string, name: string | null, filter: string): boolean {
+  const tokens = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const hay = [ref.toLowerCase(), ...(name ? [name.toLowerCase()] : [])];
+  const flat = hay.map((h) => h.replace(/[-_./ ]/g, ""));
+  return tokens.every((t) => {
+    if (hay.some((h) => h.includes(t))) return true;
+    const ft = t.replace(/[-_./]/g, "");
+    return ft.length > 0 && flat.some((f) => f.includes(ft));
+  });
+}
+
+/**
  * The rows the picker draws, in that order, filtered and deduplicated.
  *
  * With a filter typed the groups are flattened into one list with no headers:
@@ -192,14 +212,20 @@ export function orderedModels(
   favourites: string[],
   recents: string[],
   filter = "",
-  opts: { hideUnscored?: boolean; scoreOf?: (ref: string) => ModelScore; providerLock?: string } = {},
+  opts: {
+    hideUnscored?: boolean;
+    scoreOf?: (ref: string) => ModelScore;
+    /** Benchmark display name for the filter (`Muse Spark 1.3 (Max)`). Null when the row resolved none. */
+    nameOf?: (ref: string) => string | null;
+    providerLock?: string;
+  } = {},
 ): ModelList {
   const pool = opts.providerLock ? all.filter((m) => providerOf(m) === opts.providerLock) : all;
   const grouped =
     opts.hideUnscored && opts.scoreOf
       ? hideUnscoredRows(groupModels(pool, favourites, recents), opts.scoreOf)
       : groupModels(pool, favourites, recents);
-  const needle = filter.trim().toLowerCase();
+  const nameOf = opts.nameOf ?? (() => null);
 
   const rows: ModelRow[] = [];
   const items: { row: number; ref: string }[] = [];
@@ -208,10 +234,10 @@ export function orderedModels(
     rows.push({ kind: "model", ref });
   };
 
-  if (needle) {
+  if (filter.trim()) {
     const seen = new Set<string>();
     for (const ref of [...grouped.favourites, ...grouped.recents, ...grouped.rest]) {
-      if (seen.has(ref) || !ref.toLowerCase().includes(needle)) continue;
+      if (seen.has(ref) || !matchesFilter(ref, nameOf(ref), filter)) continue;
       seen.add(ref);
       push(ref);
     }
@@ -272,6 +298,8 @@ export interface RankOptions {
   /** Show only this provider. Composes with the filter, the ceiling and the views. */
   providerLock?: string;
   scoreOf: (ref: string) => ModelScore;
+  /** Benchmark display name for the filter. Null when the row resolved none. */
+  nameOf?: (ref: string) => string | null;
   /** Output $/M, `undefined` when the catalogue is silent. Not "free": free is 0. */
   outputOf: (ref: string) => number | undefined;
   /** Measured $/task, `undefined` when AA never measured it. The taskcost view filters on this. */
@@ -291,7 +319,7 @@ const scoredOnly = (scoreOf: (ref: string) => ModelScore, refs: string[]): strin
 /**
  * Apply the text filter and the unscored toggle to a flat ref list.
  *
- * The filter is the same substring rule `orderedModels` uses, so typing in
+ * The filter is the same token rule `orderedModels` uses, so typing in
  * one view never means something different in another.
  */
 function visibleRefs(
@@ -299,10 +327,10 @@ function visibleRefs(
   filter: string,
   hideUnscored: boolean,
   scoreOf: (ref: string) => ModelScore,
+  nameOf: (ref: string) => string | null = () => null,
 ): string[] {
-  const needle = filter.trim().toLowerCase();
-  const matching = needle
-    ? refs.filter((ref) => ref.toLowerCase().includes(needle))
+  const matching = filter.trim()
+    ? refs.filter((ref) => matchesFilter(ref, nameOf(ref), filter))
     : [...refs];
   return hideUnscored ? scoredOnly(scoreOf, matching) : matching;
 }
@@ -363,9 +391,10 @@ export function rankModels(
     outputOf,
     taskCostOf = () => undefined,
     rankBy = "score",
+    nameOf = () => null,
   } = opts;
   const pool = providerLock ? refs.filter((ref) => providerOf(ref) === providerLock) : refs;
-  const visible = visibleRefs(pool, filter, hideUnscored, scoreOf);
+  const visible = visibleRefs(pool, filter, hideUnscored, scoreOf, nameOf);
   // Each flat view filters on its own cheapness: output $/M under a ceiling,
   // or measured $/task under one. An unknown cost cannot be called cheap, so
   // unmeasured rows never pass a ceiling — the same rule in both views.

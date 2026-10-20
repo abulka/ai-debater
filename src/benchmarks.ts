@@ -27,9 +27,14 @@
  * the whole index. Tier 3 runs the same suffix chain on the served ref
  * itself, for the refs models.dev knows nothing about. Tier 4 is what the
  * chain already does past one strip: `togetherai/deepseek-ai/…` still ends in
- * the model. Every tier past the first marks the match `≈` rather than
- * assuming it. Ambiguity resolves to nothing: two ids collapsing to one key
- * with different scores is a guess, and the row would rather be blank.
+ * the model. Tier 5 strips one serving tier from the last segment
+ * (`-contributor`, `-free`, `-batch`, `-nitro`) after the effort loop, for
+ * the same weights under a different serving arrangement. Tier 6 resolves
+ * through the index's variant group: when the ref's base names a group but
+ * no tier above matched, the group's preferred member speaks. Every tier
+ * past the first marks the match `≈` rather than assuming it. Ambiguity
+ * resolves to nothing: two ids collapsing to one key with different scores
+ * is a guess, and the row would rather be blank.
  *
  * AA publishes reasoning and non-reasoning variants of one model as separate
  * entries (`claude-opus-4-5` at 23.7 beside `claude-opus-4-5-thinking` at
@@ -338,12 +343,22 @@ export interface ResolvedBenchmark extends BenchmarkScores {
   normalised: boolean;
   /** Measured $/task, when the entry carried one. Blank in the row, never 0. */
   taskCost?: number;
+  /** The source's display name (`Muse Spark 1.3 (Max)`), when the entry carried one. For the filter. */
+  name?: string;
 }
 
 /**
  * Walk one id's suffix chain — full, then minus the first namespace, down to
  * the bare model part — trying each against the exact index and then the
  * unique bare shortcut. Longest (most specific) first, first hit wins.
+ *
+ * Past that, two last-resort tiers for serving tiers the chain never strips:
+ * Tier 5 strips one serving suffix (`-contributor`, `-free`, `-batch`,
+ * `-nitro`) from the last segment after the effort loop and re-runs the
+ * same exact+bare lookup; Tier 6 resolves through the index's variant group
+ * when the ref's base names one. Same weights under a different serving
+ * arrangement either way — and anything else-shaped (`-pro`, `-image`,
+ * `-instruct`) stays a miss, because that could be a sibling model's number.
  */
 function resolveSuffixes(benchmarks: Benchmarks, id: string): BenchmarkEntry | null {
   const seen = new Set<string>();
@@ -358,7 +373,49 @@ function resolveSuffixes(benchmarks: Benchmarks, id: string): BenchmarkEntry | n
       if (bare) return bare;
     }
   }
+  for (const form of suffixesOf(id)) {
+    const stripped = stripTier(form);
+    if (!stripped || seen.has(stripped)) continue;
+    seen.add(stripped);
+    const full = benchmarks.byId.get(stripped);
+    if (full) return full;
+    const key = benchmarks.byBare.get(stripped);
+    if (key) {
+      const bare = benchmarks.byId.get(key);
+      if (bare) return bare;
+    }
+  }
+  for (const form of suffixesOf(id)) {
+    const group = benchmarks.variants.get(baseKeyOf(form));
+    if (!group || group.length === 0) continue;
+    const preferred = benchmarks.byId.get(group[0]!);
+    if (preferred) return preferred;
+  }
   return null;
+}
+
+/**
+ * Serving and pricing tiers: the same weights under a different serving
+ * arrangement, so scores carry across. Anything else-shaped is deliberately
+ * absent: `-pro` can be a distinct model, `-image` a modality, and attaching
+ * either number would be a guess.
+ */
+const SERVING_SUFFIX = /-(contributor|free|batch|nitro)$/;
+
+/**
+ * One serving/effort tier stripped from the last segment: the effort loop
+ * first (`baseKeyOf`), then the serving suffix. Null when the form names no
+ * tier — nothing to strip is not a weaker match. Never strips to nothing:
+ * a bare `-free` is a name, like `baseKeyOf`'s bare `-max`.
+ */
+function stripTier(form: string): string | null {
+  const parts = form.split("/");
+  const last = parts[parts.length - 1]!;
+  let s = baseKeyOf(last);
+  const m = SERVING_SUFFIX.exec(s);
+  if (m) s = s.slice(0, m.index);
+  if (!s || s === last) return null;
+  return [...parts.slice(0, -1), s].join("/");
 }
 
 /**
@@ -368,10 +425,11 @@ function resolveSuffixes(benchmarks: Benchmarks, id: string): BenchmarkEntry | n
  *
  * Tiers: the exact normalised canonical id, then its suffix chain, then the
  * served ref's own chain for refs with no canonical id (and as a second
- * chance when the canonical id matches nothing). Every tier past the first
- * marks `≈`. A variant group with a reasoning member resolves to it instead
- * of the matched entry, also marked. Null when nothing matches — and null is
- * blank in the row, never a 0, never a sibling model's number.
+ * chance when the canonical id matches nothing), then the serving-tier strip
+ * and the variant-group lookup. Every tier past the first marks `≈`. A
+ * variant group with a reasoning member resolves to it instead of the
+ * matched entry, also marked. Null when nothing matches — and null is blank
+ * in the row, never a 0, never a sibling model's number.
  */
 export function scoresFor(
   catalogue: Catalogue,
@@ -409,6 +467,7 @@ export function scoresFor(
     source: entry.source,
     normalised,
     ...(entry.taskCost !== undefined ? { taskCost: entry.taskCost } : {}),
+    ...(typeof entry.name === "string" && entry.name ? { name: entry.name } : {}),
   };
 }
 

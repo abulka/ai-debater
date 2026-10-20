@@ -4,6 +4,7 @@ import {
   familyOf,
   groupModels,
   isReferenceRow,
+  matchesFilter,
   orderedModels,
   providerOf,
   providerRank,
@@ -259,6 +260,71 @@ describe("orderedModels", () => {
     // An unknown provider is an empty list, not an error.
     expect(orderedModels(pool, [], [], "", { providerLock: "nope" }).items).toHaveLength(0);
   });
+
+  test("the filter matches ref tokens and benchmark names together", () => {
+    const refs = [
+      "opencode-go/muse-spark-1-3-contributor",
+      "openrouter/meta/muse-spark-1-2-contributor",
+      "opencode-go/glm-5.3-flash",
+    ];
+    const nameOf = (ref: string) =>
+      ref.includes("muse-spark-1-3")
+        ? "Muse Spark 1.3 (Max)"
+        : ref.includes("muse-spark-1-2")
+          ? "Muse Spark 1.2 (Xhigh)"
+          : null;
+    // By ref fragments, separators aside.
+    expect(models(orderedModels(refs, [], [], "muse 1.3", { nameOf }).rows)).toEqual([
+      "opencode-go/muse-spark-1-3-contributor",
+    ]);
+    // By the benchmark's own wording — Max is an AA name, not a ref part.
+    expect(models(orderedModels(refs, [], [], "muse max", { nameOf }).rows)).toEqual([
+      "opencode-go/muse-spark-1-3-contributor",
+    ]);
+    // All tokens must match: 1.2 is not 1.3.
+    expect(models(orderedModels(refs, [], [], "muse 1.3 1.2", { nameOf }).rows)).toEqual([]);
+    // Without names the same rule holds on refs alone.
+    expect(models(orderedModels(refs, [], [], "muse 1.3").rows)).toEqual([
+      "opencode-go/muse-spark-1-3-contributor",
+    ]);
+  });
+});
+
+describe("matchesFilter", () => {
+  test("empty and blank filters match everything", () => {
+    expect(matchesFilter("opencode-go/glm-5.3", null, "")).toBe(true);
+    expect(matchesFilter("opencode-go/glm-5.3", null, "   ")).toBe(true);
+  });
+
+  test("a single token is the old substring rule", () => {
+    expect(matchesFilter("opencode-go/glm-5.3", null, "glm")).toBe(true);
+    expect(matchesFilter("opencode-go/glm-5.3", null, "zzz")).toBe(false);
+  });
+
+  test("every token must match, in any order", () => {
+    expect(matchesFilter("opencode-go/muse-spark-1-3", null, "muse spark")).toBe(true);
+    expect(matchesFilter("opencode-go/muse-spark-1-3", null, "spark muse")).toBe(true);
+    expect(matchesFilter("opencode-go/muse-spark-1-3", null, "muse wonder")).toBe(false);
+  });
+
+  test("separators are ignored on both sides", () => {
+    expect(matchesFilter("opencode-go/muse-spark-1-3", null, "muse 1.3")).toBe(true);
+    expect(matchesFilter("opencode-go/muse-spark-1-3", null, "spark 13")).toBe(true);
+    expect(matchesFilter("opencode-go/muse-spark-1-3", null, "spark-1.3")).toBe(true);
+  });
+
+  test("tokens also match the benchmark display name", () => {
+    expect(matchesFilter("x/y", "Muse Spark 1.3 (Max)", "max")).toBe(true);
+    expect(matchesFilter("x/y", "Muse Spark 1.3 (Max)", "muse max")).toBe(true);
+    expect(matchesFilter("x/y", null, "max")).toBe(false);
+    // The name never excuses a ref token that matches nothing.
+    expect(matchesFilter("x/y", "Muse Spark 1.3 (Max)", "muse zzz")).toBe(false);
+  });
+
+  test("an all-separator token matches nothing, never everything", () => {
+    expect(matchesFilter("abc", null, "-")).toBe(false);
+    expect(matchesFilter("abc", "Some Name", "-")).toBe(false);
+  });
 });
 
 describe("providerRank", () => {
@@ -329,6 +395,20 @@ describe("rankModels", () => {
       "p/cheap-good",
       "p/cheap-plain",
     ]);
+  });
+
+  test("the filter takes ref tokens and benchmark names", () => {
+    const named = { ...opts, nameOf: (ref: string) => (ref.endsWith("best") ? "Best Effort (Max)" : null) };
+    // By name alone, in a flat view.
+    expect(models(rankModels(refs, "intelligence", { ...named, filter: "max" }))).toEqual([
+      "p/cheap-best",
+    ]);
+    // Mixed: one token from the ref, one from the name.
+    expect(models(rankModels(refs, "intelligence", { ...named, filter: "cheap max" }))).toEqual([
+      "p/cheap-best",
+    ]);
+    // Without names the same query is empty — Max lives in no ref.
+    expect(models(rankModels(refs, "intelligence", { ...opts, filter: "max" }))).toEqual([]);
   });
 
   test("ties break alphabetically, so the order is stable between refreshes", () => {

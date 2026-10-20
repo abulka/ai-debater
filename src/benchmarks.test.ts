@@ -281,6 +281,84 @@ describe("scoresFor", () => {
   });
 });
 
+describe("serving-tier resolution", () => {
+  const nocanonical = (model: string) =>
+    parseCatalogue(JSON.stringify({ prov: { id: "prov", models: { [model]: { tool_call: true } } } }));
+  const spark = () =>
+    buildIndex([
+      {
+        id: "muse-spark-1-3",
+        scores: { intelligence: 48.1, coding: 75.8, agentic: 55.5 },
+        source: "aa" as const,
+        name: "Muse Spark 1.3 (Max)",
+        taskCost: 1.6049,
+      },
+    ]);
+
+  test("a -contributor serving ref resolves to the measured model, marked", () => {
+    const r = scoresFor(nocanonical("muse-spark-1-3-contributor"), spark(), "prov/muse-spark-1-3-contributor");
+    expect(r?.intelligence).toBe(48.1);
+    expect(r?.sourceId).toBe("muse-spark-1-3");
+    expect(r?.normalised).toBe(true);
+    expect(r?.taskCost).toBe(1.6049);
+    expect(r?.name).toBe("Muse Spark 1.3 (Max)");
+  });
+
+  test("an exact id beats the stripped form", () => {
+    const b = buildIndex([
+      { id: "foo", scores: { intelligence: 10 }, source: "aa" as const },
+      { id: "foo-free", scores: { intelligence: 11 }, source: "aa" as const },
+    ]);
+    const r = scoresFor(nocanonical("foo-free"), b, "prov/foo-free");
+    // Exact on the served chain, before any strip runs: the free serving's
+    // own number, namespaced ref and all.
+    expect(r?.intelligence).toBe(11);
+    expect(r?.sourceId).toBe("foo-free");
+    expect(r?.normalised).toBe(true);
+  });
+
+  test("-pro, -image and -instruct stay a miss — possibly sibling models", () => {
+    const b = buildIndex([{ id: "foo", scores: { intelligence: 10 }, source: "aa" as const }]);
+    expect(scoresFor(nocanonical("foo-pro"), b, "prov/foo-pro")).toBeNull();
+    expect(scoresFor(nocanonical("foo-image"), b, "prov/foo-image")).toBeNull();
+    expect(scoresFor(nocanonical("foo-instruct"), b, "prov/foo-instruct")).toBeNull();
+  });
+
+  test("effort suffixes strip too: -thinking resolves to the base", () => {
+    const b = buildIndex([
+      { id: "claude-sonnet-4-6", scores: { intelligence: 60 }, source: "aa" as const },
+    ]);
+    const r = scoresFor(nocanonical("claude-sonnet-4-6-thinking"), b, "prov/claude-sonnet-4-6-thinking");
+    expect(r?.intelligence).toBe(60);
+    expect(r?.sourceId).toBe("claude-sonnet-4-6");
+    expect(r?.normalised).toBe(true);
+  });
+
+  test("tier 6: a ref whose base names a variant group resolves to its preferred member", () => {
+    // No bare base in the index — only the reasoning variant — so no tier
+    // above can hit, and the group speaks through its preferred member.
+    const b = buildIndex([
+      {
+        id: "model-max",
+        scores: { intelligence: 70 },
+        source: "aa" as const,
+        name: "Model Max",
+      },
+    ]);
+    const r = scoresFor(nocanonical("model-high"), b, "prov/model-high");
+    expect(r?.intelligence).toBe(70);
+    expect(r?.sourceId).toBe("model-max");
+    expect(r?.normalised).toBe(true);
+  });
+
+  test("a bare -free is a name, never stripped to nothing", () => {
+    const b = buildIndex([{ id: "free", scores: { intelligence: 1 }, source: "aa" as const }]);
+    const r = scoresFor(nocanonical("free"), b, "prov/free");
+    expect(r?.intelligence).toBe(1);
+    expect(r?.normalised).toBe(true);
+  });
+});
+
 describe("variant preference", () => {
   const catalogueOf = (canonical: string) =>
     parseCatalogue(

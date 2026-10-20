@@ -3562,10 +3562,15 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     return max;
   }, [allModels, taskCostOf]);
   const modelRows = useMemo(() => {
+    // The benchmark display name, for the filter: `muse 1.3 max` matches by
+    // AA's own wording as well as by ref. One adapter, both list builders.
+    const nameOf = (ref: string): string | null =>
+      scoresFor(catalogue, benchmarks, ref)?.name ?? null;
     if (view === "provider") {
       return orderedModels(allModels, openCode.favourites, openCode.recents, filter, {
         ...(hideUnscored ? { hideUnscored: true as const, scoreOf: aaScoreOf } : {}),
         ...(providerLock ? { providerLock } : {}),
+        nameOf,
       });
     }
     return rankModels(allModels, view, {
@@ -3578,11 +3583,12 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       scoreOf,
       outputOf,
       taskCostOf,
+      nameOf,
       // Cost ranking answers in every flat view; only the provider branch never
       // gets here, grouped rather than ranked.
       rankBy: rankCost ? "cost" : "score",
     });
-  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, priceBasis]);
+  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, priceBasis, catalogue, benchmarks]);
 
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
