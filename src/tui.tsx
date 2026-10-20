@@ -49,9 +49,9 @@ import {
 } from "./aicodingdaily.ts";
 import { loadAAKey, saveAAKey } from "./aa-key.ts";
 import { refreshAllBenchmarks, verifyAAKey } from "./artificialanalysis.ts";
-import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_TASK_CEILING, loadCeiling, loadTaskCeiling, roundCeiling, saveCeiling, saveTaskCeiling, stepCeiling } from "./prefs.ts";
+import { CEILING_STEP, DEFAULT_CEILING, DEFAULT_TASK_CEILING, loadCeiling, loadDisabledProviders, loadTaskCeiling, roundCeiling, saveCeiling, saveDisabledProviders, saveTaskCeiling, stepCeiling } from "./prefs.ts";
 import { mouseAccepting, MOUSE_OFF, MOUSE_ON, setMouseAccepting, wheelRows } from "./mouse.ts";
-import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES } from "./providers.ts";
+import { allProviderBills, authedProviders, noteForModel, PROVIDER_NOTES, type ProviderBill } from "./providers.ts";
 import { failedProbes, loadProbes, pingModel, probeBadge, probeCoverage, probeHint, type ProbeCache } from "./probe.ts";
 import { readOpenCodeModels } from "./opencode-state.ts";
 import {
@@ -121,6 +121,7 @@ import {
   pickContentWants,
   pickHintAllowed,
   pickListHeight,
+  providerFilterListHeight,
   runsListHeight,
   scrollerHeight,
 } from "./viewport.ts";
@@ -137,6 +138,7 @@ type Phase =
   | "aakey"
   | "pick"
   | "providers"
+  | "provfilter"
   | "pairs"
   | "pairname"
   | "pairconfirm"
@@ -951,6 +953,7 @@ function Pick({
   subject,
   notice,
   providerLock,
+  disabledCount,
   aaKey,
   priceBasis,
   taskCeiling,
@@ -982,6 +985,8 @@ function Pick({
   notice: string | null;
   /** The provider the list is locked to, or null for every provider. */
   providerLock: string | null;
+  /** Providers switched off on the `F` screen — the count line says how many. */
+  disabledCount: number;
   /** Whether an Artificial Analysis key is stored — without one the scores are OpenRouter-only. */
   aaKey: boolean;
   /**
@@ -1390,6 +1395,7 @@ function Pick({
                   {
                     text:
                       `${providerLock ? ` · locked to: ${providerLock}` : ""}` +
+                      `${disabledCount > 0 ? ` · ${disabledCount} provider${disabledCount === 1 ? "" : "s"} off (F)` : ""}` +
                       `${view === "value" ? ` ≤ $${ceiling.toFixed(2)}` : ""}` +
                       `${view === "taskcost" ? ` ≤ $${taskCeiling.toFixed(2)}/task${rankAcd ? " (ACD)" : ""}` : ""}` +
                       `${priceBasis === "high" ? " · price: high tier" : ""}` +
@@ -1667,6 +1673,97 @@ function Providers({
       ]}
       onClose={onClose}
     />
+  );
+}
+
+/**
+ * The provider switchboard: every provider in the listing with its model
+ * count, billing and key status, and a checkbox for whether the picker
+ * shows it. Space toggles one, `a` switches everything back on, `o`
+ * switches everything off, Esc returns to the picker — which re-filters
+ * behind it in every view.
+ *
+ * Not a `Scroller`: this list is bounded (a dozen providers) and indexed
+ * like the pair list, and every row is clipped to one line so the cursor
+ * arithmetic stays honest. `?` stays the read-only explainer; this is the
+ * interactive one next to it.
+ */
+function ProviderFilter({
+  bills,
+  disabled,
+  index,
+  height,
+  notice,
+}: {
+  bills: ProviderBill[];
+  /** Provider ids the picker hides. May name providers no longer listed — those simply match no row. */
+  disabled: ReadonlySet<string>;
+  index: number;
+  /** Visible rows, from the viewport budget: the frame must fit the terminal. */
+  height: number;
+  notice: string | null;
+}) {
+  const width = Math.max(8, useTerminalWidth() - 6);
+  // Sticky like the picker: the window holds while the cursor walks its rows,
+  // and follows only at an edge.
+  const startRef = useRef(0);
+  const maxStart = Math.max(0, bills.length - height);
+  const prev = Math.min(Math.max(0, startRef.current), maxStart);
+  const start =
+    index < prev ? index : index >= prev + height ? Math.min(index - height + 1, maxStart) : prev;
+  startRef.current = start;
+  const onCount = bills.filter((b) => !disabled.has(b.provider)).length;
+
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Header right="providers on/off" />
+      </Box>
+      <Text dimColor>
+        {`space toggles a provider — ${onCount} of ${bills.length} on, in every view`}
+      </Text>
+      <Box marginTop={1} flexDirection="column">
+        {bills.slice(start, start + height).map((b, i) => {
+          const absolute = start + i;
+          const selected = absolute === index;
+          const off = disabled.has(b.provider);
+          const detail =
+            `  ${b.listed} model${b.listed === 1 ? "" : "s"} · ${b.billing}` +
+            `${b.keyed === null ? " · NO KEY" : ` · key (${b.keyed})`}`;
+          const maxDetail = Math.max(10, width - 1 - 4 - b.provider.length);
+          const clipped = detail.length > maxDetail ? shorten(detail, maxDetail) : detail;
+          return (
+            <Box key={b.provider}>
+              <Text color={selected ? THEME.accent : undefined}>
+                {`${selected ? "❯" : " "} [${off ? " " : "x"}] `}
+              </Text>
+              <Text
+                color={selected ? THEME.accent : undefined}
+                bold={selected}
+                dimColor={!selected && off}
+                wrap="truncate"
+              >
+                {b.provider}
+              </Text>
+              <Text dimColor wrap="truncate">
+                {clipped}
+              </Text>
+            </Box>
+          );
+        })}
+        {bills.length === 0 && <Text dimColor>no providers listed</Text>}
+      </Box>
+      {notice && (
+        <Box marginTop={1}>
+          <Text dimColor>{notice}</Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text>
+          <Line spans={hints(["space", "toggle"], ["a", "all on"], ["o", "all off"], ["Esc", "back"])} />
+        </Text>
+      </Box>
+    </Box>
   );
 }
 
@@ -2564,6 +2661,14 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
      locks the highlighted model's provider; the view, the filter and `H` all
      still apply inside it. */
   const [providerLock, setProviderLock] = useState<string | null>(null);
+  /**
+   * Providers the picker hides, by id. Personal and persisted in `prefs.ts`
+   * like the ceilings; the pool filter in `models.ts` applies it to every
+   * view. A Set in state, a sorted array on disk.
+   */
+  const [disabledProviders, setDisabledProviders] = useState<ReadonlySet<string>>(new Set());
+  /** The cursor on the provider switchboard. */
+  const [provFilterIndex, setProvFilterIndex] = useState(0);
   /** Output $/M ceiling for the value view. Personal, in `prefs.ts`. */
   const [ceiling, setCeiling] = useState(DEFAULT_CEILING);
   /** Measured $/task ceiling for the taskcost view. Personal, like the value one. */
@@ -2808,6 +2913,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     void readOpenCodeModels().then(setOpenCode);
     void loadCeiling().then(setCeiling);
     void loadTaskCeiling().then(setTaskCeiling);
+    void loadDisabledProviders().then((list) => setDisabledProviders(new Set(list)));
     // The catalogue and our own probe record do not depend on the listing, so
     // they do not wait for it. Neither throws.
     void loadCatalogue().then((r) => setCatalogue(r.catalogue));
@@ -3570,6 +3676,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       return orderedModels(allModels, openCode.favourites, openCode.recents, filter, {
         ...(hideUnscored ? { hideUnscored: true as const, scoreOf: aaScoreOf } : {}),
         ...(providerLock ? { providerLock } : {}),
+        disabled: disabledProviders,
         nameOf,
       });
     }
@@ -3580,6 +3687,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       taskCeiling,
       favourites: openCode.favourites,
       ...(providerLock ? { providerLock } : {}),
+      disabled: disabledProviders,
       scoreOf,
       outputOf,
       taskCostOf,
@@ -3588,7 +3696,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       // gets here, grouped rather than ranked.
       rankBy: rankCost ? "cost" : "score",
     });
-  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, priceBasis, catalogue, benchmarks]);
+  }, [allModels, openCode, filter, view, hideUnscored, ceiling, taskCeiling, scoreOf, aaScoreOf, outputOf, taskCostOf, rankCost, providerLock, disabledProviders, priceBasis, catalogue, benchmarks]);
 
   /**
    * Ping some models, one at a time, and record each verdict as it lands.
@@ -3656,7 +3764,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     }
     if (reachable.length > PING_MAX) {
       setNotice(
-        `${reachable.length} shown — narrow to ${PING_MAX} or fewer with the filter, L, or a view, then A again`,
+        `${reachable.length} shown — narrow to ${PING_MAX} or fewer with the filter, L, F, or a view, then A again`,
       );
       return;
     }
@@ -3716,6 +3824,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       view,
       filter,
       providerLock,
+      disabledProviders: [...disabledProviders],
       ceiling,
       taskCeiling,
       hideUnscored,
@@ -3757,6 +3866,32 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     setNotice(
       `export ${entire.length} shown or just the ${visible.length} visible rows? — e all shown · v visible · Esc cancels`,
     );
+  }
+
+  /**
+   * Every provider in the listing with its bill — the `F` switchboard's rows.
+   * Derived like the `?` pane's, so the two can never disagree about who is who.
+   */
+  const provBills = useMemo(
+    () => allProviderBills(allModels, catalogue, authed),
+    [allModels, catalogue, authed],
+  );
+
+  /**
+   * Switch one provider off or back on. Applies immediately — the picker
+   * re-filters on return — and persists like the ceilings. Disabling the
+   * locked provider clears the lock: a lock on a hidden provider is an empty
+   * list with a stale reason.
+   */
+  async function toggleProvider(provider: string | undefined) {
+    if (!provider) return;
+    const next = new Set(disabledProviders);
+    if (next.has(provider)) next.delete(provider);
+    else next.add(provider);
+    if (providerLock !== null && next.has(providerLock)) setProviderLock(null);
+    setDisabledProviders(next);
+    setPickIndex(0);
+    await saveDisabledProviders([...next]);
   }
 
   /** The provider pane scrolls and closes itself; `Scroller` owns its keys. */
@@ -3984,6 +4119,16 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setPickIndex(0);
         return;
       }
+      // `F` lists every provider with a checkbox for whether the picker
+      // shows it — the multi-provider version of `L`'s single lock, applied
+      // to every view. Uppercase like the rest, so lowercase keeps typing
+      // into the filter.
+      if (input === "F") {
+        setPingArmed(null);
+        setProvFilterIndex(0);
+        setPhase("provfilter");
+        return;
+      }
       // `<`/`>` move the ceiling of the cheap view on screen. Value steps
       // additively ($0.10 — output prices cluster near a dollar); taskcost
       // steps geometrically (×1.5 — task costs span cents to dollars, and an
@@ -4080,6 +4225,52 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       }
     },
     { isActive: phase === "pick" },
+  );
+
+  /**
+   * The provider switchboard. No text field here, so lowercase answers too:
+   * space toggles the highlighted provider, `a` switches everything back
+   * on, `o` switches everything off, Esc returns to the picker. The cursor
+   * resets nowhere — the provider list is stable while toggles fly, unlike
+   * the picker's.
+   */
+  useInput(
+    (input, key) => {
+      if (key.escape) {
+        setPhase("pick");
+        return;
+      }
+      if (key.upArrow) {
+        setProvFilterIndex((i) => clampIndex(i - 1, provBills.length));
+        return;
+      }
+      if (key.downArrow) {
+        setProvFilterIndex((i) => clampIndex(i + 1, provBills.length));
+        return;
+      }
+      if (input === " " || key.return) {
+        void toggleProvider(provBills[provFilterIndex]?.provider);
+        return;
+      }
+      if (input === "a" || input === "A") {
+        setDisabledProviders(new Set());
+        setPickIndex(0);
+        void saveDisabledProviders([]);
+        return;
+      }
+      if (input === "o" || input === "O") {
+        // Everything off is allowed: the picker shows its empty state, and
+        // the switchboard itself says why. The lock goes too — a lock on a
+        // hidden provider is an empty list with a stale reason.
+        const allOff = new Set(provBills.map((b) => b.provider));
+        setDisabledProviders(allOff);
+        setProviderLock(null);
+        setPickIndex(0);
+        void saveDisabledProviders([...allOff]);
+        return;
+      }
+    },
+    { isActive: phase === "provfilter" },
   );
 
   const items = useMemo(() => (head ? buildItems(head.claims, head.review) : []), [head]);
@@ -4329,6 +4520,10 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         return at;
       }),
     phase === "pairs",
+  );
+  useWheelScroll(
+    (rows) => setProvFilterIndex((i) => clampIndex(i + Math.sign(rows), provBills.length)),
+    phase === "provfilter",
   );
 
   function moveRuns(next: number) {
@@ -5038,6 +5233,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
     rankAcd,
     rankCost,
     providerLock,
+    disabledCount: disabledProviders.size,
     ceiling,
     taskCeiling,
   };
@@ -5115,6 +5311,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         subject={mode}
         notice={notice}
         providerLock={providerLock}
+        disabledCount={disabledProviders.size}
         aaKey={aaKeySet}
         rankAcd={rankAcd}
         rankCost={rankCost}
@@ -5135,6 +5332,16 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         notice={notice}
         height={scrollerH}
         onClose={() => setPhase("pick")}
+      />
+    );
+  } else if (phase === "provfilter") {
+    content = (
+      <ProviderFilter
+        bills={provBills}
+        disabled={disabledProviders}
+        index={provFilterIndex}
+        height={providerFilterListHeight(contentH, notice !== null)}
+        notice={notice}
       />
     );
   } else if (phase === "pairs") {

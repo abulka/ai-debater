@@ -13,6 +13,8 @@ export interface HintState {
   rankAcd: boolean;
   rankCost: boolean;
   providerLock: string | null;
+  /** Providers switched off on the `F` screen — the hint says how many. */
+  disabledCount: number;
   ceiling: number;
   taskCeiling: number;
 }
@@ -71,6 +73,7 @@ export function buildHintText(s: HintState): string {
         ]
       : []),
     `L ${s.providerLock ? `unlock (locked to: ${s.providerLock})` : "lock to selected provider"}`,
+    `F ${s.disabledCount > 0 ? `providers (${s.disabledCount} off)` : "providers on/off"}`,
   ];
   const ceil =
     s.view === "value"

@@ -261,6 +261,38 @@ describe("orderedModels", () => {
     expect(orderedModels(pool, [], [], "", { providerLock: "nope" }).items).toHaveLength(0);
   });
 
+  test("disabled providers hide everywhere and compose with the lock", () => {
+    const pool = ["opencode-go/a", "opencode-go/b", "openrouter/c"];
+    const off = new Set(["openrouter"]);
+    expect(models(orderedModels(pool, [], [], "", { disabled: off }).rows)).toEqual([
+      "opencode-go/a",
+      "opencode-go/b",
+    ]);
+    // With the filter: the hidden provider contributes nothing.
+    expect(models(orderedModels(pool, [], [], "openrouter", { disabled: off }).rows)).toEqual([]);
+    // With the lock: both filters apply, so a lock on a disabled provider is empty.
+    expect(
+      models(orderedModels(pool, [], [], "", { providerLock: "openrouter", disabled: off }).rows),
+    ).toEqual([]);
+    expect(
+      models(orderedModels(pool, [], [], "", { providerLock: "opencode-go", disabled: off }).rows),
+    ).toEqual(["opencode-go/a", "opencode-go/b"]);
+  });
+
+  test("a favourite on a disabled provider vanishes silently, never as dropped", () => {
+    // Still listed and reachable — just hidden by choice — so the header must
+    // not claim it is unavailable, and the `?` pane must not report it.
+    const pool = ["opencode-go/a", "openrouter/c"];
+    const { rows, dropped, items } = orderedModels(pool, ["openrouter/c", "opencode-go/a"], [], "", {
+      disabled: new Set(["openrouter"]),
+    });
+    expect(dropped).toEqual([]);
+    expect(models(rows)).toEqual(["opencode-go/a"]);
+    expect(items).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "group", label: "★ favourites OpenCode marks (1 of 1 reachable)" });
+    expect("note" in (rows[0] as object)).toBe(false);
+  });
+
   test("the filter matches ref tokens and benchmark names together", () => {
     const refs = [
       "opencode-go/muse-spark-1-3-contributor",
@@ -510,16 +542,35 @@ describe("rankModels", () => {
     expect(models(rankModels(trefs, "taskcost", opts))).toEqual([]);
     // The lock composes, and H drops the unscored tail.
     expect(
-      models(
-        rankModels(["q/smart-mid", "q/dumb-cheap", "p/dumb-cheap"], "taskcost", {
-          ...tOpts,
-          taskCeiling: 1,
-          providerLock: "q",
-        }),
-      ),
+      models(rankModels(["q/smart-mid", "q/dumb-cheap", "p/dumb-cheap"], "taskcost", {
+        ...tOpts,
+        taskCeiling: 1,
+        providerLock: "q",
+      })),
     ).toEqual(["q/smart-mid", "q/dumb-cheap"]);
     expect(
       models(rankModels(trefs, "taskcost", { ...tOpts, taskCeiling: 1, hideUnscored: true })),
     ).toEqual(["p/smart-mid", "p/dumb-cheap"]);
+  });
+
+  test("disabled providers hide from the flat views too", () => {
+    const refs = ["p/cheap-best", "p/cheap-good", "q/cheap-good"];
+    const off = new Set(["q"]);
+    expect(models(rankModels(refs, "intelligence", { ...opts, disabled: off }))).toEqual([
+      "p/cheap-best",
+      "p/cheap-good",
+    ]);
+    // Composes with the ceiling and the filter, like the lock.
+    expect(models(rankModels(refs, "value", { ...opts, disabled: off, ceiling: 0.8 }))).toEqual([
+      "p/cheap-best",
+      "p/cheap-good",
+    ]);
+    expect(
+      models(rankModels(refs, "intelligence", { ...opts, disabled: off, filter: "cheap-good" })),
+    ).toEqual(["p/cheap-good"]);
+    // Everything off is an empty list, not an error.
+    expect(
+      models(rankModels(refs, "intelligence", { ...opts, disabled: new Set(["p", "q"]) })),
+    ).toEqual([]);
   });
 });

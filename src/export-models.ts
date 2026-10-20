@@ -28,6 +28,8 @@ export interface ModelsExportInput {
   view: PickerView;
   filter: string;
   providerLock: string | null;
+  /** Providers switched off on the `F` screen. Empty or absent: nothing hidden. */
+  disabledProviders?: string[];
   ceiling: number;
   /** Measured $/task ceiling, for the taskcost view's context line. */
   taskCeiling: number;
@@ -66,6 +68,7 @@ export function exportModelsMd(input: ModelsExportInput): string {
     view,
     filter,
     providerLock,
+    disabledProviders = [],
     ceiling,
     taskCeiling,
     hideUnscored,
@@ -92,6 +95,7 @@ export function exportModelsMd(input: ModelsExportInput): string {
   ];
   if (filter.trim()) context.push(`filter: "${filter.trim()}"`);
   if (providerLock) context.push(`locked to provider: ${providerLock}`);
+  if (disabledProviders.length > 0) context.push(`hidden providers: ${disabledProviders.join(", ")}`);
   if (view === "value") context.push(`value ceiling: $${ceiling.toFixed(2)}/M output`);
   if (view === "taskcost") context.push(`task ceiling: $${taskCeiling.toFixed(2)}/task`);
   if (hideUnscored) context.push("hiding unscored");

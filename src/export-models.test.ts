@@ -87,6 +87,12 @@ describe("exportModelsMd", () => {
     expect(md).toContain("unknown, never free");
   });
 
+  test("context names hidden providers, and stays silent when none are hidden", () => {
+    const md = exportModelsMd({ ...base, refs: ["a/m"], disabledProviders: ["groq", "splash"] });
+    expect(md).toContain("- hidden providers: groq, splash");
+    expect(exportModelsMd({ ...base, refs: ["a/m"] })).not.toContain("hidden providers");
+  });
+
   test("AI Coding Daily rides its own columns, with the harness in the notes", () => {
     const md = exportModelsMd({
       ...base,

@@ -8,6 +8,7 @@ const base: HintState = {
   rankAcd: false,
   rankCost: false,
   providerLock: null,
+  disabledCount: 0,
   ceiling: 0.8,
   taskCeiling: 0.5,
 };
@@ -57,6 +58,11 @@ describe("buildHintText", () => {
     expect(buildHintText({ ...base, providerLock: "opencode-go" })).toContain(
       "unlock (locked to: opencode-go)",
     );
+  });
+
+  test("the provider switch names how many are off", () => {
+    expect(buildHintText(base)).toContain("F providers on/off");
+    expect(buildHintText({ ...base, disabledCount: 2 })).toContain("F providers (2 off)");
   });
 });
 

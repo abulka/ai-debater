@@ -143,6 +143,33 @@ export function groupModels(
 }
 
 /**
+ * The pool the picker draws from: the listing minus disabled providers,
+ * then narrowed to the lock when one is set. Both are AND filters — a lock
+ * on a disabled provider is an empty list — so the order is irrelevant, but
+ * one helper keeps the two list builders from disagreeing about it.
+ */
+function providerPool(
+  all: string[],
+  providerLock: string | undefined,
+  disabled: ReadonlySet<string> | undefined,
+): string[] {
+  return all.filter(
+    (m) => !(disabled?.has(providerOf(m)) ?? false) && (!providerLock || providerOf(m) === providerLock),
+  );
+}
+
+/**
+ * Favourites and recents minus disabled providers. A favourite on a provider
+ * the reader switched off is not "dropped" — it is still listed, still
+ * reachable, just hidden by choice — so it is removed before grouping rather
+ * than reported as unavailable.
+ */
+function enabledOnly(refs: string[], disabled: ReadonlySet<string> | undefined): string[] {
+  if (!disabled || disabled.size === 0) return refs;
+  return refs.filter((r) => !disabled.has(providerOf(r)));
+}
+
+/**
  * One line of the picker. Only `model` rows are selectable.
  *
  * `group` and `provider` rows exist so the list can say what the rows under it
@@ -205,7 +232,9 @@ export function matchesFilter(ref: string, name: string | null, filter: string):
  *
  * `providerLock` narrows the pool before anything else — favourites, recents,
  * filter and scores all apply inside it, so it composes with every other layer
- * instead of replacing one.
+ * instead of replacing one. `disabled` removes providers the same way, and a
+ * favourite on a removed provider vanishes silently: hidden by choice, not
+ * unavailable, so it never lands in `dropped`.
  */
 export function orderedModels(
   all: string[],
@@ -218,13 +247,17 @@ export function orderedModels(
     /** Benchmark display name for the filter (`Muse Spark 1.3 (Max)`). Null when the row resolved none. */
     nameOf?: (ref: string) => string | null;
     providerLock?: string;
+    /** Providers the reader switched off on the `F` screen. Composes with the lock. */
+    disabled?: ReadonlySet<string>;
   } = {},
 ): ModelList {
-  const pool = opts.providerLock ? all.filter((m) => providerOf(m) === opts.providerLock) : all;
+  const pool = providerPool(all, opts.providerLock, opts.disabled);
+  const enabledFavs = enabledOnly(favourites, opts.disabled);
+  const enabledRecents = enabledOnly(recents, opts.disabled);
   const grouped =
     opts.hideUnscored && opts.scoreOf
-      ? hideUnscoredRows(groupModels(pool, favourites, recents), opts.scoreOf)
-      : groupModels(pool, favourites, recents);
+      ? hideUnscoredRows(groupModels(pool, enabledFavs, enabledRecents), opts.scoreOf)
+      : groupModels(pool, enabledFavs, enabledRecents);
   const nameOf = opts.nameOf ?? (() => null);
 
   const rows: ModelRow[] = [];
@@ -251,7 +284,7 @@ export function orderedModels(
   if (grouped.favourites.length > 0) {
     rows.push({
       kind: "group",
-      label: `★ favourites OpenCode marks (${grouped.favourites.length} of ${favourites.length} reachable)`,
+      label: `★ favourites OpenCode marks (${grouped.favourites.length} of ${enabledFavs.length} reachable)`,
       ...(grouped.dropped.length
         ? { note: `${grouped.dropped.length} not available — ? to see which` }
         : {}),
@@ -297,6 +330,8 @@ export interface RankOptions {
   favourites?: string[];
   /** Show only this provider. Composes with the filter, the ceiling and the views. */
   providerLock?: string;
+  /** Providers the reader switched off on the `F` screen. Composes with the lock. */
+  disabled?: ReadonlySet<string>;
   scoreOf: (ref: string) => ModelScore;
   /** Benchmark display name for the filter. Null when the row resolved none. */
   nameOf?: (ref: string) => string | null;
@@ -387,13 +422,14 @@ export function rankModels(
     taskCeiling = Number.POSITIVE_INFINITY,
     favourites = [],
     providerLock,
+    disabled,
     scoreOf,
     outputOf,
     taskCostOf = () => undefined,
     rankBy = "score",
     nameOf = () => null,
   } = opts;
-  const pool = providerLock ? refs.filter((ref) => providerOf(ref) === providerLock) : refs;
+  const pool = providerPool(refs, providerLock, disabled);
   const visible = visibleRefs(pool, filter, hideUnscored, scoreOf, nameOf);
   // Each flat view filters on its own cheapness: output $/M under a ceiling,
   // or measured $/task under one. An unknown cost cannot be called cheap, so

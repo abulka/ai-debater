@@ -11,6 +11,7 @@ import {
   pickContentWants,
   pickHintAllowed,
   pickListHeight,
+  providerFilterListHeight,
   runsListHeight,
   scrollerHeight,
 } from "./viewport.ts";
@@ -111,11 +112,16 @@ describe("screen budgets", () => {
   test("runs counts its chrome", () => {
     expect(runsListHeight(40)).toBe(33);
   });
+  test("the provider filter counts its chrome and the notice", () => {
+    expect(providerFilterListHeight(40, false)).toBe(34);
+    expect(providerFilterListHeight(40, true)).toBe(32);
+  });
   test("every list keeps at least one row", () => {
     expect(scrollerHeight(3, true)).toBe(1);
     expect(pickListHeight(3, true)).toBe(1);
     expect(pairsListHeight(3, 9, true)).toBe(1);
     expect(runsListHeight(3)).toBe(1);
+    expect(providerFilterListHeight(3, true)).toBe(1);
   });
 });
 

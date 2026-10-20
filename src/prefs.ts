@@ -1,11 +1,13 @@
 /**
- * The picker's own small preferences: the value view's output-cost ceiling.
+ * The picker's own small preferences: the value view's output-cost ceiling,
+ * the taskcost view's task ceiling, and the providers the picker hides.
  *
  * Its own file (`~/.config/adv/picker.json`), for the same reason pairs have
  * theirs: `saveConfig` writes the whole `Config` into the repository's
  * `.adv/` and the user's config, so a threshold on `Config` would be stamped
- * into every repository the moment a model was picked. A ceiling is personal,
- * not per-repo. A missing or malformed file is the default, never a throw.
+ * into every repository the moment a model was picked. Ceilings and provider
+ * visibility are personal, not per-repo. A missing or malformed file is the
+ * default, never a throw.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -53,8 +55,8 @@ async function readPrefs(file: string): Promise<Record<string, unknown>> {
   return {};
 }
 
-/** Merge one key so the two ceilings never wipe each other out. */
-async function writePrefs(file: string, patch: Record<string, number>): Promise<void> {
+/** Merge keys so the ceilings and the provider list never wipe each other out. */
+async function writePrefs(file: string, patch: Record<string, unknown>): Promise<void> {
   const current = await readPrefs(file);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify({ ...current, ...patch }, null, 2)}\n`);
@@ -83,4 +85,26 @@ export async function saveTaskCeiling(
   file: string = pickerPrefsFile(),
 ): Promise<void> {
   await writePrefs(file, { taskCeiling: roundCeiling(ceiling) });
+}
+
+/**
+ * Providers the picker hides. Stored as a sorted array of provider ids;
+ * unknown or malformed values are `[]` — a provider that cannot be read is
+ * shown, never hidden, because hiding on bad data loses models silently.
+ */
+export async function loadDisabledProviders(file: string = pickerPrefsFile()): Promise<string[]> {
+  const v = (await readPrefs(file)).disabledProviders;
+  if (!Array.isArray(v)) return [];
+  const out = [...new Set(v.filter((p): p is string => typeof p === "string").map((p) => p.trim()).filter(Boolean))];
+  out.sort();
+  return out;
+}
+
+export async function saveDisabledProviders(
+  providers: readonly string[],
+  file: string = pickerPrefsFile(),
+): Promise<void> {
+  const out = [...new Set(providers.map((p) => p.trim()).filter(Boolean))];
+  out.sort();
+  await writePrefs(file, { disabledProviders: out });
 }

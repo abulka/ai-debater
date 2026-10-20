@@ -152,7 +152,7 @@ supersede rule.
 | ↑↓ · Enter | New debate: on **drafter/reviewer preset**, choose a saved preset (creating and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt and snaps the cursor back to it |
 | models browser | Home's first row: the same model list — Enter does nothing, Esc home. Everything else (filter, views, ping, export) works as in the picker |
 | P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
-| A | Picker: ping every model shown — the list after the filter, the lock, the view and H. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown, and it says how to narrow |
+| A | Picker: ping every model shown — the list after the filter, the lock, F, the view and H. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown, and it says how to narrow |
 | B | Picker: refresh the benchmark caches — OpenRouter plus Artificial Analysis direct when a key is stored, merged Artificial-Analysis-first, and AI Coding Daily's coding leaderboard alongside on its own cache. Auto-refreshes in the background past 7 days |
 | V | Picker: cycle the view — provider groups, intelligence-ranked, value (cheap per output token under the ceiling), taskcost (cheap per measured task under its own ceiling). Both cheap views rank by intelligence |
 | C | Picker: toggle the price basis — base price or the above-threshold price a long session pays. Cells and the value-view ceiling move together; the count line says `price: high tier` when high |
@@ -160,6 +160,7 @@ supersede rule.
 | S | Picker: rank the flat views by measured cost ($/task, or ACD $/task with D) instead of by score, cheapest first — session-only, ignored in the provider view |
 | H | Picker: hide models with no benchmark, in every view |
 | L | Picker: lock to the selected provider — the view, the filter and H all still apply inside it, and so does A. Press again to clear |
+| F | Picker: providers on/off — every provider with a checkbox for whether the picker shows it. Space toggles, `a` all on, `o` all off, Esc returns. Applies to every view and persists in `~/.config/adv/picker.json` |
 | ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |
 | < > | Cheap views: move the active ceiling — value in $0.10 steps, taskcost geometrically (×1.5 / ÷1.5). Capped at the dearest measured cost, so `>` past everything is a no-op. Saved to `~/.config/adv/picker.json` |
 | ? | Picker: what each provider bills to, whether a key is present, what the ★ ✓ ✗ marks mean, and every failure a ping has found |

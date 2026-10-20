@@ -132,6 +132,16 @@ export function runsListHeight(contentH: number): number {
 }
 
 /**
+ * Provider-filter chrome: header (2) + subtitle (1) + list margin (1) +
+ * hints (2). The notice takes two rows (margin + line). No current line, no
+ * warnings — every row is one provider, and the list is a dozen rows, so
+ * even a short terminal shows it whole.
+ */
+export function providerFilterListHeight(contentH: number, notice: boolean): number {
+  return Math.max(1, contentH - 6 - (notice ? 2 : 0));
+}
+
+/**
  * Gate detail rows: everything on the gate screen that is not the finding's
  * own text. Header, counts, status (3) + intro (2) + title + question (2) +
  * options + hints (2) = 9 + titleRows + optionRows, plus one each when the

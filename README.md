@@ -112,6 +112,7 @@ runs, settings — then keys.
 | r / R | Pairs: rename the highlighted saved pair — `r` edits its name, `R` prefills a name suggested from its models. The name prompt prefills a suggestion for new saves too |
 | P · T | Picker: **ping** the highlighted model. `P` asks one word — does this account reach it? `T` asks it to read a file — does it also use tools? The row says which ran |
 | A | Picker: ping every match, or with no filter the favourites, recents and current pair (~30 models). Press twice; refused above 40 |
+| F | Picker: providers on/off — every provider with a checkbox for whether the picker shows it (space toggles, `a` all on, `o` all off, Esc back). Applies to every view and persists between sessions |
 | ? | Picker: what each provider bills to, whether a key is present, and every failure a ping found |
 | Tab | Switch subject: **this repository** or a **general question** |
 | Enter | Run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |

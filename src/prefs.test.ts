@@ -6,9 +6,11 @@ import {
   DEFAULT_CEILING,
   DEFAULT_TASK_CEILING,
   loadCeiling,
+  loadDisabledProviders,
   loadTaskCeiling,
   roundCeiling,
   saveCeiling,
+  saveDisabledProviders,
   saveTaskCeiling,
   stepCeiling,
 } from "./prefs.ts";
@@ -67,5 +69,31 @@ describe("picker prefs", () => {
     await saveTaskCeiling(0.35, file);
     expect(await loadCeiling(file)).toBe(1.5);
     expect(await loadTaskCeiling(file)).toBe(0.35);
+  });
+
+  test("disabled providers default to none, and nonsense is none, never a throw", async () => {
+    const dir = await tmp();
+    expect(await loadDisabledProviders(path.join(dir, "picker.json"))).toEqual([]);
+    const bad = path.join(dir, "bad.json");
+    await writeFile(bad, "{not json");
+    expect(await loadDisabledProviders(bad)).toEqual([]);
+    for (const v of [{}, { disabledProviders: "groq" }, { disabledProviders: [1, null] }, []]) {
+      const f = path.join(dir, `${Math.random()}.json`);
+      await writeFile(f, JSON.stringify(v));
+      expect(await loadDisabledProviders(f)).toEqual([]);
+    }
+  });
+
+  test("disabled providers round-trip sorted and deduped, keeping the ceilings", async () => {
+    const file = path.join(await tmp(), "picker.json");
+    await saveCeiling(1.5, file);
+    await saveDisabledProviders(["openrouter", "groq", "groq", " groq "], file);
+    expect(await loadDisabledProviders(file)).toEqual(["groq", "openrouter"]);
+    expect(await loadCeiling(file)).toBe(1.5);
+    await saveTaskCeiling(0.35, file);
+    expect(await loadDisabledProviders(file)).toEqual(["groq", "openrouter"]);
+    expect(await loadTaskCeiling(file)).toBe(0.35);
+    await saveDisabledProviders([], file);
+    expect(await loadDisabledProviders(file)).toEqual([]);
   });
 });
