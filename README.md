@@ -136,8 +136,14 @@ runs, settings — then keys.
 | Esc | Close a panel and return to the same question. At the gate, leave the run. On the result screen Esc does nothing — `n` is a new debate, `q` quits (the run stays on disk — reopen it with Ctrl+R from home) |
 | Ctrl+R | Past runs — open a finished or parked run, from home, the debate screen, the gate, a result or an error |
 | Ctrl+U | New debate: clear the prompt |
-| ←→ · ^A · ^E | Every text field: step within the line, jump to start/end — prompt, filter, pair name, key. Backspace deletes before, Del under |
+| ←→ · ⌥←→ · ^A · ^E · ^K | Every text field: step within the line, jump by word, jump to start/end, kill to end of line — prompt, filter, pair name, key. Backspace deletes before, Del under |
 | ↑↓ · q | Scroll the result; `q` quits |
+
+Word jump (⌥←/⌥→) needs the terminal to send Option as Meta — in
+Terminal.app tick **Use Option as Meta key** (elsewhere it is usually the
+default); Ctrl+←/→ works everywhere instead, including Windows and Linux.
+⌘ belongs to the terminal, not to `adv`: some terminals translate ⌘A/⌘E into
+^A/^E, which then work as ends, but nothing here can bind ⌘ itself.
 
 The first-run screen appears when the directory has no `.adv/`: choose
 "Initialise .adv/ here", or "Continue without it" (models then default to the

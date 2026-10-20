@@ -194,7 +194,7 @@ supersede rule.
 | d | Runs: delete the tagged runs, or the highlighted one when none are tagged |
 | D | Runs: delete every run listed, questions included — the confirmation states the split |
 | Ctrl+U | New debate: clear the prompt |
-| ←→ · ^A · ^E | Every text field: step within the line, jump to start/end — prompt, filter, pair name, key. Backspace deletes before, Del under |
+| ←→ · ⌥←→ · ^A · ^E · ^K | Every text field: step within the line, jump by word, jump to start/end, kill to end of line — prompt, filter, pair name, key. Backspace deletes before, Del under |
 | ↑↓ · j/k | Scroll a line |
 | space · f | Page down (both do the same; `space` is what a reader tries first) |
 | b · u · Ctrl+D · Ctrl+U | Page up · half up · half down · half up |
@@ -375,6 +375,8 @@ src/
                     pair screen draws. Tested.
   opencode-state.ts OpenCode's model.json, read for its favourites and never
                     written. Tested.
+  lineedit.ts       word jump + kill-to-end for every text field: the motions
+                    as pure functions, the key shapes as predicates. Tested.
   agents.ts         the three agent definitions (injected per call)
   init.ts           `adv init` scaffolding
 fixtures/toy-repo/  the test problem (a deliberate lie in its README)

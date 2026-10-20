@@ -128,6 +128,7 @@ import {
 } from "./viewport.ts";
 import { copyMarkdown, copyNotice } from "./clipboard.ts";
 import { buildHintText, hintWidth, wrapHintLines, type HintState } from "./hints.ts";
+import { isKillToEnd, isWordLeft, isWordRight, killToEnd, wordLeft, wordRight } from "./lineedit.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 
 type Phase =
@@ -665,7 +666,8 @@ function Start({
       setDeskSel(4);
       return;
     }
-    // Line editing, readline-style: arrows step, ^A/^E jump. Free keys here —
+    // Line editing, readline-style: arrows step, ^A/^E jump, option-arrows
+    // (and Ctrl-arrows) word-jump, ^K kills to the end. Free keys here —
     // rows move on up/down, and nothing else answers to left/right.
     if (key.ctrl && input === "a") {
       setCaret(0);
@@ -673,6 +675,19 @@ function Start({
     }
     if (key.ctrl && input === "e") {
       setCaret(task.length);
+      return;
+    }
+    if (isWordLeft(key, input)) {
+      setCaret(wordLeft(task, cur));
+      return;
+    }
+    if (isWordRight(key, input)) {
+      setCaret(wordRight(task, cur));
+      return;
+    }
+    if (isKillToEnd(key, input)) {
+      setTask(killToEnd(task, cur));
+      setDeskSel(4);
       return;
     }
     if (key.leftArrow) {
@@ -2084,7 +2099,7 @@ function AAKey({
       <Box marginTop={1}>
         <Text>
           <Line
-            spans={hints(["←→", "move"], ["^A ^E", "ends"], ["Enter", "save & verify"], ["Ctrl+U", "clear"], ["Esc", "cancel"])}
+            spans={hints(["←→", "move"], ["⌥←→", "word"], ["^A ^E", "ends"], ["Enter", "save & verify"], ["Ctrl+U", "clear"], ["Esc", "cancel"])}
           />
         </Text>
       </Box>
@@ -2145,7 +2160,7 @@ function PairName({
       )}
       <Box marginTop={1}>
         <Text>
-          <Line spans={hints(["←→", "move"], ["^A ^E", "ends"], ["Enter", "save"], ["Esc", "cancel"])} />
+          <Line spans={hints(["←→", "move"], ["⌥←→", "word"], ["^A ^E", "ends"], ["Enter", "save"], ["Esc", "cancel"])} />
         </Text>
       </Box>
     </Box>
@@ -3452,7 +3467,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setAAKeyCaret(0);
         return;
       }
-      // Line editing, readline-style: arrows step, ^A/^E jump.
+      // Line editing, readline-style: arrows step, ^A/^E jump, option-arrows
+      // (and Ctrl-arrows) word-jump, ^K kills to the end.
       const kcur = Math.max(0, Math.min(aaKeyCaret, aaKeyInput.length));
       if (key.ctrl && input === "a") {
         setAAKeyCaret(0);
@@ -3460,6 +3476,20 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       }
       if (key.ctrl && input === "e") {
         setAAKeyCaret(aaKeyInput.length);
+        return;
+      }
+      if (isWordLeft(key, input)) {
+        setAAKeyCaret(wordLeft(aaKeyInput, kcur));
+        return;
+      }
+      if (isWordRight(key, input)) {
+        setAAKeyCaret(wordRight(aaKeyInput, kcur));
+        return;
+      }
+      if (isKillToEnd(key, input)) {
+        setAAKeyInput(killToEnd(aaKeyInput, kcur));
+        setAAKeyCaret(kcur);
+        setNotice(null);
         return;
       }
       if (key.leftArrow) {
@@ -3641,7 +3671,8 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
         setPhase("pairs");
         return;
       }
-      // Line editing, readline-style: arrows step, ^A/^E jump.
+      // Line editing, readline-style: arrows step, ^A/^E jump, option-arrows
+      // (and Ctrl-arrows) word-jump, ^K kills to the end.
       const ncur = Math.max(0, Math.min(pairCaret, pairName.length));
       if (key.ctrl && input === "a") {
         setPairCaret(0);
@@ -3649,6 +3680,19 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       }
       if (key.ctrl && input === "e") {
         setPairCaret(pairName.length);
+        return;
+      }
+      if (isWordLeft(key, input)) {
+        setPairCaret(wordLeft(pairName, ncur));
+        return;
+      }
+      if (isWordRight(key, input)) {
+        setPairCaret(wordRight(pairName, ncur));
+        return;
+      }
+      if (isKillToEnd(key, input)) {
+        setPairName(killToEnd(pairName, ncur));
+        setPairCaret(ncur);
         return;
       }
       if (key.leftArrow) {
@@ -4438,6 +4482,7 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       }
       // Line editing for the filter, readline-style. ^B/^D/^U page above, so
       // ^A/^E are free, and rows move on up/down — left/right belong to the text.
+      // Option-arrows (and Ctrl-arrows) word-jump, ^K kills to the end.
       const fcur = Math.max(0, Math.min(filterCaret, filter.length));
       if (key.ctrl && input === "a") {
         setFilterCaret(0);
@@ -4445,6 +4490,23 @@ function App({ repo, onRecap }: { repo: string; onRecap?: (text: string | null) 
       }
       if (key.ctrl && input === "e") {
         setFilterCaret(filter.length);
+        return;
+      }
+      if (isWordLeft(key, input)) {
+        setFilterCaret(wordLeft(filter, fcur));
+        return;
+      }
+      if (isWordRight(key, input)) {
+        setFilterCaret(wordRight(filter, fcur));
+        return;
+      }
+      if (isKillToEnd(key, input)) {
+        setPingArmed(null);
+        setNotice(null);
+        setFilter(killToEnd(filter, fcur));
+        setFilterCaret(fcur);
+        setPickIndex(0);
+        pokeFilter();
         return;
       }
       if (key.leftArrow) {
