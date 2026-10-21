@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import {
   answersDir,
-  appendDecisions,
   createRun,
   deleteRuns,
   deletionSummary,
@@ -18,8 +17,6 @@ import {
   markFailed,
   readDecisions,
   repoKey,
-  resumedModels,
-  rotateGate,
   runPaths,
   runsDir,
   saveState,
@@ -30,50 +27,13 @@ const pair = (drafter: string, reviewer: string) => ({
   reviewer: { ref: reviewer, family: reviewer.split("-")[0] ?? reviewer },
 });
 
-describe("resumedModels", () => {
-  const recorded = pair("groq/drafter-a", "groq/reviewer-a");
-  const configured = pair("groq/drafter-b", "groq/reviewer-b");
-
-  test("the run's own record wins when nothing is asked for", () => {
-    const { models, overrides } = resumedModels(recorded, configured, {
-      drafter: false,
-      reviewer: false,
-    });
-    expect(models).toEqual(recorded);
-    expect(overrides).toEqual([]);
-  });
-
-  test("changing .adv/config.json does not change who writes the rebuttal", () => {
-    // This is the bug: the config default used to win here, so a different
-    // model rebutted a plan it had never seen.
-    const { models } = resumedModels(recorded, configured, { drafter: false, reviewer: false });
-    expect(models.drafter.ref).toBe("groq/drafter-a");
-  });
-
-  test("an explicit flag is a human instruction and is honoured, with a record", () => {
-    const { models, overrides } = resumedModels(recorded, configured, {
-      drafter: true,
-      reviewer: false,
-    });
-    expect(models.drafter.ref).toBe("groq/drafter-b");
-    expect(models.reviewer.ref).toBe("groq/reviewer-a");
-    expect(overrides).toEqual([
-      { role: "drafter", chosen: "groq/drafter-b", wrote: "groq/drafter-a" },
-    ]);
-  });
-
-  test("naming the model that already wrote the plan is not an override", () => {
-    const { overrides } = resumedModels(recorded, recorded, { drafter: true, reviewer: true });
-    expect(overrides).toEqual([]);
-  });
-});
 
 describe("markFailed", () => {
   const setup = async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "adv-state-"));
     const paths = runPaths(dir, dir);
     await saveState(paths, {
-      state: "reviewed",
+      state: "taking",
       createdAt: "2026-10-17T00:00:00.000Z",
       task: "a task",
       mode: "plan",
@@ -107,122 +67,18 @@ describe("markFailed", () => {
   });
 });
 
-describe("decisions.md — append-only, last entry wins", () => {
-  const setup = async (content: string) => {
-    const repo = await mkdtemp(path.join(os.tmpdir(), "adv-decisions-"));
-    await mkdir(path.join(repo, ".adv"), { recursive: true });
-    await writeFile(path.join(repo, ".adv", "decisions.md"), content);
-    return repo;
-  };
 
-  test("a superseded entry leaves the feed but stays on disk", async () => {
-    const repo = await setup(
-      "# Settled decisions\n\n" +
-        "prose a human wrote, which is not an entry\n\n" +
-        "- 2026-10-01T00:00:00.000Z J1: where to store counters -> **redis**\n" +
-        "- 2026-10-02T00:00:00.000Z J1: where to store counters -> **in-process** (supersedes the earlier entry for J1)\n" +
-        "- 2026-10-01T00:00:00.000Z J2: what counts as a series -> **scripted only**\n",
-    );
-    try {
-      const feed = await readDecisions(repo);
-      expect(feed).toContain("prose a human wrote"); // untouched: not an entry
-      expect(feed).toContain("**in-process**"); // the newest entry for J1
-      expect(feed).not.toContain("**redis**"); // superseded: out of the feed
-      expect(feed).toContain("**scripted only**"); // a different id is untouched
-      const disk = await readFile(path.join(repo, ".adv", "decisions.md"), "utf8");
-      expect(disk).toContain("**redis**"); // the file is append-only
-    } finally {
-      await rm(repo, { recursive: true, force: true });
-    }
-  });
 
-  test("a reopened marker un-settles the id entirely, so the next draft may argue it", async () => {
-    const repo = await setup(
-      "# Settled decisions\n\n" +
-        "- 2026-10-01T00:00:00.000Z J1: where to store counters -> **redis**\n" +
-        "- 2026-10-02T00:00:00.000Z J1: where to store counters -> **reopened** (the earlier entry for J1 no longer stands)\n",
-    );
-    try {
-      const feed = await readDecisions(repo);
-      expect(feed).not.toContain("redis");
-      expect(feed).not.toContain("reopened");
-      expect(feed).toContain("# Settled decisions"); // the header survives
-    } finally {
-      await rm(repo, { recursive: true, force: true });
-    }
-  });
-
-  test("a file with no entries in the tool's format is fed through whole", async () => {
-    const repo = await setup("# Settled decisions\n\nnothing yet, and some human prose\n");
-    try {
-      expect(await readDecisions(repo)).toBe(
-        "# Settled decisions\n\nnothing yet, and some human prose\n",
-      );
-    } finally {
-      await rm(repo, { recursive: true, force: true });
-    }
-  });
-
-  test("appendDecisions writes the supersede marker and leaves the old line alone", async () => {
-    const repo = await setup(
-      "# Settled decisions\n\n- 2026-10-01T00:00:00.000Z J1: where to store counters -> **redis**\n",
-    );
-    try {
-      await appendDecisions(repo, [
-        {
-          id: "J1",
-          text: "where to store counters",
-          choice: "in-process",
-          note: "(supersedes the earlier entry for J1)",
-        },
-      ]);
-      const file = await readFile(path.join(repo, ".adv", "decisions.md"), "utf8");
-      expect(file).toContain("**redis**");
-      expect(file).toContain(
-        "J1: where to store counters -> **in-process** (supersedes the earlier entry for J1)",
-      );
-    } finally {
-      await rm(repo, { recursive: true, force: true });
-    }
-  });
-
-  test("appendDecisions is a no-op without a file: answer mode never creates one", async () => {
+describe("decisions.md", () => {
+  test("a missing file reads as none yet, and a present file passes through", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "adv-decisions-"));
     try {
-      await appendDecisions(repo, [{ id: "J1", text: "x", choice: "y" }]);
-      const { stat } = await import("node:fs/promises");
-      await expect(stat(path.join(repo, ".adv", "decisions.md"))).rejects.toThrow();
+      expect(await readDecisions(repo)).toBe("(none yet)");
+      await mkdir(path.join(repo, ".adv"), { recursive: true });
+      await writeFile(path.join(repo, ".adv", "decisions.md"), "# Settled decisions\n\nmy note\n");
+      expect(await readDecisions(repo)).toContain("my note");
     } finally {
       await rm(repo, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("rotateGate", () => {
-  const gate = { decisions: [{ id: "J1", choice: "redis" }], findings: [] };
-
-  test("the current answers become gate.prev.json", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "adv-rotate-"));
-    const paths = runPaths(dir, dir);
-    try {
-      await writeFile(paths.gate, JSON.stringify(gate));
-      await rotateGate(paths);
-      expect(await readFile(paths.gatePrev, "utf8")).toBe(JSON.stringify(gate));
-      await expect(readFile(paths.gate, "utf8")).rejects.toThrow();
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("a missing gate file is not an error", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "adv-rotate-"));
-    const paths = runPaths(dir, dir);
-    try {
-      await expect(rotateGate(paths)).resolves.toBeUndefined();
-      const { stat } = await import("node:fs/promises");
-      await expect(stat(paths.gatePrev)).rejects.toThrow();
-    } finally {
-      await rm(dir, { recursive: true, force: true });
     }
   });
 });
@@ -253,7 +109,7 @@ describe("listRuns", () => {
     process.env["XDG_DATA_HOME"] = xdg;
     try {
       const base = runsDir(repo);
-      await writeRun(base, "2026-10-17T10-00-00", runState({ state: "gated", task: "earlier" }));
+      await writeRun(base, "2026-10-17T10-00-00", runState({ state: "taking", task: "earlier" }));
       await writeRun(base, "2026-10-17T12-03-36", runState());
       await writeRun(base, "2026-10-17T11-00-00", runState({ state: "failed", task: "middle" }));
 
@@ -275,7 +131,7 @@ describe("listRuns", () => {
         models: pair("groq/openai/gpt-oss-120b", "groq/openai/gpt-oss-20b"),
       });
       expect(list[1]?.state).toBe("failed");
-      expect(list[2]?.state).toBe("gated");
+      expect(list[2]?.state).toBe("taking");
     } finally {
       if (saved === undefined) delete process.env["XDG_DATA_HOME"];
       else process.env["XDG_DATA_HOME"] = saved;
@@ -436,7 +292,7 @@ describe("deleting runs", () => {
     await withStore(async (repo) => {
       const run = path.join(runsDir(repo), "2026-10-17T12-00-00");
       await writeRun(runsDir(repo), "2026-10-17T12-00-00", runState());
-      await writeFile(path.join(run, "plan.v2.md"), "the answer\n");
+      await writeFile(path.join(run, "final.md"), "the answer\n");
 
       const result = await deleteRuns([run]);
       expect(result.deleted).toEqual([run]);

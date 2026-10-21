@@ -56,7 +56,7 @@ const byProviderRank = (a: string, b: string): number =>
  * -> "muse", `groq/openai/gpt-oss-120b` -> "openai".
  *
  * This is a guess where `familyClash` below is a statement: the explicit
- * `family` field in `.adv/config.json` is what the diversity check compares,
+ * `family` field in the global config is what the diversity check compares,
  * because a gateway serves many families under one provider. Do not use it to
  * decide whether a pair is diverse.
  */

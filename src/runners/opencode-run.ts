@@ -1,34 +1,16 @@
 import { mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { z } from "zod";
 import { agentsConfigJson } from "../agents.ts";
 import {
-  Changelog as ChangelogSchema,
-  Claims as ClaimsSchema,
-  type Claims,
-  type Changelog,
-  Review as ReviewSchema,
-  type Review,
-} from "../contracts.ts";
-import {
-  changelogPrompt,
-  claimsPrompt,
-  draftPrompt,
-  rebutPrompt,
-  retryPrompt,
-  reviewPrompt,
   splitLearned,
   synthesizePrompt,
   takePrompt,
   toolRetryPrompt,
 } from "../prompts.ts";
 import type {
-  DraftInput,
   Mode,
   ModelRef,
-  RebutInput,
-  ReviewInput,
   Runner,
   SynthesizeInput,
   TakeInput,
@@ -40,13 +22,8 @@ export interface OpencodeRunOptions {
   drafter: ModelRef;
   reviewer: ModelRef;
   peer?: ModelRef | null;
-  /** Agent ids under .opencode/agents/. */
+  /** Agent ids adv injects. */
   agents?: {
-    drafter: string;
-    reviewer: string;
-    writer: string;
-    drafterAnswer: string;
-    reviewerAnswer: string;
     council: string;
     councilAnswer: string;
   };
@@ -122,7 +99,7 @@ export interface CallRequest {
 
 /** Fired after every model call, for progress and cost reporting. */
 export type CallHook = (info: {
-  kind: "draft" | "review" | "rebut";
+  kind: "take" | "synthesis";
   step: string;
   retry: boolean;
   model: string;
@@ -138,11 +115,6 @@ export class OpencodeRunRunner implements Runner {
 
   private readonly repo: string;
   private readonly agents: {
-    drafter: string;
-    reviewer: string;
-    writer: string;
-    drafterAnswer: string;
-    reviewerAnswer: string;
     council: string;
     councilAnswer: string;
   };
@@ -166,11 +138,6 @@ export class OpencodeRunRunner implements Runner {
         : null;
     this.repo = o.repo;
     this.agents = o.agents ?? {
-      drafter: "adv-drafter",
-      reviewer: "adv-reviewer",
-      writer: "adv-writer",
-      drafterAnswer: "adv-drafter-answer",
-      reviewerAnswer: "adv-reviewer-answer",
       council: "adv-council",
       councilAnswer: "adv-council-answer",
     };
@@ -188,14 +155,6 @@ export class OpencodeRunRunner implements Runner {
     return mode === "answer" ? this.answerDir : this.repo;
   }
 
-  private drafterAgent(mode: Mode): string {
-    return mode === "answer" ? this.agents.drafterAnswer : this.agents.drafter;
-  }
-
-  private reviewerAgent(mode: Mode): string {
-    return mode === "answer" ? this.agents.reviewerAnswer : this.agents.reviewer;
-  }
-
   private councilAgent(mode: Mode): string {
     return mode === "answer" ? this.agents.councilAnswer : this.agents.council;
   }
@@ -205,7 +164,7 @@ export class OpencodeRunRunner implements Runner {
     const agent = this.councilAgent(input.mode);
     const cwd = this.cwdFor(input.mode);
     const call = await this.request({ model: model.ref, agent, message: takePrompt(input), cwd });
-    this.report("draft", "take", model.ref, call.call, call.retried);
+    this.report("take", "take", model.ref, call.call, call.retried);
     const text = call.call.text.trim();
     if (!text) throw new Error(`model ${model.ref} returned an empty take`);
     return { text };
@@ -226,83 +185,15 @@ export class OpencodeRunRunner implements Runner {
       }),
       cwd,
     });
-    this.report("rebut", "synthesis", model, call.call, call.retried);
+    this.report("synthesis", "synthesis", model, call.call, call.retried);
     const { final, learned } = splitLearned(call.call.text);
     if (!final) throw new Error("the synthesis returned an empty answer");
     return { final, learned };
   }
-  async draft(input: DraftInput): Promise<{ plan: string; claims: Claims }> {
-    const model = this.models.drafter.ref;
-    const agent = this.drafterAgent(input.mode);
-    const cwd = this.cwdFor(input.mode);
-
-    const planCall = await this.request({ model, agent, message: draftPrompt(input), cwd });
-    this.report("draft", "plan", model, planCall.call, planCall.retried);
-    const plan = splitPlanAndJson(planCall.call.text).plan.trim();
-    if (!plan) throw new Error("the drafter returned an empty plan");
-
-    const { value: claims } = await this.validated({
-      model,
-      agent: this.agents.writer,
-      kind: "draft",
-      step: "claims",
-      cwd,
-      prompt: claimsPrompt({ mode: input.mode, body: plan }),
-      schema: ClaimsSchema,
-      extract: extractJson,
-    });
-    return { plan, claims };
-  }
-
-  async review(input: ReviewInput): Promise<Review> {
-    const { value } = await this.validated({
-      model: this.models.reviewer.ref,
-      agent: this.reviewerAgent(input.mode),
-      kind: "review",
-      step: "review",
-      cwd: this.cwdFor(input.mode),
-      prompt: reviewPrompt(input),
-      schema: ReviewSchema,
-      extract: extractJson,
-      normalize: normalizeReviewJson,
-    });
-    return value;
-  }
-
-  /* Same split: the revised plan, then the changelog describing it. */
-  async rebut(input: RebutInput): Promise<{ plan: string; changelog: Changelog }> {
-    const model = this.models.drafter.ref;
-    const agent = this.drafterAgent(input.mode);
-    const cwd = this.cwdFor(input.mode);
-
-    const planCall = await this.request({ model, agent, message: rebutPrompt(input), cwd });
-    this.report("rebut", "plan", model, planCall.call, planCall.retried);
-    const plan = splitPlanAndJson(planCall.call.text).plan.trim();
-    if (!plan) throw new Error("the rebuttal returned an empty plan");
-
-    const items = [
-      ...input.refuted.map((r) => ({ id: r.id, note: `refuted claim: ${r.text}` })),
-      ...input.accepted.map((a) => ({ id: a.id, note: `accepted finding: ${a.text}` })),
-      ...input.decisions.map((d) => ({ id: d.id, note: `human decision: ${d.choice}` })),
-    ];
-    if (items.length === 0) return { plan, changelog: { changes: [] } };
-
-    const { value: changelog } = await this.validated({
-      model,
-      agent: this.agents.writer,
-      kind: "rebut",
-      step: "changelog",
-      cwd,
-      prompt: changelogPrompt({ before: input.plan, after: plan, items }),
-      schema: ChangelogSchema,
-      extract: extractJson,
-    });
-    return { plan, changelog };
-  }
 
   /* ---------------------------------------------------------------- */
 
-  /** Low-level call, exposed for the spike. Prefer draft/review/rebut. */
+  /** Low-level call. */
   async call(opts: CallRequest): Promise<CallResult> {
     const args = ["run", "--format", "json", "--model", opts.model, "--agent", opts.agent];
     if (this.standalone) args.push("--standalone");
@@ -376,8 +267,6 @@ export class OpencodeRunRunner implements Runner {
    * offered — gpt-oss invents a `search` tool that does not exist, and the
    * request comes back `tool_use_failed`. That is the model's mistake, not
    * ours, and it is stochastic, so one stateless retry with a nudge clears it.
-   * Same shape and same reason as the schema retry below: a run should not die
-   * because a model had one bad turn.
    *
    * Retries are limited to the model's own rejected output and to explicitly
    * transient provider failures. Anything else propagates untouched.
@@ -398,7 +287,7 @@ export class OpencodeRunRunner implements Runner {
   }
 
   private report(
-    kind: "draft" | "review" | "rebut",
+    kind: "take" | "synthesis",
     step: string,
     model: string,
     call: CallResult,
@@ -415,55 +304,6 @@ export class OpencodeRunRunner implements Runner {
     });
   }
 
-  /** One JSON reply, one schema, one stateless retry. */
-  private async validated<T>(params: {
-    model: string;
-    agent: string;
-    kind: "draft" | "review" | "rebut";
-    step: string;
-    prompt: string;
-    cwd?: string;
-    schema: z.ZodType<T>;
-    extract: (text: string) => unknown;
-    /** Repair the parsed JSON before validation; never invents content. */
-    normalize?: (raw: unknown) => unknown;
-  }): Promise<{ value: T }> {
-    const attempt = (text: string): { ok: true; value: T } | { ok: false; error: string } => {
-      try {
-        const raw = params.extract(text);
-        const shaped = params.normalize ? params.normalize(raw) : raw;
-        return { ok: true, value: params.schema.parse(shaped) };
-      } catch (err) {
-        return { ok: false, error: formatError(err) };
-      }
-    };
-
-    const first = await this.request({
-      model: params.model,
-      agent: params.agent,
-      message: params.prompt,
-      ...(params.cwd ? { cwd: params.cwd } : {}),
-    });
-    this.report(params.kind, params.step, params.model, first.call, first.retried);
-    const one = attempt(first.call.text);
-    if (one.ok) return { value: one.value };
-
-    // Stateless retry: re-send the original prompt. Each --standalone run has
-    // its own session store, so --session would resume nothing.
-    const retry = await this.request({
-      model: params.model,
-      agent: params.agent,
-      message: `${params.prompt}\n\n---\n\n${retryPrompt(one.error)}`,
-      ...(params.cwd ? { cwd: params.cwd } : {}),
-    });
-    this.report(params.kind, params.step, params.model, retry.call, true);
-    const two = attempt(retry.call.text);
-    if (two.ok) return { value: two.value };
-
-    throw new Error(
-      `validation failed twice.\n${two.error}\n--- raw reply ---\n${retry.call.text.slice(-4000)}`,
-    );
-  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -485,34 +325,6 @@ const retryable = (err: unknown): boolean => {
   const message = err instanceof Error ? err.message : String(err);
   return MODEL_TURN_REJECTED.test(message) || TRANSIENT.test(message);
 };
-
-const extractJson = (text: string): unknown => {
-  const { json } = splitPlanAndJson(text);
-  if (json === null) throw new Error("no fenced ```json block found in the reply");
-  return JSON.parse(json);
-};
-
-/**
- * A reviewer sometimes puts a judgment call in the verdict list —
- * `{"id":"J1","verdict":"judgment"}` — even though judgments get trade-offs, not
- * verdicts. Throwing the whole review away over one extra entry costs a run and
- * a retry and teaches nobody anything; the entry is dropped and the judgment is
- * still handled by `tradeoffs`. A verdict with a typo'd value is dropped the same
- * way, and the claim then shows up as "no verdict", which the gate reports.
- */
-const VERDICTS = new Set(["confirmed", "refuted", "unverifiable"]);
-
-export function normalizeReviewJson(raw: unknown): unknown {
-  if (!raw || typeof raw !== "object") return raw;
-  const review = raw as { verdicts?: unknown };
-  if (!Array.isArray(review.verdicts)) return raw;
-  const verdicts = review.verdicts.filter((entry) => {
-    if (!entry || typeof entry !== "object") return false;
-    const verdict = (entry as { verdict?: unknown }).verdict;
-    return typeof verdict === "string" && VERDICTS.has(verdict);
-  });
-  return { ...review, verdicts };
-}
 
 export function parseNdjson(stdout: string): RunEvent[] {
   const events: RunEvent[] = [];
@@ -561,28 +373,4 @@ export function formatUsage(u: Usage): string {
     `${u.steps} step(s), in ${u.input} out ${u.output} reasoning ${u.reasoning} ` +
     `cache r${u.cacheRead}/w${u.cacheWrite}, ${cost}`
   );
-}
-
-/** Split a reply into prose and the last fenced block that parses as JSON. */
-export function splitPlanAndJson(text: string): { plan: string; json: string | null } {
-  const re = /```(?:json|JSON)?[ \t]*\r?\n([\s\S]*?)```/g;
-  let last: { json: string; start: number } | null = null;
-  for (const m of text.matchAll(re)) {
-    const body = m[1] ?? "";
-    try {
-      JSON.parse(body);
-      last = { json: body, start: m.index ?? 0 };
-    } catch {
-      /* not the block we want */
-    }
-  }
-  if (!last) return { plan: text.trim(), json: null };
-  return { plan: text.slice(0, last.start).trim(), json: last.json };
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof z.ZodError) {
-    return err.issues.map((i) => `${i.path.map(String).join(".") || "(root)"}: ${i.message}`).join("\n");
-  }
-  return err instanceof Error ? err.message : String(err);
 }

@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+// @ts-nocheck — archival M0 spike using the retired draft/review API. Kept for
+// history, not typechecked.
 /**
  * M0 feasibility spike for `adv`.
  *

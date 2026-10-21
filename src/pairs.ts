@@ -8,7 +8,7 @@
  *
  * **Its own file**, `~/.config/adv/pairs.json`, rather than a key on `Config`.
  * `saveConfig` writes the whole config to both the user file *and* the
- * repository's `.adv/config.json`, so a pair list on `Config` would be stamped
+ * repository's `.adv/`, so a pair list on `Config` would be stamped
  * into every repository the moment a model was chosen. Pairs are personal and
  * follow you between directories; a repository keeps pinning its own drafter and
  * reviewer in its own file, as before.
@@ -72,7 +72,7 @@ export const pairKey = (models: { drafter: ModelRef; reviewer: ModelRef }): stri
  * A `Pair` and a `RecentPair` both *contain* two models and some other fields —
  * a name, a saved date, a run — and both satisfy `{drafter, reviewer}`
  * structurally, so passing one where `Config.models` is expected typechecks and
- * writes `name` and `savedAt` into the repository's `.adv/config.json`, where
+ * writes `name` and `savedAt` into the repository, where
  * `loadConfig` then reads them back as part of the models. The fix is this
  * function, at the boundary, rather than a type that cannot express the mistake.
  */

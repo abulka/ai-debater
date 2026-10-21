@@ -39,8 +39,12 @@ describe("every Phase member has a render branch", () => {
     // contract (a new phase extends both lists), but an empty parse would
     // make every assertion below vacuous, so the parse itself is asserted.
     expect(members.length).toBeGreaterThan(10);
-    expect(members).toContain("gate");
     expect(members).toContain("result");
+    // gate was retired with the council simplification: council runs finish in
+    // one pass with no gate. setup went with it — no `.adv/` prompt.
+    expect(members).not.toContain("gate");
+    expect(members).not.toContain("setup");
+    expect(members).not.toContain("working");
     // clarify was retired 20 Oct: the desk's subject switch is the choice,
     // and asking again after Enter was the same question twice.
     expect(members).not.toContain("clarify");

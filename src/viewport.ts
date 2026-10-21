@@ -179,3 +179,20 @@ export function gateDetailBudget(
 export function cappedLines(contentH: number, chrome: number): number {
   return Math.max(0, contentH - chrome);
 }
+
+/* ------------------------------------------------------------------ *
+ * Scrolling. One implementation, used by the result view and by every
+ * panel, so "the list will not move" is one bug and not four.
+ * ------------------------------------------------------------------ */
+
+export const maxOffset = (total: number, height: number): number =>
+  Math.max(0, total - height);
+
+export const clampOffset = (offset: number, total: number, height: number): number =>
+  Math.max(0, Math.min(offset, maxOffset(total, height)));
+
+/**
+ * Clamp a cursor, not a window: `0` to `length - 1`.
+ */
+export const clampIndex = (index: number, length: number): number =>
+  Math.max(0, Math.min(index, length - 1));

@@ -4,31 +4,6 @@ import path from "node:path";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { loadConfig, saveConfig } from "./config.ts";
 import type { Config } from "./config.ts";
-import type { AuditRecord, Claims, Gate, Review } from "./contracts.ts";
-import { auditSpans, type ApprovalRequest } from "./audit.ts";
-import { advState, initRepo } from "./init.ts";
-import {
-  answersToGate,
-  buildItems,
-  clampIndex,
-  clampOffset,
-  CUSTOM_ROW_LABEL,
-  customRowIndex,
-  decisionEntries,
-  describeGateChange,
-  displayOptions,
-  gateWarnings,
-  isCustomChoice,
-  maxOffset,
-  parseEvidence,
-  readEvidenceContext,
-  sanitizeCustomChoice,
-  selectionForCurrent,
-  statusSpans,
-  verdictCounts,
-  type GateAnswer,
-  type GateItem,
-} from "./gate-model.ts";
 import { familyClash, familyOf, listModels, matchesFilter, orderedModels, providerOf, rankModels } from "./models.ts";
 import type { FilterMode, PickerView } from "./models.ts";
 import { highlightFor, highlightRules, isUsablePattern, nextFreeHighlightColour, highlightColourName, DEFAULT_HIGHLIGHTS, HIGHLIGHT_MAX } from "./highlight.ts";
@@ -79,7 +54,6 @@ import {
 } from "./pairs.ts";
 import {
   advDataRoot,
-  appendDecisions,
   deleteRuns,
   deletionSummary,
   displayPath,
@@ -88,30 +62,18 @@ import {
   NO_CRITERIA,
   readCriteria,
   readDecisions,
-  rotateGate,
   runPaths,
-  saveState,
   type DeletionSummary,
   type RunSummary,
 } from "./orchestrator.ts";
 import {
-  headFromArtifacts,
-  loadArtifacts,
   loadCouncil,
-  loadTail,
-  runHead,
   runSynthesis,
   runTakes,
-  runTail,
-  saveGate,
-  type CouncilHead,
-  type CouncilTail,
-  type Head,
   type Models,
   type Reporting,
-  type Tail,
 } from "./pipeline.ts";
-import { diffPane, renderAnswerOnlyLines, renderCommentaryLines, renderAnswer, renderResult, renderCouncilAnswerLines, renderCouncilCommentaryLines, renderCouncil, renderCouncilLines } from "./render.ts";
+import { renderCouncilAnswerLines, renderCouncilCommentaryLines, renderCouncil, renderCouncilLines } from "./render.ts";
 import { composeContinuation, displayTaskOf, questionOf } from "./continue.ts";
 import {
   fitSpans,
@@ -126,9 +88,11 @@ import { exportModelsMd } from "./export-models.ts";
 import {
   altScreenEnabled,
   cappedLines,
+  clampIndex,
+  clampOffset,
   contentRows,
-  gateDetailBudget,
   logWindow,
+  maxOffset,
   LOG_MAX_ROWS,
   MIN_CONTENT_ROWS,
   filterHistoryListHeight,
@@ -147,7 +111,6 @@ import { isKillToEnd, isWordLeft, isWordRight, killToEnd, wordLeft, wordRight } 
 import type { Mode, ModelRef } from "./runner.ts";
 
 type Phase =
-  | "setup"
   | "home"
   | "start"
   | "settings"
@@ -162,8 +125,6 @@ type Phase =
   | "pairconfirm"
   | "runs"
   | "running"
-  | "gate"
-  | "working"
   | "result"
   | "error";
 
@@ -210,23 +171,6 @@ const RESULT_KEYS: { key: string; what: string }[] = [
  * since the alternate screen keeps no scrollback. `y` is the way to copy the
  * question out whole.
  */
-const GATE_KEYS: { key: string; what: string }[] = [
-  { key: "↑↓ · Enter", what: "choose an option (a recorded answer is where the cursor starts; Enter keeps it)" },
-  { key: "t", what: "type your own answer to a judgment call — Enter records it, Esc back" },
-  { key: "o", what: "don't know — leave the judgment call open; the plan presents the options instead of picking" },
-  { key: "s", what: "skip — same as o for a judgment call; a finding is left for later" },
-  { key: "y", what: "copy this question as Markdown — to the clipboard, and question-<id>.md in the run directory" },
-  { key: "d", what: "the answer/plan these questions are about — the context for every choice" },
-  { key: "v", what: "every verdict, with its evidence" },
-  { key: "e", what: "the cited source — the file around the line, or the URL" },
-  { key: "w", what: "the current item's whole text, unclipped" },
-  { key: "i", what: "the review summary — warnings, checks, refuted claims" },
-  { key: "l", what: "the full run log" },
-  { key: "Ctrl+R", what: "past debates — open another debate from here" },
-  { key: "n", what: "back to the question desk — the run stays parked on disk" },
-  { key: "Esc", what: "leave the gate — the run stays reachable (the draft pane closes back to the question)" },
-];
-
 /**
  * A span's styles as Ink props.
  *
@@ -486,57 +430,6 @@ function Scroller({
 
 /* ------------------------------------------------------------------ */
 
-function Setup({
-  repo,
-  selection,
-}: {
-  repo: string;
-  selection: number;
-}) {
-  const options = [
-    { label: "Initialise .adv/ here", hint: "creates criteria, decisions and config" },
-    {
-      label: "Continue without it",
-      hint: "no criteria — the reviewer has nothing to check trade-offs against",
-    },
-  ];
-
-  return (
-    <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <Header right="first run" />
-      </Box>
-      <Box marginBottom={1}>
-        <Text>
-          No <Text bold>.adv/</Text> in <Text>{repo}</Text>
-        </Text>
-      </Box>
-      <Text dimColor>
-        .adv/ holds your criteria, settled decisions and model choice. Without it, a run still
-        works but the reviewer has no criteria to check trade-offs against.
-      </Text>
-      <Box flexDirection="column" marginTop={1}>
-        {options.map((o, i) => (
-          <Box key={o.label} flexDirection="column">
-            <Box>
-              <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
-              <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
-                {o.label}
-              </Text>
-            </Box>
-            <Text dimColor>
-              {"    "}
-              {o.hint}
-            </Text>
-          </Box>
-        ))}
-      </Box>
-      <Box marginTop={1}>
-        <Text dimColor>↑↓ choose · Enter to confirm · Ctrl+C to quit</Text>
-      </Box>
-    </Box>
-  );
-}
 
 function Home({
   selection,
@@ -952,7 +845,7 @@ function Start({
         <Text dimColor>repo {repo}</Text>
       </Box>
       <Box>
-        <Text dimColor>models, criteria and decisions live in {repo}/.adv/</Text>
+        <Text dimColor>models live in ~/.config/adv/ · criteria and decisions in {repo}/.adv/ (optional)</Text>
       </Box>
     </Box>
   );
@@ -2754,7 +2647,7 @@ function ConfirmDelete({
       <Box marginTop={1}>
         <Text dimColor>
           the run directories are removed for good; nothing in any repository is touched, and
-          decisions already written to a repo's .adv/decisions.md stay
+          decisions in any repo's .adv/decisions.md stay
         </Text>
       </Box>
       <Box marginTop={1}>
@@ -2768,47 +2661,6 @@ function ConfirmDelete({
   );
 }
 
-function Approve({
-  request,
-  onAnswer,
-}: {
-  request: ApprovalRequest;
-  onAnswer: (ok: boolean) => void;
-}) {
-  useInput((input, key) => {
-    if (input === "y" || input === "Y") onAnswer(true);
-    else if (input === "n" || input === "N" || key.escape || key.return) onAnswer(false);
-  });
-
-  return (
-    <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <Header right="a check needs your ok" />
-      </Box>
-      <Text>The reviewer could not settle {request.claim} from the files.</Text>
-      <Text>It wants to run:</Text>
-      <Box marginLeft={2} marginTop={1}>
-        <Text bold color={THEME.accent}>{request.argv.join(" ")}</Text>
-      </Box>
-      {request.why && (
-        <Box marginLeft={2}>
-          <Text dimColor>{request.why}</Text>
-        </Box>
-      )}
-      <Box marginTop={1}>
-        <Text dimColor>
-          This runs the project's own code and can take a minute. The result is
-          recorded, and if it disagrees with the plan, the plan is corrected.
-        </Text>
-      </Box>
-      <Box marginTop={1}>
-        <Text>
-          <Text bold>y</Text> run it · <Text bold>n</Text> skip it
-        </Text>
-      </Box>
-    </Box>
-  );
-}
 
 /**
  * The run log, and the one live line that goes with it.
@@ -2868,228 +2720,29 @@ function wrapText(text: string, maxLines: number, width: number): string[] {
   return [...lines.slice(0, maxLines - 1), `${lines[maxLines - 1] ?? ""}…`];
 }
 
-function GateView({
-  claims,
-  review,
-  items,
-  index,
-  selection,
-  warnings,
-  checks,
-  models,
-  mode,
-  revisit,
-  current,
-  custom,
-  contentH,
-}: {
-  claims: Claims;
-  review: Review;
-  items: GateItem[];
-  index: number;
-  selection: number;
-  warnings: string[];
-  checks: AuditRecord[];
-  models: { drafter: { ref: string }; reviewer: { ref: string } };
-  mode: Mode;
-  /** True when this gate was asked before and its answers are prefilled. */
-  revisit?: boolean;
-  /** The recorded answer for the current item, when there is one. */
-  current?: string;
-  /** The free-text editor, open when the human is typing their own answer. */
-  custom?: { text: string; caret: number } | null;
-  /** Content rows the screen may use: the finding's own text fills what fits. */
-  contentH: number;
-}) {
-  const item = items[index];
-  if (!item) return null;
-
-  const counts = verdictCounts(claims, review);
-  const decisions = items.filter((i) => i.kind === "judgment").length;
-  const findings = items.length - decisions;
-  const thing = mode === "answer" ? "answer" : "plan";
-  const author = models.drafter.ref;
-  const checker = models.reviewer.ref;
-  const refuted = review.verdicts.filter((v) => v.verdict === "refuted").length;
-  const extras = [
-    warnings.length ? `${warnings.length} warning${warnings.length === 1 ? "" : "s"}` : "",
-    checks.length ? `${checks.length} check${checks.length === 1 ? "" : "s"}` : "",
-    refuted ? `${refuted} refuted claim${refuted === 1 ? "" : "s"}` : "",
-  ].filter(Boolean);
-
-  const wrapW = Math.max(8, useTerminalWidth() - 4);
-  const titleRows = wrapText(item.title, 4, wrapW);
-  const detail: string[] = [];
-  for (const line of item.detail) detail.push(...wrapText(line, 2, wrapW));
-  // The displayed options: judgment calls gain the trailing custom row, so the
-  // budget counts what is actually drawn rather than what the model proposed.
-  const shown = displayOptions(item);
-  const customCurrent = isCustomChoice(item, current) ? current! : undefined;
-  // The finding's own text fills what the title and options leave — on a tall
-  // terminal that is the whole finding, and `w` still shows it whole in a pane.
-  const clippedDetail = detail.slice(
-    0,
-    gateDetailBudget(contentH, {
-      titleRows: titleRows.length,
-      optionRows: shown.length,
-      extras: extras.length > 0,
-      revisit: !!revisit,
-    }),
-  );
-
-  return (
-    <Box flexDirection="column">
-      <Header
-        right={`gate${revisit ? " · revisit" : ""} · ${index + 1} of ${items.length} · ${item.kind}`}
-      />
-      <Text dimColor>
-        {items.length} questions: {decisions} for you to decide, {findings} finding
-        {findings === 1 ? "" : "s"} to triage
-      </Text>
-      {revisit && (
-        <Text dimColor>your recorded answers are prefilled — change only what you mean to</Text>
-      )}
-      <Line spans={statusSpans(counts)} />
-      {extras.length > 0 && (
-        <Text>
-          <Text color={THEME.warn}>! {extras.join(" · ")}</Text>
-          <Text dimColor> — i for details</Text>
-        </Text>
-      )}
-
-      <Box marginTop={1} flexDirection="column">
-        <Text dimColor>
-          {item.kind === "finding"
-            ? `${checker} noticed this in the ${thing} ${author} wrote:`
-            : `${author} left this open for you:`}
-        </Text>
-      </Box>
-
-      <Box flexDirection="column">
-        {titleRows.map((line, i) => (
-          <Text key={i} bold>
-            {line}
-          </Text>
-        ))}
-      </Box>
-
-      {clippedDetail.length > 0 && (
-        <Box flexDirection="column">
-          {clippedDetail.map((line, i) => (
-            <Text key={i} dimColor>
-              {line}
-            </Text>
-          ))}
-        </Box>
-      )}
-
-      <Box marginTop={1}>
-        <Text bold color={THEME.accent}>
-          {item.kind === "finding"
-            ? `Change the ${thing} to cover this?`
-            : `Which should the ${thing} do?`}
-        </Text>
-      </Box>
-
-      <Box flexDirection="column">
-        {shown.map((option, i) => (
-          <Box key={i}>
-            <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
-            <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
-              {option}
-            </Text>
-            {option === current && (
-              <Text dimColor>
-                {"   · "}
-                <Text color={THEME.ok}>current — Enter keeps it</Text>
-              </Text>
-            )}
-          </Box>
-        ))}
-        {customCurrent !== undefined && (
-          <Box>
-            <Text dimColor>{"      recorded: "}</Text>
-            <Text color={THEME.code}>"{customCurrent.length > 80 ? `${customCurrent.slice(0, 79)}…` : customCurrent}"</Text>
-          </Box>
-        )}
-      </Box>
-
-      {custom !== null && custom !== undefined && item.kind === "judgment" && (
-        <Box borderStyle="round" borderColor="cyan" paddingX={1} marginTop={1} flexDirection="column">
-          <Text dimColor>your own answer — Enter records it, Esc back to the options</Text>
-          <FieldText text={custom.text} cursor={Math.max(0, Math.min(custom.caret, custom.text.length))} />
-        </Box>
-      )}
-
-      <Box marginTop={1}>
-        <Text>
-          <Line
-            spans={hints(
-              ["↑↓", "move"],
-              ["Enter", custom ? "record it" : revisit ? "keeps current" : "answer"],
-              ...(item.kind === "judgment" && !custom
-                ? ([
-                    ["d", "read draft"],
-                    ["t", "own answer"],
-                    ["o", "don't know"],
-                  ] as [string, string][])
-                : ([["d", "read draft"]] as [string, string][])),
-              ["?", "keys"],
-              ["n", "question"],
-              ["Esc", custom ? "close editor" : "leave"],
-            )}
-          />
-        </Text>
-      </Box>
-    </Box>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 
 /** What the spinner says while a model is thinking. */
-function workingLabel(log: string[], phase: Phase, mode: Mode): string | null {
-  if (phase === "working") {
-    return mode === "answer"
-      ? "rewriting the answer with the drafter…"
-      : "rewriting the plan with the drafter…";
-  }
+function workingLabel(log: string[], phase: Phase): string | null {
   if (phase !== "running") return null;
   const last = [...log].reverse().find((line) => !line.startsWith("!")) ?? "";
   if (last.startsWith("taking")) return "waiting for the takes — running in parallel…";
   if (last.startsWith("take ") && last.includes(" done")) return "waiting for the takes — running in parallel…";
   if (last.startsWith("synthesising")) return "synthesising the takes…";
-  if (last.startsWith("drafting")) return "waiting for the drafter…";
-  if (last.startsWith("reviewing")) return "waiting for the reviewer — usually the slow part…";
-  if (last.startsWith("review read") || last.startsWith("checking")) {
-    return "running the checks the reviewer asked for…";
-  }
-  if (last.startsWith("rebutting") || last.startsWith("in scope")) {
-    return "rewriting with the drafter…";
-  }
   return log.length ? "working…" : "starting…";
 }
 function callLine(info: {
-  kind: "draft" | "review" | "rebut";
+  kind: "take" | "synthesis";
   step: string;
   retry: boolean;
   ms: number;
   usage: { cost: number; costKnown: boolean };
 }): string {
   const what =
-    info.kind === "draft"
-      ? info.step === "take"
-        ? "take written"
-        : info.step === "plan"
-          ? "plan written"
-          : "claims extracted"
-      : info.kind === "review"
-        ? "review returned"
-        : info.step === "synthesis"
-          ? "synthesis written"
-          : info.step === "plan"
-            ? "revision written"
-            : "changelog written";
+    info.kind === "take"
+      ? "take written"
+      : "synthesis written";
   // $0 is an absence, not a number: a gateway that reports no cost must not
   // make a paid run display as free.
   const cost = info.usage.costKnown ? `$${info.usage.cost.toFixed(6)}` : "cost not reported";
@@ -3118,11 +2771,11 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     }
     // Past runs, from any settled screen: hopping between runs should not cost
     // a trip home first. Left off while a model call or an approval is in
-    // flight — those phases are "running"/"working", and are not in this list.
+    // flight — the "running" phase is not in this list.
     if (
       key.ctrl &&
       input === "r" &&
-      (phase === "home" || phase === "start" || phase === "gate" || phase === "result" || phase === "error")
+      (phase === "home" || phase === "start" || phase === "result" || phase === "error")
     ) {
       void openRuns();
     }
@@ -3131,7 +2784,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     }
   });
   const [cfg, setCfg] = useState<Config | null>(null);
-  const [hasCriteria, setHasCriteria] = useState(false);
   const [phase, setPhase] = useState<Phase>(initial === "browser" ? "pick" : "home");
   const [mode, setMode] = useState<Mode>("plan");
   /* Two tasks, not one. `task` is the prompt on the question desk: the start
@@ -3143,15 +2795,10 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   const [task, setTask] = useState("");
   const [runTask, setRunTask] = useState("");
   const [log, setLog] = useState<string[]>([]);
-  const [head, setHead] = useState<Head | null>(null);
-  const [tail, setTail] = useState<Tail | null>(null);
   const [council, setCouncil] = useState<{ takes: { index: number; model: ModelRef; text: string }[]; final: string; learned: string; patch: string; dir: string } | null>(null);
-  const [gate, setGate] = useState<Gate | null>(null);
   const [error, setError] = useState("");
   const [index, setIndex] = useState(0);
   const [selection, setSelection] = useState(0);
-  const [setupSelection, setSetupSelection] = useState(0);
-  const [answers, setAnswers] = useState<GateAnswer[]>([]);
   const [settingsSel, setSettingsSel] = useState(0);
   /** The reader's cache window in days. Read fresh in `ensureModelData`, shown on the settings row. */
   const [refreshDays, setRefreshDays] = useState(DEFAULT_REFRESH_DAYS);
@@ -3349,7 +2996,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   /** A verification request in flight: the keystroke handler stands aside. */
   const [aaKeyBusy, setAAKeyBusy] = useState(false);
   const [panel, setPanel] = useState<Panel | null>(null);
-  const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   /**
    * Whether the app owns the mouse.
@@ -3361,21 +3007,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
    * in, and Ctrl+T hands it over and takes it back.
    */
   const [mouseReporting, setMouseReporting] = useState(true);
-  const approvalResolver = useRef<((ok: boolean) => void) | null>(null);
 
-  /* The run being worked on, when it is one that already exists on disk.
-     `previousGate` is the gate's answers as recorded before this gate was
-     entered: null on a fresh run, the stored gate on a revisited or reopened
-     one. It drives the prefill, the "did anything move" check, and the
-     decisions.md supersede rule — the same three the CLI's `revise` uses. */
-  const [previousGate, setPreviousGate] = useState<Gate | null>(null);
-  /**
-   * The gate's free-text editor, open on a judgment call whose options do not
-   * fit. Null when closed; text and caret while the human types their own
-   * answer. One editor, not one per item: the gate asks one question at a
-   * time, and leaving the item closes it.
-   */
-  const [gateCustom, setGateCustom] = useState<{ text: string; caret: number } | null>(null);
   /**
    * A continuation waiting for its follow-up. The desk prompt holds ONLY the
    * follow-up — one editable line — and the parent's result rides in here,
@@ -3389,11 +3021,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     mode: Mode;
     result: string;
   } | null>(null);
-  /** The run already had a life on disk before this gate was entered. A failed
-     tail on such a run parks back at its gate, retryable; a brand-new run
-     keeps the head's rule — failed is failed. */
-  const [reopened, setReopened] = useState(false);
-  const [wasDone, setWasDone] = useState(false);
   const [runModels, setRunModels] = useState<Models | null>(null);
   const [runMode, setRunMode] = useState<Mode | null>(null);
   /**
@@ -3429,30 +3056,15 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
 
   const addLog = (line: string) => setLog((l) => [...l, line]);
 
-  /* The pipeline asks for a yes before running a slow check. The promise is
-     resolved by the Approve screen, so the run waits without blocking the UI. */
-  const requestApproval = (request: ApprovalRequest) =>
-    new Promise<boolean>((resolve) => {
-      approvalResolver.current = resolve;
-      setApproval(request);
-    });
-
-  function answerApproval(ok: boolean) {
-    const resolve = approvalResolver.current;
-    approvalResolver.current = null;
-    setApproval(null);
-    resolve?.(ok);
-  }
-
   useEffect(() => {
     void (async () => {
       try {
-        // Standalone model browser: no repo, no .adv/, no setup question.
+        // Standalone model browser: no repo.
         // It shares the picker, settings (minus pairs), benchmarks and probes
         // with adv, but there is no debate to configure here.
         if (standalone) {
           setToolLabel("ocm");
-          const config = await loadConfig(repo).catch(() => null);
+          const config = await loadConfig().catch(() => null);
           if (config) {
             setCfg(config);
             setMode(config.mode);
@@ -3465,13 +3077,12 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
           return;
         }
         setToolLabel("adv");
-        const present = await advState(repo);
-        const config = await loadConfig(repo);
-        setCfg(config);
-        setMode(config.mode);
-        setHasCriteria(present.criteria);
-        // First run in a repo with no .adv/: ask, rather than silently using defaults.
-        setPhase(present.dir ? "home" : "setup");
+        const config = await loadConfig().catch(() => null);
+        if (config) {
+          setCfg(config);
+          setMode(config.mode);
+        }
+        setPhase("home");
         // Warm what home and settings show without a visit: the pair name and
         // the benchmarks-key state. Neither throws.
         void loadPairs().then(setSavedPairs).catch(() => {});
@@ -3483,32 +3094,9 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     })();
   }, [repo]);
 
-  useInput(
-    (_input, key) => {
-      if (key.upArrow) setSetupSelection(0);
-      if (key.downArrow) setSetupSelection(1);
-      if (key.return) void chooseSetup(setupSelection === 0 ? "init" : "skip");
-    },
-    { isActive: phase === "setup" },
-  );
-
-  async function chooseSetup(action: "init" | "skip") {
-    try {
-      if (action === "init") {
-        await initRepo(repo);
-        setCfg(await loadConfig(repo));
-        setHasCriteria(true);
-      }
-      setPhase("home");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setPhase("error");
-    }
-  }
-
   const persist = async (next: Config, nextMode: Mode) => {
     setCfg(next);
-    await saveConfig(repo, { ...next, mode: nextMode });
+    await saveConfig({ ...next, mode: nextMode });
   };
 
   /** Load everything the model list needs, shared by both its doors. */
@@ -3839,8 +3427,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   }
 
   /**
-   * Use a pair: both models, saved the way a manual pick is saved — the
-   * repository's `.adv/config.json` as well as the user config — and marked used,
+   * Use a pair: both models, saved to the global user config — and marked used,
    * which is what sorts it first next time.
    */
   async function usePair(models: PairModels, name?: string) {
@@ -5503,23 +5090,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     { isActive: phase === "highlights" },
   );
 
-  const items = useMemo(() => (head ? buildItems(head.claims, head.review) : []), [head]);
-  const runDir = council ? displayPath(council.dir) : head ? displayPath(head.paths.dir) : "";
-
-  // One place for the review-level warnings: the gate shows a count, the `i`
-  // panel shows them in full, and both read from here.
-  const warnings = useMemo(
-    () =>
-      head
-        ? gateWarnings({
-            missing: head.missing,
-            evidenceIssues: head.evidenceIssues,
-            urlRepairs: head.urlRepairs,
-            hasCriteria: effectiveMode === "answer" ? true : hasCriteria,
-          })
-        : [],
-    [head, effectiveMode, hasCriteria],
-  );
+  const runDir = council ? displayPath(council.dir) : "";
 
   /* A same-family pair is a warning, unless this repo says the result is
      evidence — then it is a stop, before any money is spent. */
@@ -5579,18 +5150,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     setRunMode(next);
     setRunModels(cfg.models);
     setRunTask(fullTask);
-    setPreviousGate(null);
-    setReopened(false);
-    setWasDone(false);
-    setGate(null);
-    setTail(null);
     setCouncil(null);
-    // `head` too: returning to the question desk from a finished run leaves the
-    // old head in state, and the head effect skips while one is set — so a new
-    // run would open straight onto the previous run's gate.
-    setHead(null);
-    setAnswers([]);
-    setGateCustom(null);
     setPendingContinue(null);
     setIndex(0);
     setSelection(0);
@@ -5611,7 +5171,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         if (!criteria.found && effectiveMode === "plan") {
           addLog("! .adv/criteria.md missing — using a fallback");
         }
-        setHasCriteria(criteria.found);
         const decisions =
           effectiveMode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
         const reporting: Reporting = {
@@ -5641,9 +5200,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         if (cancelled) return;
         setCouncil({ takes: takes.takes, final: tail.final, learned: tail.learned, patch: tail.patch, dir: takes.paths.dir });
         setRunModels(cfg.models);
-        setHead(null);
-        setTail(null);
-        setWasDone(true);
         setPhase("result");
       } catch (e) {
         if (cancelled) return;
@@ -5656,100 +5212,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       cancelled = true;
     };
   }, [phase, council, repo, runTask, cfg, effectiveMode]);
-
-  async function finishGate(all: GateAnswer[]) {
-    if (!head || !cfg) return;
-    const built = answersToGate(all);
-
-    // Did anything move since the gate was last recorded? A fresh run has no
-    // previous gate, so everything is new and the tail always runs.
-    const hadAnswers =
-      previousGate !== null &&
-      (previousGate.decisions.length > 0 || previousGate.findings.length > 0);
-    const change = previousGate ? describeGateChange(previousGate, built) : null;
-    const changed = change ? change.decisions.length + change.findings.length : 0;
-
-    // `changed` is computed against the previous gate, or against nothing on a
-    // fresh run — where the run is not done yet, so this never fires for one.
-    if (changed === 0 && wasDone) {
-      // The tail already ran with exactly these answers: the run stands as it
-      // is, and the head is not worth re-running to say so. No model calls.
-      addLog("no answers changed — the run stands as it is; no model calls made");
-      setGate(built);
-      setPhase("result");
-      return;
-    }
-    if (hadAnswers && changed === 0) {
-      // A run parked at the gate never ran its tail: "nothing changed" means
-      // the recorded answers stand, and the one thing left is to apply them.
-      addLog("no answers changed — the recorded gate stands; running the tail");
-    }
-
-    setPhase("working");
-    const models = runModels ?? cfg.models;
-    try {
-      // The previous generation of answers survives the asking: the comparison
-      // above needed them, and a human who wants the old view can read the file.
-      await rotateGate(head.paths);
-      await saveGate(head.paths, built);
-      // A gate answer to a general question is not a repository decision.
-      if (effectiveMode === "plan") {
-        // A gate asked fresh appends every settled answer; a gate asked again
-        // appends only what moved, each marked so the file's history reads.
-        const entries = hadAnswers && change
-          ? decisionEntries(head.claims, change)
-          : built.decisions
-              .filter((d) => d.choice !== "open")
-              .map((d) => ({
-                id: d.id,
-                text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
-                choice: d.choice,
-              }));
-        await appendDecisions(repo, entries);
-      }
-      setGate(built);
-      const reporting: Reporting = {
-        onCall: (info) => addLog(callLine(info)),
-        onNote: (text) => addLog(text),
-      };
-      const result = await runTail(
-        repo,
-        head.paths,
-        { task: runTask },
-        head.claims,
-        head.review,
-        built,
-        models,
-        effectiveMode,
-        reporting,
-      );
-      setTail(result);
-      setWasDone(true);
-      setPhase("result");
-    } catch (e) {
-      // A failed tail on a run that already existed must not dead-end it: the
-      // head is intact and the answers just given are recorded, so the run
-      // parks back at its own gate, where reopening it retries the tail —
-      // `adv run --resume` accepts it too. (A brand-new run keeps the head's
-      // rule: failed is failed.)
-      if (reopened) {
-        try {
-          const s = await loadState(head.paths);
-          if (s.state === "failed") await saveState(head.paths, { ...s, state: "gated" });
-        } catch {
-          /* the error screen is what matters */
-        }
-      }
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(
-        msg +
-          (reopened
-            ? "\n\nthe run is parked back at its gate — Ctrl+R to reopen it and retry, or `adv run --resume` in the terminal"
-            : "\n\nthe run is recorded as failed — the past-runs list (Ctrl+R) shows it"),
-      );
-      setPhase("error");
-    }
-  }
 
   /**
    * The runs list is longer than the screen, so it shows a window of it — the
@@ -5836,12 +5298,9 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     setRunsIndex(runsCursor.current);
     setRunsOffset(0);
     // The run on screen may be one of them: the screen is then a record of
-    // something that no longer exists, and `r` would fail on a missing
-    // directory. Back home rather than to a stale result.
-    if (head && result.deleted.includes(head.paths.dir)) {
-      setHead(null);
-      setTail(null);
-      setGate(null);
+    // something that no longer exists. Back home rather than to a stale result.
+    if (council && result.deleted.includes(council.dir)) {
+      setCouncil(null);
       setRunTask("");
       addLog("the run on screen was deleted — back home");
       setPhase("home");
@@ -5885,90 +5344,19 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         setPhase("error");
         return;
       }
-      // Council runs (takes + final) open straight to the result. Legacy
-      // gate runs still open through the old artifacts.
-      try {
-        const c = await loadCouncil(p);
-        setCouncil({ takes: c.takes, final: c.final, learned: c.learned, patch: c.patch, dir: p.dir });
-        setHead(null);
-        setTail(null);
-        setWasDone(state.state === "done");
-        setRunModels(state.models);
-        setRunMode(state.mode);
-        setRunTask(state.task);
-        setAnswers([]);
-        setGateCustom(null);
-        setIndex(0);
-        setSelection(0);
-        setPanel(null);
-        setPhase("result");
-        return;
-      } catch {
-        /* not a council run — fall through to the legacy artifacts */
-      }
-      const art = await loadArtifacts(p);
-      // Not logged: the gate and result screens show this run's own task,
-      // models and state, and a log line would follow every later screen.
-      setCouncil(null);
-      setHead(headFromArtifacts(repo, p, art));
-      setPreviousGate(art.gate);
-      setReopened(true);
-      setGate(art.gate);
-      setWasDone(state.state === "done");
+      const c = await loadCouncil(p);
+      setCouncil({ takes: c.takes, final: c.final, learned: c.learned, patch: c.patch, dir: p.dir });
       setRunModels(state.models);
       setRunMode(state.mode);
       setRunTask(state.task);
-      setAnswers([]);
-      setGateCustom(null);
       setIndex(0);
       setSelection(0);
       setPanel(null);
-      if (state.state === "done") {
-        setTail(await loadTail(p));
-        setPhase("result");
-      } else {
-        setPhase("gate");
-      }
+      setPhase("result");
     } catch (e) {
       setError(`${e instanceof Error ? e.message : String(e)}\n\nthe run could not be opened`);
       setPhase("error");
     }
-  }
-
-  /**
-   * From the result screen: ask the gate again, with the recorded answers
-   * prefilled. The cursor sits on each recorded answer; Enter keeps it. If
-   * nothing moved, no model call is spent — the run stands as it is.
-   */
-  function startRevisit() {
-    if (council) {
-      setNotice("no gate to revisit — council runs finish in one pass");
-      return;
-    }
-    if (!head || !gate) return;
-    setPreviousGate(gate);
-    // The result screen only exists for a finished run, so this is always a
-    // run with a life on disk: a failed tail here parks back at the gate.
-    setReopened(true);
-    setWasDone(true);
-    setAnswers([]);
-    setGateCustom(null);
-    setIndex(0);
-    // The first question's cursor starts on its recorded answer, like every
-    // later one will.
-    const first = items[0];
-    if (first) {
-      const recorded =
-        first.kind === "judgment"
-          ? gate.decisions.find((d) => d.id === first.id)?.choice
-          : gate.findings.find((f) => f.id === first.id)?.disposition;
-      setSelection(selectionForCurrent(first, recorded));
-    } else {
-      setSelection(0);
-    }
-    setPanel(null);
-    addLog("revisiting the gate — your recorded answers are prefilled");
-    setPhase("gate");
   }
 
   /**
@@ -5981,8 +5369,8 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
    * never enters the prompt field. Ctrl+L re-reads it from the desk.
    */
   function startContinue() {
-    if (panel) return;
-    if (council) {
+    if (panel || !council) return;
+    {
       const parentName = path.basename(council.dir);
       setNotice(null);
       const parentMode = runMode ?? mode;
@@ -5997,25 +5385,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       setPanel(null);
       addLog(`continuing run ${parentName} — type your follow-up, then Enter runs it`);
       setPhase("start");
-      return;
     }
-    if (!head || !tail || panel) return;
-    const parentName = path.basename(head.paths.dir);
-    setNotice(null);
-    // The continuation answers in the parent's mode: a general question
-    // re-opened must not start reading the repository it was not asked about.
-    const parentMode = runMode ?? mode;
-    if (parentMode !== mode) {
-      setMode(parentMode);
-      if (cfg) void persist(cfg, parentMode);
-    }
-    setPendingContinue({ name: parentName, dir: head.paths.dir, mode: parentMode, result: tail.plan });
-    setTask("");
-    setDeskSel(5);
-    setOpenedFrom("start");
-    setPanel(null);
-    addLog(`continuing run ${parentName} — type your follow-up, then Enter runs it`);
-    setPhase("start");
   }
 
   /* The copy notice is an answer to a keystroke, not part of the result: it
@@ -6027,58 +5397,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   }, [notice]);
 
   /**
-   * Copy the question on screen — `y` at the gate.
-   *
-   * The judgment calls are written by a model, and a vague one is exactly the
-   * thing a reader wants a second opinion on; selecting in a pane is the
-   * terminal's business and the alternate screen keeps no scrollback, so the
-   * clipboard is the dependable path. Also written to the run directory, like
-   * every other copy: a clipboard that fails still leaves the file.
-   */
-  async function copyQuestion() {
-    if (!head) return;
-    const item = items[index];
-    if (!item) return;
-    const lines: string[] = [`## ${item.id} — ${item.title}`];
-    if (item.kind === "judgment") {
-      lines.push("", "Options:");
-      for (const option of item.options) lines.push(`- ${option}`);
-    } else {
-      lines.push("", "Disposition: yes (apply to the text) / no (leave as it is) / later");
-    }
-    if (item.evidence) lines.push("", `Evidence: ${item.evidence}`);
-    const file = path.join(head.paths.dir, `question-${item.id}.md`);
-    const result = await copyMarkdown(lines.join("\n"), file);
-    setNotice(copyNotice(result, lines.join("\n").length, path.basename(file)));
-  }
-
-  /**
-   * The gate opens on the draft.
-   *
-   * Every question judges a text the gate never showed — deciding blind was
-   * the workflow's own flaw, and the context pane was one undiscoverable `d`
-   * away. So the draft pane opens itself when the gate is entered (fresh run,
-   * a run reopened from the list, a revisit); Esc takes you to the first
-   * question and `d` brings the draft back any time. Once per entry, not once
-   * per question: the flag resets whenever the phase leaves the gate.
-   */
-  const gateDraftOpened = useRef(false);
-  useEffect(() => {
-    if (phase !== "gate" || !head) {
-      gateDraftOpened.current = false;
-      return;
-    }
-    // A gate with no questions goes straight through; a pane would flash over
-    // the transition.
-    if (items.length === 0 || gateDraftOpened.current || panel !== null) return;
-    gateDraftOpened.current = true;
-    void openPanel("text");
-    // The pane is opened by the transition into the gate, not by the panel's
-    // own state: closing it must not reopen it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, head, items.length]);
-
-  /**
    * The result as the renderer wants it: what the screen is drawn from.
    *
    * The screen never inlines the diff. It is 30 rows of the 60, so it used to
@@ -6087,27 +5405,13 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
    * it: `Y` is "the whole result", and the diff is part of it.
    */
   function resultReport(includeDiff = false): any {
-    if (council) {
-      return {
-        final: council.final,
-        learned: council.learned,
-        takes: council.takes,
-        patch: includeDiff ? council.patch : council.patch,
-        ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
-      };
-    }
-    if (!tail || !head) return null;
+    if (!council) return null;
     return {
-      plan: tail.plan,
-      changelog: tail.changelog,
-      patch: tail.patch,
-      assessment: tail.assessment,
-      gate: gate ?? { decisions: [], findings: [] },
-      claims: head.claims,
-      review: head.review,
-      checks: head.checks,
+      final: council.final,
+      learned: council.learned,
+      takes: council.takes,
+      patch: includeDiff ? council.patch : undefined,
       ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
-      includeDiff,
       ...(runTask ? { question: runTask, questionLabel: effectiveMode === "answer" ? "question" : "task" } : {}),
     };
   }
@@ -6127,8 +5431,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   /**
    * Copy the answer as Markdown — `y`, or the whole result with `Y`.
    *
-   * `y` is `tail.plan`: the writer's own text, the same bytes as `plan.v2.md`,
-   * with no wrapping, no terminal cleanup and no sources moved around. `Y` is
+   * `y` is the final answer as Markdown, `Y` is
    * the result in Markdown, commentary and diff included, so it travels whole
    * when the answer is going somewhere to be discussed.
    */
@@ -6145,11 +5448,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       setNotice(copyNotice(result, text.length, path.basename(file)));
       return;
     }
-    if (!tail || !head) return;
-    const text = whole ? renderResult(resultReport(true)!) : tail.plan;
-    const file = whole ? head.paths.result : head.paths.answer;
-    const result = await copyMarkdown(text, file);
-    setNotice(copyNotice(result, text.length, path.basename(file)));
   }
 
   /**
@@ -6170,15 +5468,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       });
       return;
     }
-    const report = resultReport(true);
-    if (!report) return;
-    const lines = diffPane(report);
-    setPanel({
-      title: "the exact changes, and why",
-      lines: lines.length
-        ? lines
-        : [spans({ text: "no diff — the text is unchanged", dim: true })],
-    });
   }
 
   /** One model's original take, unedited — `1`/`d`, `2`/`R`, `3`. */
@@ -6206,7 +5495,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       );
       return;
     }
-    void openPanel("info");
   }
 
   function openCouncilLog() {
@@ -6232,436 +5520,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     setPanel({ title, lines: fitSpans(lines, wrapWidth(), hang) });
   }
 
-  /** Keys, the draft, the claims, the raw review reply: curiosity and debugging. */
-  function openResultPanel(kind: "keys" | "claims" | "raw") {
-    if (kind === "keys") {
-      showPanel(
-        "keys on this screen",
-        RESULT_KEYS.map((k) =>
-          spans({ text: `  ${k.key.padEnd(12)}`, color: THEME.key, bold: true }, k.what),
-        ),
-        14,
-      );
-      return;
-    }
-    if (!head) return;
-    if (kind === "claims") {
-      const lines: StyledLine[] = [
-        spans({ text: "VERIFIABLE", bold: true }, " — the reviewer must return a verdict on each"),
-        [],
-      ];
-      for (const c of head.claims.verifiable) {
-        lines.push(spans({ text: `  ${c.id}`, dim: true }, `  ${c.text}`));
-      }
-      lines.push([], spans({ text: "JUDGMENT CALLS", bold: true }, " — the human decides these, not a model"), []);
-      for (const j of head.claims.judgment) {
-        lines.push(spans({ text: `  ${j.id}`, dim: true }, `  ${j.text}`));
-        for (const option of j.options) lines.push(spans({ text: `      · ${option}`, dim: true }));
-      }
-      if (head.missing.length) {
-        lines.push(
-          [],
-          spans({ text: "NO VERDICT RETURNED", color: THEME.warn }),
-          ...head.missing.map((id) => spans({ text: `  ${id}`, dim: true })),
-        );
-      }
-      showPanel("the claims the drafter declared", lines);
-      return;
-    }
-    // The reviewer's own words, before the tool merged a check result into
-    // them: the difference between review.json and what the gate showed is
-    // exactly what the audit changed.
-    showPanel(
-      "the reviewer's raw reply",
-      JSON.stringify(head.review, null, 2).split("\n").map((text) => spans({ text, dim: true })),
-      0,
-    );
-  }
-
-  /* Panels: the text the calls are about, every verdict, the cited source, the log. */
-  async function openPanel(kind: "text" | "verdicts" | "evidence" | "log" | "info" | "item" | "keys") {
-    if (!head) return;
-    const item = items[index];
-    const thing = effectiveMode === "answer" ? "answer" : "plan";
-
-    if (kind === "keys") {
-      showPanel(
-        "keys on this screen",
-        GATE_KEYS.map((k) =>
-          spans({ text: `  ${k.key.padEnd(14)}`, color: THEME.accent, bold: true }, k.what),
-        ),
-        14,
-      );
-      return;
-    }
-
-    if (kind === "log") {
-      showPanel(
-        "run log",
-        (log.length ? log : ["(nothing logged yet)"]).flatMap((line) =>
-          line.startsWith("!")
-            ? [spans({ text: line, color: THEME.warn })]
-            : [spans({ text: line })],
-        ),
-        0,
-      );
-      return;
-    }
-
-    if (kind === "info") {
-      const lines: StyledLine[] = [];
-      if (warnings.length) {
-        lines.push(spans({ text: "WARNINGS", color: THEME.warn }));
-        for (const w of warnings) lines.push(spans("  ", { text: w, color: THEME.warn }));
-        lines.push([]);
-      }
-      if (head.checks.length) {
-        lines.push(spans({ text: "CHECKS THE TOOL RAN", color: THEME.accent }));
-        for (const line of auditSpans(head.checks)) lines.push(spans("  ", ...line));
-        lines.push([]);
-      }
-      const refuted = head.review.verdicts.filter((v) => v.verdict === "refuted");
-      if (refuted.length) {
-        lines.push(spans({ text: "REFUTED CLAIMS (these go to the rewrite)", color: THEME.danger }));
-        for (const v of refuted) {
-          lines.push(
-            spans(
-              { text: `  ${v.id}`, dim: true },
-              `  ${head.claims.verifiable.find((c) => c.id === v.id)?.text ?? ""}`,
-            ),
-          );
-        }
-      }
-      // On the result screen the commentary rides here too: the screen itself
-      // is the answer only, so "what happened / what changed / decisions open"
-      // live behind the same key.
-      if (phase === "result" && tail) {
-        const report = resultReport();
-        if (report) {
-          lines.push(...renderCommentaryLines(report, wrapWidth()), []);
-        }
-      }
-      showPanel(phase === "result" ? "the run at a glance" : "the review at a glance", lines.length ? lines : [spans("nothing to report")]);
-      return;
-    }
-
-    if (kind === "item") {
-      showPanel(
-        item ? `${item.id} — the whole text` : "the whole text",
-        item
-          ? [
-              spans({ text: item.title, bold: true }),
-              [],
-              ...item.detail.map((text) => spans({ text, dim: true })),
-            ]
-          : [spans("nothing here")],
-      );
-      return;
-    }
-
-    if (kind === "text") {
-      // The plan or answer as the model wrote it: real Markdown, rendered.
-      // This pane used to show the raw source, which read like a file dump,
-      // and it is the pane the human reads before every judgment call.
-      const answer = renderAnswer(head.plan);
-      const markdown = answer.sources
-        ? `${answer.body}\n\n### Sources\n\n${answer.sources}`
-        : answer.body;
-      setPanel({
-        // At the gate this is the text the questions are about, still in play.
-        // On the result screen the run is over, and what this is showing is the
-        // first draft the review saw — worth naming, because the answer above it
-        // has since changed.
-        title: phase === "result" ? "the original draft, as the review saw it" : `the ${thing} so far`,
-        lines: renderMarkdownLines(markdown, wrapWidth()),
-      });
-      return;
-    }
-
-    if (kind === "verdicts") {
-      const counts = verdictCounts(head.claims, head.review);
-      const lines: StyledLine[] = [statusSpans(counts), []];
-      // The colours follow "what needs attention": a refuted claim goes to the
-      // rewrite, an unverifiable one is where the human has nothing to go on.
-      // Confirmed is left alone — the file agreed, which is not a verdict on
-      // whether the sentence is worth keeping.
-      const heading = { refuted: THEME.danger, unverifiable: THEME.warn, confirmed: undefined };
-      const order = ["refuted", "unverifiable", "confirmed"] as const;
-      for (const verdict of order) {
-        const rows = head.review.verdicts.filter((v) => v.verdict === verdict);
-        if (rows.length === 0) continue;
-        const colour = heading[verdict];
-        lines.push(spans({ text: verdict.toUpperCase(), ...(colour ? { color: colour } : { bold: true }) }));
-        for (const v of rows) {
-          const text = head.claims.verifiable.find((c) => c.id === v.id)?.text ?? "";
-          lines.push(spans({ text: `  ${v.id}`, dim: true }, `  ${text}`));
-          if (v.verdict === "unverifiable") {
-            lines.push(spans({ text: `      ${v.note}`, color: THEME.warn }));
-          } else {
-            lines.push(
-              spans(
-                { text: `      [${v.evidence}]`, color: THEME.code },
-                v.note ? { text: ` — ${v.note}`, dim: true } : { text: "" },
-              ),
-            );
-          }
-        }
-        lines.push([]);
-      }
-      for (const claim of head.claims.verifiable) {
-        if (!head.review.verdicts.some((v) => v.id === claim.id)) {
-          lines.push(
-            spans({ text: "NO VERDICT", color: THEME.warn }, `  ${claim.id}  ${claim.text}`),
-          );
-        }
-      }
-      if (head.review.extra_findings.length) {
-        lines.push([], spans({ text: "FINDINGS", color: THEME.accent }));
-        for (const f of head.review.extra_findings) {
-          lines.push(spans({ text: `  ${f.id}`, dim: true }, `  ${f.text}`));
-          if (f.evidence) lines.push(spans({ text: `      [${f.evidence}]`, color: THEME.code }));
-          else if (f.note) lines.push(spans({ text: `      ${f.note}`, dim: true }));
-        }
-      }
-      showPanel("review — every verdict", lines);
-      return;
-    }
-
-    if (!item?.evidence) return;
-
-    // A URL is not a file. The old fallback told the human "this citation
-    // cannot be shown here — it is worth questioning", which reads as an
-    // accusation against a perfectly good URL. Say what it is instead.
-    const ref = parseEvidence(item.evidence);
-    if (ref?.kind === "url") {
-      showPanel(`${item.id} — evidence`, [
-        spans({ text: item.evidence, color: THEME.code }),
-        [],
-        spans({ text: "this is a source URL — the tool cannot display web pages here.", dim: true }),
-        spans({ text: "open it, and judge the finding on its merits before you choose", dim: true }),
-      ]);
-      return;
-    }
-
-    const context = await readEvidenceContext(repo, item.evidence);
-    setPanel({
-      title: `${item.id} — ${item.evidence}`,
-      lines: fitSpans(
-        context
-          ? [
-              spans({
-                text: `${context.file}${context.line ? `:${context.line}` : ""}`,
-                color: THEME.accent,
-                bold: true,
-              }),
-              [],
-              ...context.lines.map((text) => spans({ text })),
-            ]
-          : [
-              spans({ text: item.evidence, color: THEME.code }),
-              [],
-              spans({
-                text: "not a readable file in this repository — the reviewer's citation cannot be shown here.",
-                dim: true,
-              }),
-              spans({
-                text: "A citation that does not resolve is itself worth questioning at this gate.",
-                dim: true,
-              }),
-            ],
-        wrapWidth(),
-        0,
-      ),
-    });
-  }
-
-  /* Gate input. Nothing here is decided by a model. */
-  useInput(
-    (input, key) => {
-      const item = items[index];
-      if (!item) return;
-      // The options as drawn: judgment calls carry the trailing custom row.
-      const shown = displayOptions(item);
-
-      // Where the cursor lands on a recorded answer: on it. That is the whole
-      // point of the prefill — Enter keeps, arrows change.
-      const landOn = (i: number) => {
-        const nextItem = items[i];
-        if (!nextItem) {
-          setSelection(0);
-          return;
-        }
-        const recorded = previousGate
-          ? nextItem.kind === "judgment"
-            ? previousGate.decisions.find((d) => d.id === nextItem.id)?.choice
-            : previousGate.findings.find((f) => f.id === nextItem.id)?.disposition
-          : undefined;
-        setSelection(selectionForCurrent(nextItem, recorded));
-      };
-
-      const commit = (value: string) => {
-        const next = [...answers, { id: item.id, kind: item.kind, value }];
-        setAnswers(next);
-        setGateCustom(null);
-        if (index + 1 < items.length) {
-          setIndex(index + 1);
-          landOn(index + 1);
-        } else {
-          void finishGate(next);
-        }
-      };
-
-      /** Open the free-text editor, prefilled with the recorded custom answer when there is one. */
-      const openCustom = () => {
-        const recorded =
-          previousGate?.decisions.find((d) => d.id === item.id)?.choice;
-        const prefill = isCustomChoice(item, recorded) ? recorded! : "";
-        setSelection(customRowIndex(item));
-        setGateCustom({ text: prefill, caret: prefill.length });
-      };
-
-      // The free-text editor owns the keys while it is open: line editing,
-      // readline-style, like every other text field. Up/down stay put rather
-      // than moving the option cursor underneath the editor.
-      if (gateCustom !== null) {
-        const cur = Math.max(0, Math.min(gateCustom.caret, gateCustom.text.length));
-        const setText = (text: string, caret: number) =>
-          setGateCustom({ text, caret: Math.max(0, Math.min(caret, text.length)) });
-        if (key.escape) {
-          setGateCustom(null);
-          return;
-        }
-        if (key.return) {
-          const cleaned = sanitizeCustomChoice(gateCustom.text);
-          if (cleaned) commit(cleaned);
-          return;
-        }
-        if (key.upArrow || key.downArrow) return;
-        if (key.ctrl && input === "a") {
-          setGateCustom({ text: gateCustom.text, caret: 0 });
-          return;
-        }
-        if (key.ctrl && input === "e") {
-          setGateCustom({ text: gateCustom.text, caret: gateCustom.text.length });
-          return;
-        }
-        if (isWordLeft(key, input)) {
-          setGateCustom({ text: gateCustom.text, caret: wordLeft(gateCustom.text, cur) });
-          return;
-        }
-        if (isWordRight(key, input)) {
-          setGateCustom({ text: gateCustom.text, caret: wordRight(gateCustom.text, cur) });
-          return;
-        }
-        if (isKillToEnd(key, input)) {
-          setText(killToEnd(gateCustom.text, cur), cur);
-          return;
-        }
-        if (key.leftArrow) {
-          setGateCustom({ text: gateCustom.text, caret: cur - 1 });
-          return;
-        }
-        if (key.rightArrow) {
-          setGateCustom({ text: gateCustom.text, caret: cur + 1 });
-          return;
-        }
-        if (key.backspace) {
-          if (cur > 0) setText(gateCustom.text.slice(0, cur - 1) + gateCustom.text.slice(cur), cur - 1);
-          return;
-        }
-        if (key.delete) {
-          if (cur < gateCustom.text.length) setText(gateCustom.text.slice(0, cur) + gateCustom.text.slice(cur + 1), cur);
-          return;
-        }
-        if (key.ctrl || key.meta) return;
-        if (input && !input.startsWith("\x1b[<")) {
-          setText(gateCustom.text.slice(0, cur) + input + gateCustom.text.slice(cur), cur + input.length);
-        }
-        return;
-      }
-
-      if (key.escape) {
-        // Leaving the gate never loses the run: the head is on disk, and the
-        // run is reachable again from where it was opened.
-        addLog("leaving the gate — the run stays on disk; Ctrl+R reopens it");
-        goBack();
-        return;
-      }
-
-      if (input === "n" && !key.ctrl && !key.meta) {
-        // Not what this run is about — back to the question desk. The run stays
-        // parked on disk and is reachable again with Ctrl+R.
-        setPhase("start");
-        return;
-      }
-
-      if (key.upArrow) {
-        setSelection((s) => Math.max(0, s - 1));
-        return;
-      }
-      if (key.downArrow) {
-        setSelection((s) => Math.min(shown.length - 1, s + 1));
-        return;
-      }
-      if (input === "d") {
-        void openPanel("text");
-        return;
-      }
-      if (input === "y" && !key.ctrl && !key.meta) {
-        void copyQuestion();
-        return;
-      }
-      if (input === "?") {
-        void openPanel("keys");
-        return;
-      }
-      if (input === "v") {
-        void openPanel("verdicts");
-        return;
-      }
-      if (input === "e" && item.evidence) {
-        void openPanel("evidence");
-        return;
-      }
-      if (input === "l") {
-        void openPanel("log");
-        return;
-      }
-      if (input === "i") {
-        void openPanel("info");
-        return;
-      }
-      if (input === "w") {
-        void openPanel("item");
-        return;
-      }
-      if (input === "t" && item.kind === "judgment" && !key.ctrl && !key.meta) {
-        openCustom();
-        return;
-      }
-      if (input === "o" && item.kind === "judgment") {
-        commit("open");
-        return;
-      }
-      if (input === "s") {
-        // Skip: a finding is left untriaged (the text stays as it is); a
-        // judgment call is left open (the text presents both options).
-        commit(item.kind === "finding" ? "untriaged" : "open");
-        return;
-      }
-      if (key.return) {
-        // Enter on the custom row opens the editor rather than recording its
-        // label: the label is affordance, not an answer.
-        if (item.kind === "judgment" && selection === customRowIndex(item)) {
-          openCustom();
-          return;
-        }
-        commit(item.values[selection] ?? item.values[0]!);
-      }
-    },
-    { isActive: phase === "gate" && panel === null },
-  );
-
   /**
    * The error screen.
    *
@@ -6678,9 +5536,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       }
       if (input === "n" && !key.ctrl && !key.meta) {
         // Back to the question desk, with nothing of the failed run loaded.
-        setHead(null);
-        setTail(null);
-        setGate(null);
+        setCouncil(null);
         setRunTask("");
         setPhase("start");
         return;
@@ -6776,13 +5632,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   );
 
 
-  /* Nothing to ask: go straight through. */
-  useEffect(() => {
-    if (phase === "gate" && head && items.length === 0 && answers.length === 0) {
-      void finishGate([]);
-    }
-  }, [phase, head, items.length, answers.length]);
-
   /* Fullscreen budgets: the frame is the terminal, so every screen takes its
      rows from the viewport rather than a constant. `contentRows` is the frame
      minus the pinned mouse line; the log shows the last rows that leave the
@@ -6796,7 +5645,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   // wrapped rows, so without this the menu stays wrapped to the old width
   // until the next keypress.
   const termCols = useTerminalWidth();
-  const logLabel = approval ? null : workingLabel(log, phase, effectiveMode);
+  const logLabel = workingLabel(log, phase);
   /* The log as rows: `!` lines keep their colour, and every line is wrapped here
      rather than by Ink — a wrapped log line would occupy two rows and shift
      everything below it, which is exactly what the pointer mapping must not
@@ -6812,7 +5661,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     [log],
   );
   const usable = contentRows(termRows);
-  const running = phase === "running" || phase === "working";
+  const running = phase === "running";
   const logWant = logWindow(logRows.length, usable, {
     label: logLabel !== null,
     minContent: running ? 0 : MIN_CONTENT_ROWS,
@@ -6862,22 +5711,16 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
      gets the record instead — state, run directory, and where the plan went.
      Short lines, printed after Ink restores the shell. (Per-call costs stay in
      the log; no total is tracked, so none is claimed.) */
-  const recap = !head
+  const recap = !council
     ? null
-    : tail
-      ? `done · ${displayPath(head.paths.dir)}\nplan: ${displayPath(head.paths.planV2)}`
-      : phase === "error" && error
-        ? `failed · ${displayPath(head.paths.dir)}\n${error.split("\n")[0]}`
-        : `parked · ${displayPath(head.paths.dir)}\nresume: adv run --resume ${path.basename(head.paths.dir)}`;
+    : `done · ${displayPath(council.dir)}\nanswer: ${displayPath(council.dir)}/final.md`;
   useEffect(() => {
     onRecap?.(recap);
   }, [recap, onRecap]);
 
   let content: ReactNode;
 
-  if (phase === "setup") {
-    content = <Setup repo={repo} selection={setupSelection} />;
-  } else if (phase === "home") {
+  if (phase === "home") {
     content = (
       <Home
         selection={homeSel}
@@ -7084,9 +5927,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         onHome={() => openHome()}
       />
     );
-  } else if (phase === "running" && approval) {
-    content = <Approve request={approval} onAnswer={answerApproval} />;
-  } else if (phase === "running" || phase === "working") {
+  } else if (phase === "running") {
     /* The screen is the log plus the spinner line it draws. */
     content = null;
   } else if (phase === "runs") {
@@ -7110,57 +5951,10 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         tagged={taggedRuns}
       />
     );
-  } else if (phase === "gate" && head) {
-    if (panel) {
-      content = (
-        <Scroller
-          key={`panel:${panel.title}`}
-          title={panel.title}
-          lines={panel.lines}
-        notice={notice}
-          height={scrollerH}
-          footer={[
-            { text: `gate ${index + 1} of ${items.length}`, color: THEME.accent },
-            { text: " · " },
-            { text: "Esc", color: THEME.key, bold: true },
-            { text: " back to the question", dim: true },
-          ]}
-          onClose={() => setPanel(null)}
-        />
-      );
-    } else {
-      // The recorded answer for the question on screen, when one exists: the
-      // cursor lands on it and the option is marked, so "keep" is visible.
-      const it = items[index];
-      const hadAnswers =
-        previousGate !== null &&
-        (previousGate.decisions.length > 0 || previousGate.findings.length > 0);
-      const current = it && previousGate
-        ? it.kind === "judgment"
-          ? previousGate.decisions.find((d) => d.id === it.id)?.choice
-          : previousGate.findings.find((f) => f.id === it.id)?.disposition
-        : undefined;
-      content = (
-        <GateView
-          claims={head.claims}
-          review={head.review}
-          items={items}
-          index={index}
-          selection={selection}
-          warnings={warnings}
-          checks={head.checks}
-          models={runModels ?? cfg?.models ?? { drafter: { ref: "drafter" }, reviewer: { ref: "reviewer" } }}
-          mode={effectiveMode}
-          revisit={hadAnswers}
-          current={current}
-          custom={gateCustom}
-          contentH={contentH}
-        />
-      );
-    }
-  } else if (phase === "result" && (council || (tail && head))) {
-    const councilData = council ? councilReport() : null;
-    const report = councilData ?? resultReport();
+
+  } else if (phase === "result" && council) {
+    const councilData = councilReport();
+    const report = councilData;
     // A panel opens over the result and Esc puts it away. The result screen is
     // where a finished run is read, and reading it means being able to look up
     // the draft, the claims and the reviewer's own words without leaving.
@@ -7182,8 +5976,8 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     ) : report ? (
       <Scroller
         key="result"
-        title={councilData ? "done — two takes plus what we learned" : "done — ai debate concluded"}
-        lines={councilData ? renderCouncilAnswerLines(councilData, wrapWidth()) : renderAnswerOnlyLines(report, wrapWidth())}
+        title="done — two takes plus what we learned"
+        lines={renderCouncilAnswerLines(councilData, wrapWidth())}
         notice={notice}
         height={scrollerH}
         escLabel="Esc closes panels — never leaves the result"
@@ -7242,12 +6036,14 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
             void copyOut(true);
             return true;
           }
-          if (input === "r") {
-            startRevisit();
-            return true;
-          }
           if (input === "?") {
-            openResultPanel("keys");
+            showPanel(
+              "keys on this screen",
+              RESULT_KEYS.map((k) =>
+                spans({ text: `  ${k.key.padEnd(12)}`, color: THEME.key, bold: true }, k.what),
+              ),
+              14,
+            );
             return true;
           }
           if (input === "d" || input === "1") {
@@ -7262,25 +6058,12 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
             openCouncilTake(2);
             return true;
           }
-          if (input === "v" && !councilData) {
-            void openPanel("verdicts");
-            return true;
-          }
           if (input === "i") {
             openCouncilInfo();
             return true;
           }
           if (input === "l") {
-            if (councilData) { openCouncilLog(); return true; }
-            void openPanel("log");
-            return true;
-          }
-          if (input === "c" && !councilData) {
-            openResultPanel("claims");
-            return true;
-          }
-          if (input === "R" && !councilData) {
-            openResultPanel("raw");
+            openCouncilLog();
             return true;
           }
           return false;

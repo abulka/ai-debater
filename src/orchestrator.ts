@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { RunState } from "./contracts.ts";
 import { displayTaskOf } from "./continue.ts";
 import type { ModelRef } from "./runner.ts";
 
-/** The human's own files: criteria, settled decisions, model choice. Per repo. */
+/** The human's own files: criteria and settled decisions. Per repo, opt-in via `adv init`. */
 export const advDir = (repo: string) => path.join(repo, ".adv");
 
 /**
@@ -86,16 +86,7 @@ export function runPaths(repo: string, dir: string) {
     take3: path.join(dir, "take.3.md"),
     /** The synthesised final answer. */
     final: path.join(dir, "final.md"),
-    planV1: path.join(dir, "plan.v1.md"),
-    claims: path.join(dir, "claims.json"),
-    review: path.join(dir, "review.json"),
-    gate: path.join(dir, "gate.json"),
-    /** The gate's previous generation of answers, kept by `revise`'s rotation. */
-    gatePrev: path.join(dir, "gate.prev.json"),
-    changelog: path.join(dir, "changelog.json"),
-    planV2: path.join(dir, "plan.v2.md"),
     diff: path.join(dir, "diff.patch"),
-    audit: path.join(dir, "audit.json"),
     state: path.join(dir, "state.json"),
     /**
      * Written when the human copies the answer out of the TUI: the clipboard
@@ -142,10 +133,7 @@ export const loadState = async (p: Paths): Promise<RunState> =>
  * Record that this run stopped because something broke.
  *
  * Never let this mask the original error: the reason the step failed is the
- * useful message, and the state file is only bookkeeping. A run that keeps its
- * earlier state after a failure is indistinguishable from one parked at the
- * gate — which is exactly the bug that left a run reading `created` with no
- * artifacts and no way to tell whether it was waiting or dead.
+ * useful message, and the state file is only bookkeeping.
  */
 export async function markFailed(p: Paths, err: unknown): Promise<void> {
   try {
@@ -155,41 +143,6 @@ export async function markFailed(p: Paths, err: unknown): Promise<void> {
   } catch {
     /* the original error is the one worth reporting */
   }
-}
-
-export type ModelPair = {
-  drafter: { ref: string; family: string };
-  reviewer: { ref: string; family: string };
-};
-
-/**
- * Which models a resumed run uses.
- *
- * The synthesis is written by the lead, so a resumed run must use the models
- * recorded in `state.json`, not whatever `.adv/config.json` says today. These
- * diverge the moment someone passes `--drafter`, changes the config, or picks a
- * new model in the TUI — and the failure is silent: a different model rewrites
- * a take it did not write, and the artifacts look normal.
- *
- * An explicit flag still wins, because a human naming a model is an instruction,
- * not an accident. It is reported so the inconsistency is on the record.
- */
-export function resumedModels(
-  recorded: ModelPair,
-  configured: ModelPair,
-  explicit: { drafter: boolean; reviewer: boolean },
-): {
-  models: ModelPair;
-  overrides: { role: "drafter" | "reviewer"; chosen: string; wrote: string }[];
-} {
-  const models: ModelPair = {
-    drafter: explicit.drafter ? configured.drafter : recorded.drafter,
-    reviewer: explicit.reviewer ? configured.reviewer : recorded.reviewer,
-  };
-  const overrides = (["drafter", "reviewer"] as const)
-    .filter((role) => explicit[role] && models[role].ref !== recorded[role].ref)
-    .map((role) => ({ role, chosen: models[role].ref, wrote: recorded[role].ref }));
-  return { models, overrides };
 }
 
 /**
@@ -208,8 +161,7 @@ export async function latestRun(repo: string): Promise<string | null> {
  * exist in both if a task and a question were recorded in the same second, and
  * then the repository's own run is the one meant. The TUI's picker does not go
  * through here — each row carries its own directory, so there is nothing to
- * disambiguate — and neither does `adv run --resume` with no argument, which
- * asks `latestRun`.
+ * disambiguate.
  */
 export function findRunDir(repo: string, name: string): string | null {
   for (const bucket of [runsDir(repo), answersDir()]) {
@@ -228,9 +180,7 @@ export function findRunDir(repo: string, name: string): string | null {
  * because deleting a run twice should not fail the second time.
  *
  * A run's artefacts are all inside the store, so this never touches a
- * repository: not the source tree, not `.adv/`. It also does not un-settle
- * anything: decisions already appended to `.adv/decisions.md` stay there, which
- * is why the CLI and the TUI say "delete the run", not "undo".
+ * repository: not the source tree, not `.adv/`.
  */
 export async function deleteRuns(
   dirs: string[],
@@ -330,7 +280,7 @@ export interface RunSummary {
    * state that has no models at all — older records, or a hand-written one — and
    * `recentPairs` skips those rather than failing.
    */
-  models?: { drafter: ModelRef; reviewer: ModelRef };
+  models?: { drafter: ModelRef; reviewer: ModelRef; peer?: ModelRef | null };
   /** The run this one continues, when it continues one. Display only. */
   parent?: { name: string; dir: string };
 }
@@ -396,108 +346,13 @@ export async function readCriteria(repo: string): Promise<{ text: string; found:
 }
 
 /**
- * A settled-decisions entry in the exact shape `appendDecisions` writes:
- * `- <stamp> <id>: <text> -> **<choice>**`, optionally with a trailing
- * parenthetical — the supersede / reopened markers.
- */
-const DECISION_ENTRY = /^- \S+ ([VJE]\d+): (.+) -> \*\*([^*]+)\*\*(?: \(.*\))?\s*$/;
-
-/** A marker, not a settlement: the human re-opened the call at a later gate. */
-const REOPENED = /^(reopened|superseded)$/i;
-
-/**
- * The feed the draft prompt gets from `decisions.md`: the last entry per id.
- *
- * The file is append-only — `revise` supersedes an old entry by appending a new
- * one, and both lines stay on disk — but the file's own header says "models
- * treat every entry as a closed question", and a *superseded* entry is not
- * closed. The newest line per id is the settlement; earlier lines for the same
- * id leave the feed, and a `reopened` marker un-settles the id entirely so the
- * next draft may argue it again.
- *
- * Non-entry lines — the header, prose a human appended — pass through
- * untouched: the file is the human's, and only lines in the tool's own format
- * are the tool's to deduplicate.
+ * The feed the take prompt gets from `decisions.md`. The file is the human's,
+ * written by hand or via `adv init`; it passes through untouched.
  */
 export async function readDecisions(repo: string): Promise<string> {
-  let text: string;
   try {
-    text = await readFile(path.join(advDir(repo), "decisions.md"), "utf8");
+    return await readFile(path.join(advDir(repo), "decisions.md"), "utf8");
   } catch {
     return "(none yet)";
   }
-
-  const lines = text.split("\n");
-  const newest = new Map<string, number>();
-  const reopened = new Set<string>();
-  lines.forEach((line, i) => {
-    const m = DECISION_ENTRY.exec(line);
-    if (!m) return;
-    const id = m[1]!;
-    if (REOPENED.test(m[3]!)) reopened.add(id);
-    newest.set(id, i);
-  });
-
-  if (newest.size === 0) return text;
-
-  let dropped = false;
-  const out: string[] = [];
-  lines.forEach((line, i) => {
-    const m = DECISION_ENTRY.exec(line);
-    if (!m) {
-      out.push(line);
-      return;
-    }
-    const id = m[1]!;
-    if (reopened.has(id) || newest.get(id) !== i) {
-      // Superseded, or re-opened: it stays on disk, it leaves the feed.
-      dropped = true;
-      return;
-    }
-    out.push(line);
-  });
-  return dropped ? out.join("\n") : text;
-}
-
-export interface DecisionEntry {
-  id: string;
-  text: string;
-  choice: string;
-  /** A trailing parenthetical — `revise` uses it for the supersede marker. */
-  note?: string;
-}
-
-/**
- * Freeze the human's gate answers into `decisions.md`, append-only.
- *
- * A no-op when there is no `decisions.md` to append to: that means the human
- * never ran `adv init` here, which in answer mode is the normal case. Creating
- * the file would be a write into a directory adv has no business writing to.
- */
-export async function appendDecisions(repo: string, decisions: DecisionEntry[]): Promise<void> {
-  if (decisions.length === 0) return;
-  const file = path.join(advDir(repo), "decisions.md");
-  const existing = await readFile(file, "utf8").catch(() => null);
-  if (existing === null) return;
-
-  const stamp = new Date().toISOString();
-  const lines = decisions.map(
-    (d) => `- ${stamp} ${d.id}: ${d.text} -> **${d.choice}**${d.note ? ` ${d.note}` : ""}`,
-  );
-  await writeFile(file, `\n${lines.join("\n")}\n`, { flag: "a" });
-}
-
-/**
- * Move the gate's answers one generation back: `gate.json` becomes
- * `gate.prev.json`. `revise` asks the gate again, and the first answers must
- * survive the asking — the comparison that decides whether anything moved needs
- * them, and a human who wants the old view can read the file.
- *
- * One level of history: a third revision overwrites the second's backup.
- * Missing gate file (a hand-mangled run) is not an error.
- */
-export async function rotateGate(p: Paths): Promise<void> {
-  await rename(p.gate, p.gatePrev).catch(() => {
-    /* nothing to rotate */
-  });
 }

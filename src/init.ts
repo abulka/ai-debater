@@ -1,6 +1,5 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_CONFIG, loadUserConfig } from "./config.ts";
 
 const CRITERIA_TEMPLATE = `# Criteria
 
@@ -23,14 +22,14 @@ export interface InitResult {
 }
 
 /**
- * Create (or refresh) the `.adv/` scaffolding.
+ * Create (or refresh) the `.adv/` scaffolding. Opt-in only: `adv init`.
  *
- * `criteria.md`, `decisions.md` and `config.json` are only written if missing —
- * never overwrite the human's own files.
+ * `criteria.md` and `decisions.md` are only written if missing — never
+ * overwrite the human's own files. Model choice lives in the global user
+ * config, never here, so this writes no `config.json`.
  *
- * The agent definitions used to be installed here too. They are now injected
- * into each model call from `src/agents.ts`, so `adv` works in a directory that
- * was never initialised and writes nothing outside `.adv/`.
+ * Agents are injected per model call from `src/agents.ts`, so `adv` works in
+ * a directory that was never initialised and writes nothing unless asked.
  */
 export async function initRepo(repo: string): Promise<InitResult> {
   await mkdir(path.join(repo, ".adv"), { recursive: true });
@@ -53,36 +52,6 @@ export async function initRepo(repo: string): Promise<InitResult> {
     DECISIONS_TEMPLATE,
     ".adv/decisions.md",
   );
-  // Seed with the models the human last chose, not the built-in default: a new
-  // repository should not silently reset a choice made in the TUI.
-  const seed = (await loadUserConfig()) ?? DEFAULT_CONFIG;
-  await putIfAbsent(
-    path.join(repo, ".adv", "config.json"),
-    `${JSON.stringify(seed, null, 2)}\n`,
-    ".adv/config.json",
-  );
 
   return { created, kept };
-}
-
-/**
- * What `.adv/` actually contains. These are two different questions, and the
- * TUI used to conflate them: it tested only `criteria.md`, so a directory with
- * `.adv/config.json` (which Ctrl+P writes) reported "no .adv/ here" while
- * `.adv/` was sitting there, and a run with config but no criteria was told
- * nothing about the missing criteria.
- */
-export interface AdvState {
-  dir: boolean;
-  criteria: boolean;
-}
-
-export async function advState(repo: string): Promise<AdvState> {
-  const dir = await stat(path.join(repo, ".adv"))
-    .then((s) => s.isDirectory())
-    .catch(() => false);
-  const criteria = await readFile(path.join(repo, ".adv", "criteria.md"), "utf8")
-    .then(() => true)
-    .catch(() => false);
-  return { dir, criteria };
 }

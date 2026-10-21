@@ -3,7 +3,7 @@
  * adv — two takes plus what we learned.
  *
  *   adv                        open the TUI
- *   adv init [--dir <repo>]
+ *   adv init [--dir <repo>]      criteria and decisions (optional)
  *   adv run "<task>" [--drafter <model>] [--reviewer <model>] [--peer <model>]
  *                    [--drafter-family <f>] [--reviewer-family <f>] [--peer-family <f>]
  *                    [--peer none] [--general] [--plan] [--dir <repo>]
@@ -17,12 +17,10 @@
  *   reachable on this account today. The only thing in adv that costs a call,
  *   and it never runs unless asked. See docs/OPENCODE-MODELS.md.
  *
- *   rm removes run directories from the store. Nothing in a repository is touched:
- *   not the source, not .adv/. Decisions already written to .adv/decisions.md stay.
+ *   rm removes run directories from the store. Nothing in a repository is touched.
  *   Without a terminal it refuses unless --yes is passed.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config.ts";
 import type { FamilyCheck } from "./config.ts";
@@ -63,7 +61,7 @@ import { renderCouncil, renderCouncilAnsi } from "./render.ts";
 import type { CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 
-const BOOLEAN_FLAGS = new Set(["no-gate", "general", "plan", "rewrite", "help", "strict", "all", "yes", "refresh"]);
+const BOOLEAN_FLAGS = new Set(["general", "plan", "help", "strict", "all", "yes", "refresh"]);
 
 function parse(args: string[]): { flags: Map<string, string | true>; positional: string[] } {
   const flags = new Map<string, string | true>();
@@ -116,9 +114,9 @@ const resolveRun = (repo: string, dirArg: string) => {
 const progress: CallHook = ({ kind, step, retry, ms, usage }) => {
   const cost = usage.costKnown ? `$${usage.cost.toFixed(6)}` : "cost not reported";
   const what =
-    kind === "draft" && step === "take"
+    kind === "take" && step === "take"
       ? "take written"
-      : kind === "rebut" && step === "synthesis"
+      : kind === "synthesis" && step === "synthesis"
         ? "synthesis written"
         : `${kind}/${step}`;
   console.log(
@@ -200,7 +198,7 @@ async function cmdInit(flags: Map<string, string | true>) {
   console.log(`initialised ${repo}`);
   for (const f of created) console.log(`  created  ${f}`);
   for (const f of kept) console.log(`  kept     ${f}  (already existed)`);
-  console.log(`  edit .adv/criteria.md with your judgment criteria`);
+  console.log(`  edit .adv/criteria.md with your judgment criteria (optional)`);
 }
 
 async function finalizeCouncil(
@@ -249,16 +247,14 @@ async function runFreshTask(
 ) {
   const { task, models, mode, check, checkSource } = opts;
   // Answer mode has no repository: no criteria from the directory it was run
-  // in, and no settled decisions either. Both are repo-specific, and loading
-  // them made a general question answer itself from this project's notes.
+  // in, and no settled decisions either.
   const criteria =
     mode === "answer" ? { text: NO_CRITERIA, found: false } : await readCriteria(repo);
   // Answer mode assumes no repository, so no criteria is the normal case, not a
   // fault. Warning about it there is noise that makes a correct state look broken.
   if (!criteria.found && mode === "plan") {
     console.log(
-      "  warning: .adv/criteria.md not found — using a minimal fallback. " +
-        "Run `adv init`.",
+      "  warning: .adv/criteria.md not found — using a minimal fallback.",
     );
   }
   const decisions =
@@ -290,7 +286,7 @@ async function runFreshTask(
 
 async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
   const repo = repoOf(flags);
-  const cfg = await loadConfig(repo);
+  const cfg = await loadConfig();
   requireFamily("drafter", flags);
   requireFamily("reviewer", flags);
   requireFamily("peer", flags);
@@ -309,11 +305,7 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
       ? "plan"
       : cfg.mode;
   const check: FamilyCheck = flags.has("strict") ? "require" : cfg.familyCheck;
-  const checkSource = flags.has("strict") ? "--strict" : ".adv/config.json";
-
-  if (flags.get("resume") !== undefined) {
-    throw new Error("adv run --resume is retired: council runs finish in one pass with no gate. Just run again.");
-  }
+  const checkSource = flags.has("strict") ? "--strict" : "config";
 
   const task = positional.join(" ").trim();
   if (!task) throw new Error('usage: adv run "<task>"');
@@ -333,11 +325,11 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
  * Sessions cannot chain (each `--standalone` run owns its session store), so
  * the previous result travels inside the new task, whole, plus the human's
  * follow-up — which is what makes this a continuation rather than a rerun.
- * The new run is otherwise normal: fresh draft, fresh review, the gate again.
+ * The new run is otherwise normal: fresh takes, fresh synthesis.
  */
 async function cmdContinue(flags: Map<string, string | true>, positional: string[]) {
   const repo = repoOf(flags);
-  const cfg = await loadConfig(repo);
+  const cfg = await loadConfig();
   requireFamily("drafter", flags);
   requireFamily("reviewer", flags);
   requireFamily("peer", flags);
@@ -348,7 +340,7 @@ async function cmdContinue(flags: Map<string, string | true>, positional: string
     ...(peer ? { peer } : {}),
   };
   const check: FamilyCheck = flags.has("strict") ? "require" : cfg.familyCheck;
-  const checkSource = flags.has("strict") ? "--strict" : ".adv/config.json";
+  const checkSource = flags.has("strict") ? "--strict" : "config";
 
   const dirArg = positional[0] ?? (await latestRun(repo));
   if (!dirArg) throw new Error("usage: adv continue [<run>] [--instructions \"…\"]");
@@ -360,18 +352,14 @@ async function cmdContinue(flags: Map<string, string | true>, positional: string
         `  continue needs a run with a result to continue from; this one has none.`,
     );
   }
-  // The final answer is the result; fall back to take 1 / legacy artifacts.
+  // The final answer is the result.
   let previousResult: string;
   try {
     previousResult = (await loadCouncil(parentPaths)).final;
   } catch {
-    try {
-      previousResult = await readFile(parentPaths.planV1, "utf8");
-    } catch {
-      throw new Error(
-        `run is in state "${parentState.state}" — continue needs a run with a draft or a result.`,
-      );
-    }
+    throw new Error(
+      `run is in state "${parentState.state}" — continue needs a run with a result.`,
+    );
   }
 
   const followUp = followUpOf(flags.get("instructions"), positional.slice(1));
@@ -392,21 +380,6 @@ async function cmdContinue(flags: Map<string, string | true>, positional: string
     checkSource,
     parent: { name: parentName, dir: parentPaths.dir },
   });
-}
-
-async function cmdDecide(_flags: Map<string, string | true>, _positional: string[]) {
-  throw new Error("adv decide is retired: council runs finish in one pass with no gate. Just run again or continue.");
-}
-
-/**
- * The door back into a finished run: re-ask the gate with the recorded answers
- * prefilled, then re-run only the tail. The head — draft, review, checks — is
- * immutable and is never re-run; the cost is two model calls or zero.
- *
- * Spec: docs/REVISE.md.
- */
-async function cmdRevise(_flags: Map<string, string | true>, _positional: string[]) {
-  throw new Error("adv revise is retired: council runs finish in one pass with no gate. Just run again or continue.");
 }
 
 async function cmdStatus(flags: Map<string, string | true>, positional: string[]) {
@@ -434,7 +407,7 @@ async function cmdStatus(flags: Map<string, string | true>, positional: string[]
       const who = c.takes.map((t) => `take ${t.index} (${t.model.ref})`).join(" · ");
       console.log(`takes:  ${who}, final ${c.final ? c.final.length : 0} chars${c.learned ? ", learned note present" : ""}`);
     }
-  } catch { /* old run or interrupted — state above is the record */ }
+  } catch { /* interrupted — state above is the record */ }
   for (const r of state.urlRepairs ?? []) {
     console.log(`repaired: ${r.before} -> ${r.after}`);
   }
@@ -553,7 +526,7 @@ function usage() {
   console.log(`adv — two takes plus what we learned
 
   adv [--no-alt-screen]    open the TUI (fullscreen; ADV_NO_ALT_SCREEN=1 disables)
-  adv init [--dir <repo>]    criteria, decisions and config (optional)
+  adv init [--dir <repo>]    criteria and decisions (optional)
   adv run "<task>" [--general] [--plan] [--drafter <model> --drafter-family <f>]
                    [--reviewer <model> --reviewer-family <f>]
                    [--peer <model> --peer-family <f> | --peer none]
@@ -566,7 +539,7 @@ function usage() {
 
   how it works: the models answer independently and in parallel (take.1.md,
   take.2.md, optional take.3.md); the lead synthesises the final answer with a
-  short "what we learned" note. No gate, no claims, no rebuttal pass.
+  short "what we learned" note.
 
   --general / --plan   force the subject for this run, without changing the saved one
   --peer none          run with two models instead of three
@@ -776,12 +749,6 @@ try {
       break;
     case "run":
       await cmdRun(flags, positional);
-      break;
-    case "decide":
-      await cmdDecide(flags, positional);
-      break;
-    case "revise":
-      await cmdRevise(flags, positional);
       break;
     case "continue":
       await cmdContinue(flags, positional);
