@@ -46,7 +46,7 @@ hours on avoidable waits: **do not block me.**
 `adv` runs a task through two or three different models in parallel: each
 writes its own independent take, then the lead synthesises the takes into one
 final answer ending with a short "what we learned" note. One pass. Models
-answer; the human judges.
+debate; a better result comes out.
 
 The technique and the problem it solves are summarised in `README.md`. `ocm`
 (`src/models-cli.ts`) is the model picker standalone — same code, same caches,
