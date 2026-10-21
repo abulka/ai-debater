@@ -4,8 +4,8 @@
  * The TUI is fullscreen — Ink renders into the alternate screen, so the frame
  * must never be taller than the terminal. Every list screen therefore takes an
  * explicit height derived from `process.stdout.rows`, and the arithmetic lives
- * here so "the list will not move" stays one bug, tested once, like the scroll
- * arithmetic in gate-model.ts.
+ * here so "the list will not move" stays one bug, tested once, next to the
+ * scroll arithmetic below.
  *
  * The invariant: log window + spinner + content + mouse line <= terminal rows.
  * `contentRows` subtracts the pinned mouse line; `logWindow` caps the log so
@@ -22,7 +22,7 @@
  */
 export const MOUSE_ROWS = 1;
 
-/** Content below this starves: the gate's options, the picker's hints. */
+/** Content below this starves: the pickers, the panes, the hints. */
 export const MIN_CONTENT_ROWS = 8;
 
 /** Log rows shown while a screen is up. Without a screen, the log fills. */
@@ -158,21 +158,6 @@ export function highlightListHeight(contentH: number, notice: boolean): number {
  */
 export function providerFilterListHeight(contentH: number, notice: boolean): number {
   return Math.max(1, contentH - 6 - (notice ? 2 : 0));
-}
-
-/**
- * Gate detail rows: everything on the gate screen that is not the finding's
- * own text. Header, counts, status (3) + intro (2) + title + question (2) +
- * options + hints (2) = 9 + titleRows + optionRows, plus one each when the
- * extras line and the revisit line are showing.
- */
-export function gateDetailBudget(
-  contentH: number,
-  opts: { titleRows: number; optionRows: number; extras: boolean; revisit: boolean },
-): number {
-  const fixed =
-    9 + opts.titleRows + opts.optionRows + (opts.extras ? 1 : 0) + (opts.revisit ? 1 : 0);
-  return Math.max(0, contentH - fixed);
 }
 
 /** A capped dump (delete confirmation, saved names): content minus its chrome. */

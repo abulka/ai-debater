@@ -162,16 +162,6 @@ const RESULT_KEYS: { key: string; what: string }[] = [
 ];
 
 /**
- * Every key the gate screen answers to, for the `?` pane.
- *
- * The footer has room for seven; the rest were invisible until someone read
- * the source (`w`, `i`, `l` answer every gate question and appeared nowhere).
- * `^T` is spelled out here because its name promises more than it does: it
- * hands the mouse to the terminal so a drag selects — the visible rows only,
- * since the alternate screen keeps no scrollback. `y` is the way to copy the
- * question out whole.
- */
-/**
  * A span's styles as Ink props.
  *
  * The renderer's vocabulary is deliberately small and named after Markdown;
@@ -213,7 +203,7 @@ function Line({ spans, wrap }: { spans: StyledLine; wrap?: "truncate" }) {
  * The top line: the tool's name, and which screen you are on.
  *
  * Both take the accent, because "where am I" is the thing a reader needs
- * without reading: at a glance, the gate and the result should not look alike.
+ * without reading: at a glance, one screen should not look like another.
  *
  * `toolLabel` is "adv" in the debate tool and "ocm" in the standalone model
  * browser — same components, no duplication, and no talk of .adv/ or repos
@@ -299,7 +289,7 @@ const useTerminalRows = () => useSyncExternalStore(subscribeResize, () => proces
 
 /* ------------------------------------------------------------------ *
  * One scrollable pane, used by the panels and by the result view. The
- * arithmetic lives in gate-model.ts so "the list will not move" is one
+ * arithmetic lives in viewport.ts so "the list will not move" is one
  * bug, tested once, and not four copies of the same off-by-one.
  * ------------------------------------------------------------------ */
 
@@ -803,7 +793,7 @@ function Start({
           <Text color="yellow">
             ! {clash}
             {cfg?.familyCheck === "require"
-              ? " — this repo requires different families, so Enter is blocked (↑↓ to choose models)"
+              ? " — familyCheck is \"require\", so Enter is blocked (↑↓ to choose models)"
               : " (fine for testing; use --strict or familyCheck: \"require\" for a trial)"}
           </Text>
         </Box>
@@ -843,9 +833,6 @@ function Start({
       </Box>
       <Box marginTop={1}>
         <Text dimColor>repo {repo}</Text>
-      </Box>
-      <Box>
-        <Text dimColor>models live in ~/.config/adv/ · criteria and decisions in {repo}/.adv/ (optional)</Text>
       </Box>
     </Box>
   );
@@ -2646,8 +2633,8 @@ function ConfirmDelete({
       </Box>
       <Box marginTop={1}>
         <Text dimColor>
-          the run directories are removed for good; nothing in any repository is touched, and
-          decisions in any repo's .adv/decisions.md stay
+          the run directories are removed for good; nothing else is touched —
+          no repository, no settings, no hand-written decisions
         </Text>
       </Box>
       <Box marginTop={1}>
@@ -5111,7 +5098,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     const clash = councilClash(cfg.models);
     if (clash && cfg.familyCheck === "require") {
       setError(
-        `${clash}.\n\nThis repo sets familyCheck: "require", so the run was not started. ` +
+        `${clash}.\n\nfamilyCheck is "require", so the run was not started. ` +
           `Choose a reviewer from another family on the debate screen (↑↓ to choose models).`,
       );
       setPhase("error");
@@ -5169,7 +5156,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         // Answer mode has no repository and needs no criteria; only a plan run
         // is missing something when the file is absent.
         if (!criteria.found && effectiveMode === "plan") {
-          addLog("! .adv/criteria.md missing — using a fallback");
+          addLog("! no criteria found — using a fallback (adv init to add some)");
         }
         const decisions =
           effectiveMode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
@@ -5311,7 +5298,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   async function openRuns() {
     setPhase("runs");
     // Any pane is on the screen we are leaving; it must not reappear when we
-    // come back to a gate or a result later.
+    // come back to a result later.
     setPanel(null);
     runsCursor.current = 0;
     setRunsIndex(0);

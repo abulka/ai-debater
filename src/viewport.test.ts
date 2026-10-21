@@ -4,7 +4,6 @@ import {
   cappedLines,
   contentRows,
   filterHistoryListHeight,
-  gateDetailBudget,
   highlightListHeight,
   logWindow,
   LOG_MAX_ROWS,
@@ -134,29 +133,6 @@ describe("screen budgets", () => {
     expect(providerFilterListHeight(3, true)).toBe(1);
     expect(filterHistoryListHeight(3, true)).toBe(1);
     expect(highlightListHeight(3, true)).toBe(1);
-  });
-});
-
-describe("gateDetailBudget", () => {
-  test("fills what the title and options leave", () => {
-    // 40 content rows, 2 title rows, 3 options: 40 - 9 - 2 - 3 = 26.
-    expect(
-      gateDetailBudget(40, { titleRows: 2, optionRows: 3, extras: false, revisit: false }),
-    ).toBe(26);
-  });
-  test("extras and revisit each cost a row", () => {
-    const base = gateDetailBudget(40, { titleRows: 2, optionRows: 3, extras: false, revisit: false });
-    expect(gateDetailBudget(40, { titleRows: 2, optionRows: 3, extras: true, revisit: false })).toBe(
-      base - 1,
-    );
-    expect(gateDetailBudget(40, { titleRows: 2, optionRows: 3, extras: true, revisit: true })).toBe(
-      base - 2,
-    );
-  });
-  test("floors at zero on a crowded screen", () => {
-    expect(
-      gateDetailBudget(10, { titleRows: 4, optionRows: 5, extras: true, revisit: true }),
-    ).toBe(0);
   });
 });
 

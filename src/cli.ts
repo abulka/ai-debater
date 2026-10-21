@@ -254,7 +254,7 @@ async function runFreshTask(
   // fault. Warning about it there is noise that makes a correct state look broken.
   if (!criteria.found && mode === "plan") {
     console.log(
-      "  warning: .adv/criteria.md not found — using a minimal fallback.",
+      "  warning: no criteria found — using a minimal fallback (adv init to add some).",
     );
   }
   const decisions =

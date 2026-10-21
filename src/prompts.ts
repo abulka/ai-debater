@@ -155,14 +155,6 @@ export function nameTakesInLearned(
 
 /* --- retry -------------------------------------------------------- */
 
-export function retryPrompt(error: string): string {
-  return `Your previous reply failed schema validation:
-
-${error}
-
-Reply again with ONLY the corrected fenced \`\`\`json block, and nothing else.`;
-}
-
 /**
  * Recovery when the provider rejected the model's whole turn, before any reply:
  * it called a tool that was not in the tool list it was given.

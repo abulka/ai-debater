@@ -4,8 +4,8 @@
  * Each `--standalone` run has its own session store, so a continuation cannot
  * resume a session — it starts a new run whose task carries the previous
  * result plus the human's follow-up. That is not a workaround: a new run
- * means a fresh draft, a fresh cross-family review, and the gate again, which
- * is what "continuing the debate" means in this architecture.
+ * means fresh takes plus a fresh synthesis, which is what "continuing the
+ * debate" means in this architecture.
  */
 
 export interface Continuation {

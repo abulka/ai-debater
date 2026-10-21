@@ -8,9 +8,9 @@ waits, and the person you are working with has said plainly: **do not block me.*
 ## Hard rules
 
 1. **Never run a full workflow without asking first.**
-   `adv run`, `adv run --resume`, `adv decide`, and the spike's `roundtrip`
-   check all call models and can take minutes. Ask, state the expected time, and
-   wait for a yes. A question is cheap; fifteen minutes of silence is not.
+   `adv run` and `adv continue` call models and can take minutes. Ask, state
+   the expected time, and wait for a yes. A question is cheap; fifteen minutes
+   of silence is not.
 
 2. **Always pass an explicit timeout to shell commands.** Never leave a command
    unbounded. For anything that calls a model, use **at most 120000 ms**. If it
@@ -37,22 +37,23 @@ waits, and the person you are working with has said plainly: **do not block me.*
    probe, then move on.
 
 6. **Never let an agent write to the repo.** The orchestrator owns every
-   artifact. The drafter and reviewer are read-only.
+   artifact. All four agents are read-only.
 
 ---
 
 ## What this is
 
-`adv` runs a task through two different model families: one drafts, the other
-adversarially verifies, the human decides the taste calls at a gate, and a scoped
-rebuttal applies the decisions. It returns a revised plan plus a changelog and a
-diff. Models verify; the human decides.
+`adv` runs a task through two or three different models in parallel: each
+writes its own independent take, then the lead synthesises the takes into one
+final answer ending with a short "what we learned" note. One pass, no gate, no
+rebuttal. Models answer; the human judges.
 
 The technique and the problem it solves are summarised in `README.md`; the
 design and decisions are in `PLAN.md`; M0's findings are in `spike/README.md`.
 
 **Non-goals.** Not a debate engine, not a multi-agent framework, not a
-replacement for tests. The models never resolve judgment calls.
+replacement for tests. The models pick sensible defaults and recommend; the
+human settles the rest with follow-ups.
 
 ---
 
@@ -76,9 +77,10 @@ replacement for tests. The models never resolve judgment calls.
 | Gate workflow batch | **done 20 Oct** — the gate opens on the draft; "I don't know" wording; `y` copies the question out; `?` lists the gate's keys; the typing warning retired (clarify asks once); `^T` proven at the gate by pty |
 | Workflow round two | **done 20 Oct** — clarify retired; lean plan-mode drafts (no shell scope-notes, no reciting decisions, answers stay answers); continue seeds a follow-up prompt instead of flooding it; toy fixture's test decisions removed |
 | Workflow round three | **done 20 Oct** — the result screen is the answer (commentary behind `i`); `C` continues forcefully (no arming); `Ctrl+L` re-reads the parent result from the desk; prompts pin the subject to the working directory and keep open decisions to one line; declined-check warnings truncate |
+| Council simplification | **done 21 Oct** — the gate, draft/review/rebut, audit, claims, `decide`, `revise`, `run --resume` and the `.adv/` setup screen are gone: two/three parallel takes plus one synthesis (`src/pipeline.ts`). Model choice is global-only (`~/.config/adv/config.json`); `.adv/` holds only opt-in `criteria.md`/`decisions.md` via `adv init`. Pre-council runs on disk are not openable (state without takes); their directories were deleted |
 
 Typecheck must stay clean: `bun run typecheck`. Tests must stay green:
-`bun test` (the gate mapping, resume-model choice and failed-state write are
+`bun test` (council load, failed-state write and the phase/render-chain pin are
 covered there; the TUI layout itself is not).
 
 ---
@@ -95,16 +97,15 @@ adv                            # TUI for the current directory
 adv --dir /path/to/repo        # TUI for another repo
 
 # CLI (scriptable)
-adv init --dir <repo>          # criteria, decisions and config (optional)
-adv run "<task>" --dir <repo> [--no-gate] [--general] [--plan] [--strict]
-adv decide [<run>]
-adv run --resume [<run>]
-adv revise [<run>] [--rewrite] # re-ask the gate (prefilled), re-run only the tail
+adv init --dir <repo>          # criteria and decisions (optional)
+adv run "<task>" --dir <repo> [--general] [--plan] [--strict]
 adv continue [<run>] [--instructions "…"] # new run from a finished one: result + follow-up
 adv status [<run>]
 adv ping <model-or-pair>… [--full] [--timeout <ms>]
+adv benchmarks [--refresh] [<ref>]
+adv rm <run> | --all | --older-than 30d [--yes]
 
-# spike
+# spike (archival: M0 used the retired draft/review API; @ts-nocheck, not typechecked)
 bun run spike/m0.ts endpoints permissions artifacts   # cheap, no model calls for endpoints
 ```
 
@@ -118,34 +119,29 @@ Run artifacts go to `~/.local/share/adv/runs/`: a repository's runs under
 `answers/<timestamp>/` — a question belongs to no repository, so it is filed
 where it can be found from anywhere. The past-runs list shows both, each labelled
 `task` or `question`, and a run carries its own directory, so opening a row
-cannot open a same-stamped run from the other bucket. `adv decide`/`run
---resume`/`revise`/`status` take a bare run name and search both buckets (a
-repository's own run wins the only ambiguous case: the same second in both).
-Runs recorded before this stay where they were; they are records, and they are
-still found by name. `adv run --resume` with no name takes the newest of either.
+cannot open a same-stamped run from the other bucket. `adv continue`/`status`
+take a bare run name and search both buckets (a repository's own run wins the
+only ambiguous case: the same second in both). `adv run --resume`, `adv
+decide` and `adv revise` are retired: council runs finish in one pass, so just
+run again or continue.
 
 `adv rm <run> | --all | --older-than 30d [--yes]` removes runs, and the TUI's
 runs screen does the same with `d`/`D`. Deleting removes only run directories
-under the store: never a repository, never `.adv/`, never `~/.config/adv`. It
-also does not un-settle anything — decisions already appended to a repo's
-`.adv/decisions.md` stay there, which is why this is "delete the run", not
-"undo". Nothing is deleted on one keystroke: the TUI confirms with the count,
+under the store: never a repository, never `.adv/`, never `~/.config/adv`.
+Decisions are hand-written and never appended by a run, so there is nothing to
+un-settle — which is why this is "delete the run", not "undo". Nothing is
+deleted on one keystroke: the TUI confirms with the count,
 the split (this repository's runs versus questions from any directory) and each
 run by name, and the CLI prints the same and asks, refusing without a terminal
 unless `--yes` is passed.
 
-The answer is `plan.v2.md`; `answer.md` (the answer) and `result.md` (the answer
-plus the commentary) appear when the TUI copies them out.
+The answer is `final.md`; `answer.md` (the answer) and `result.md` (the answer
+plus the commentary) appear when the TUI copies them out. `x` shows the diff
+from take 1 to the final answer.
 
 The CLI's final report is rendered Markdown on a terminal and plain Markdown in a
-pipe, so `adv run "…" > plan.md` writes a plan rather than a plan with its
+pipe, so `adv run "…" > plan.md` writes an answer rather than an answer with its
 headings and emphasis scraped off. `NO_COLOR` turns the styling off.
-
-`adv revise` is the door back into a finished run: it re-asks the gate with the
-recorded answers (Enter keeps one), and if anything moved it re-runs only the
-rewrite — two model calls, never the draft and the review. Identical answers
-spend nothing. `docs/REVISE.md` has the state rules and the `decisions.md`
-supersede rule.
 
 ### TUI keys
 
@@ -156,7 +152,7 @@ supersede rule.
 | ↑↓ · Enter | Settings: on **edit drafter/reviewer pairs**, the list — saved pairs last used first, then pairs past runs used, then `new pair…` (pick a drafter, a reviewer, name it), then `save current as…`. On **which models to highlight in colour**, one text line plus the list — Enter adds at the front, Tab renames in place, `^O` recolours, `^D` deletes, `^U` clears, Esc cancels a rename, then back |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it (settings only — inert from the debate screen). A pair that belongs to a run is not stored here and goes when the run does |
 | r / R | Pairs: rename the highlighted saved pair — `r` edits its name, `R` prefills a name suggested from its models (settings only). The name prompt prefills a suggestion for new saves too |
-| ↑↓ · Enter | New debate: on **drafter/reviewer preset**, choose a saved preset (creating and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt and snaps the cursor back to it |
+| ↑↓ · Enter | New debate: on **drafter/reviewer preset**, choose a saved preset (creating and deleting live in settings). On **model 1 / 2 / 3**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt and snaps the cursor back to it |
 | models browser | Home's first row: the same model list — Enter does nothing, Esc home. Everything else (filter, views, ping, export) works as in the picker |
 | P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
 | A | Picker: ping every model shown — the list after the filter, the lock, F, the view and H. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown, and it says how to narrow |
@@ -179,33 +175,20 @@ supersede rule.
 | Y | Picker: export the table as Markdown with a legend — for a second opinion in another LLM — to the clipboard and `~/.local/share/adv/models.md` (overwritten each time). Arms a choice: `e` entire shown table, `v` just the visible window |
 | Tab | New debate: switch subject — **this repository** or a **general question** (also the subject row, Enter toggles) |
 | Enter | New debate: on the prompt, run the typed task — in the subject the desk shows (the mode switch is the choice; Tab corrects it) |
-| ↑↓ · Enter | Answer the gate. Findings offer **yes / no / later**; a judgment call offers the draft's options plus **"I don't know — leave it open"** plus **type your own answer…** (`t`, or Enter on that row) |
-| (gate entry) | The draft pane opens itself — the questions judge a text the gate never showed. Esc to the first question; `d` brings the draft back any time |
-| t | Gate: type your own answer to a judgment call, when none of the options makes sense — an inline editor (the `lineedit.ts` motions); Enter records it, Esc back to the options. Recorded verbatim in `gate.json`, shown back on revisit, settled into `decisions.md` like any choice |
-| y | Gate: copy the current question as Markdown — to the clipboard, and `question-<id>.md` in the run directory |
-| ? | Gate: every key this screen answers to — including `^T`, which hands the mouse to the terminal for selecting the *visible* rows (the alternate screen keeps no scrollback) |
-| s | Skip the current question (finding: untriaged; judgment: open) |
-| o | Gate: leave a judgment call open |
-| d | Gate: the answer/plan text these questions are about, rendered. Result: the draft the review saw, before the gate |
-| v | Gate/Result: every verdict, with its evidence |
-| e | Gate: the cited source — the file around the line, or the URL |
-| w | Gate: the current item's whole text, unclipped |
-| i | Gate: the review summary — warnings, checks, refuted claims. Result: the run at a glance — those plus what happened, what changed, decisions open |
-| l | Gate/Result: the full run log |
-| c | Result: the claims the drafter declared, and the options each judgment call offered |
-| R | Result: the reviewer's raw reply, before the tool merged a check result into it |
+| y | Result: copy the answer as Markdown — the final text, into the clipboard, and to `answer.md` in the run directory |
+| x | Result: the diff from take 1 to the final answer (Esc back) |
+| 1 / d · 2 / R · 3 | Result: each model's original take, unedited |
+| i | Result: what we learned — what the peers contributed, what happened |
+| l | Result: the full run log |
 | ? | Result: the keys that work on this screen |
-| x | Result: the exact text diff and what each change was for, as a pane — neither fits below the fold |
-| y | Result: copy the answer as Markdown — the writer's own text, into the clipboard, and to `answer.md` in the run directory |
 | Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
-| r | Result: revisit the gate — re-ask it with the recorded answers prefilled; if nothing moved, no model calls |
 | Enter | Result: inert (a slipped Enter starts nothing). `C` is continue |
 | C | Result: continue this debate — forceful, no arming. The desk asks for your follow-up only (one editable line; the parent's result is composed into the task at run time, never into the prompt); Ctrl+U abandons. `adv continue [<run>] [--instructions "…"]` is the CLI form |
 | Ctrl+L | Desk, while continuing: view the parent result in a pane — Esc straight back to your follow-up |
-| n | Result/Gate/Runs: back to the debate screen — the draft, subject and models you had are kept |
-| Esc | Back, one level: home is the root (debate · runs · settings → home; pick browse → home, pick select/build → debate screen/pairs screen; pairs → settings or debate screen). A panel closes; a result or gate opened from the past-runs list returns to that list (tags, scroll and all). `n` is the unconditional way to the debate screen, `q` quits |
+| n | Result/Runs: back to the debate screen — the draft, subject and models you had are kept |
+| Esc | Back, one level: home is the root (debate · runs · settings → home; pick browse → home, pick select/build → debate screen/pairs screen; pairs → settings or debate screen). A panel closes; a result opened from the past-runs list returns to that list (tags, scroll and all). `n` is the unconditional way to the debate screen, `q` quits |
 | n · Esc · q | Error: the same rule — Esc back where you came from, n to the debate screen, q quits. This screen had no handler at all, which is how a reader got stuck on it |
-| Ctrl+R | Past runs — open a finished or parked run, from home, the debate screen, the gate, a result or an error |
+| Ctrl+R | Past runs — open a finished run, from home, the debate screen, a result or an error |
 | space | Runs: tag the highlighted run (`●`), and move on — tag several in a row |
 | a / A | Runs: tag all listed / clear the tags |
 | d | Runs: delete the tagged runs, or the highlighted one when none are tagged |
@@ -220,15 +203,10 @@ supersede rule.
 | Ctrl+T | Mouse: hand it to the terminal to select text, and take it back. The mode is on the bottom line of every screen |
 | ↑↓ · q | Scroll the result; `q` quits |
 
-The gate shows the review's state on every screen — counts, warnings, what was
-refuted — and the three panels are how the human gets the context to decide
-rather than deciding blind.
-
-The first-run screen appears when the directory has no `.adv/`. Choose
-"Initialise .adv/ here", or "Continue without it" (models then default to
-`DEFAULT_CONFIG`). Models are chosen on the debate screen (↑↓ to drafter /
-reviewer, Enter opens the picker); the models browser on home is the
-read-only way in.
+Models are chosen on the debate screen (↑↓ to lead / peer, Enter opens the
+picker); the models browser on home is the read-only way in. There is no
+setup screen: a directory with no `.adv/` just runs with a fallback, and
+`adv init` is the opt-in for criteria and settled decisions.
 
 ---
 
@@ -296,16 +274,15 @@ adv run "…" --drafter groq/openai/gpt-oss-120b --drafter-family gpt \
             --reviewer groq/openai/gpt-oss-20b --reviewer-family gpt
 ```
 
-**A model choice sticks.** Choosing models writes the repository's
-`.adv/config.json` **and** `~/.config/adv/config.json` (honours
-`XDG_CONFIG_HOME`). A directory with no `.adv/` — including every answer-mode
-run — uses the last choice rather than `DEFAULT_CONFIG`, and `adv init` seeds a
-new repository from it. A repository's own file still wins, field by field.
+**A model choice sticks, globally.** Choosing models writes only
+`~/.config/adv/config.json` (honours `XDG_CONFIG_HOME`) — never anything into
+a repository. Every directory uses the last choice rather than
+`DEFAULT_CONFIG`. There is no per-repository override; a flag on the command
+line is the way to run one-off models.
 
 **Pairs are named pairs of models, and they are personal.** `~/.config/adv/pairs.json` holds
-`{name, drafter, reviewer, savedAt, lastUsedAt}` — its own file
-because `saveConfig` writes the whole config to both the user file *and* the
-repository's, so a pair list on `Config` would be stamped into every `.adv/` the
+`{name, drafter, reviewer, savedAt, lastUsedAt}` — its own file, because a
+pair list on `Config` would otherwise be stamped into every repository the
 moment a model was chosen. The settings screen's **edit drafter/reviewer pairs** row names the pair the
 current two models are, matched by model rather than by name. Pairs sort by
 `lastUsedAt`, so the pair you used last is first. Pairs a past run used are
@@ -327,8 +304,7 @@ error — which is why there is no star key in `adv`.
 read); Tab switches to **this repository**, which reads the code and lets the task
 decide the deliverable — a plan for a change, or an answer about the code. The
 choice is saved like the models and applies in every directory; a repository
-cannot pin it. One workflow either way: draft, have another family check it,
-settle the calls.
+cannot pin it. One workflow either way: parallel takes, one synthesis.
 
 **A filter is recorded when it is used, not when it is left.**
 `R` recalls past filters, and recording only on leaving left the history blank
@@ -354,28 +330,25 @@ cd fixtures/toy-repo && opencode run --standalone --format json \
 
 ```
 src/
-  cli.ts            arg parsing + commands (init, run, decide, status, tui)
-  tui.tsx           Ink/React TUI: setup, start, settings, pick, gate, panels,
-                    result
-  pipeline.ts       the shared sequence — both front ends drive this
+  cli.ts            arg parsing + commands (init, run, continue, status, rm,
+                    ping, benchmarks, tui)
+  models-cli.ts     `ocm`: the picker standalone (no debate, no pairs)
+  tui.tsx           Ink/React TUI: home, start, settings, pick, panels, result
+  pipeline.ts       the shared sequence — both front ends drive this:
+                    parallel takes, then one synthesis
   runners/
-    opencode-run.ts spawns `opencode run`; validate-with-retry; usage
-  contracts.ts      zod schemas (claims, review, changelog, gate, state)
-  gate-model.ts     the gate as data: items, answers->gate.json, verdict counts,
-                    scrolling, evidence lookup. Tested.
-  urls.ts           deterministic URL checks: invisible characters, repair,
-                    evidence flags. Tested.
-  audit.ts          M2 evidence execution: exact-argv allowlist, spawn with no
-                    shell + timeout + cap + scrubbed env, audit records.
-                    Tested, not yet wired into the pipeline.
-  prompts.ts        plan/answer prompts; one deliverable per call
-  orchestrator.ts   run dirs, state machine, decisions.md
-  gate.ts           the CLI gate (interactive or piped)
+    opencode-run.ts spawns `opencode run`; tool-rejection retry; usage
+  contracts.ts      zod schemas (models, run state)
+  urls.ts           deterministic URL checks: invisible characters, repair.
+                    Tested.
+  prompts.ts        take/synthesis prompts; one deliverable per call
+  orchestrator.ts   run dirs, state machine, criteria/decisions reads.
+                    Tested.
   continue.ts       chained runs: the previous result plus a follow-up,
                     composed into a new task. Tested.
-  diff.ts           unified diff + changelog cross-check (a heuristic)
-  render.ts         the result as sections, each drawn one way: plain text for
-                    a pipe, rendered Markdown for a terminal. Tested.
+  diff.ts           unified diff of take 1 vs the final answer
+  render.ts         the council result as sections, each drawn one way: plain
+                    text for a pipe, rendered Markdown for a terminal. Tested.
   markdown.ts       Markdown -> styled, pre-wrapped terminal lines. Styles only,
                     never removal; one line = one row. Tested.
   theme.ts          the palette, as roles, plus the highlight palette;
@@ -400,10 +373,11 @@ src/
                     written. Tested.
   lineedit.ts       word jump + kill-to-end for every text field: the motions
                     as pure functions, the key shapes as predicates. Tested.
-  agents.ts         the three agent definitions (injected per call)
-  init.ts           `adv init` scaffolding
+  agents.ts         the four agent definitions (injected per call)
+  init.ts           `adv init` scaffolding (criteria + decisions only)
+  viewport.ts       fullscreen budgets; scroll clamps. Tested.
 fixtures/toy-repo/  the test problem (a deliberate lie in its README)
-spike/              M0
+spike/              M0 (archival; the retired draft/review API, @ts-nocheck)
 ```
 
 ### Things that will bite you if you forget them
@@ -415,21 +389,18 @@ spike/              M0
   continue a session across runs. Validate-with-retry re-sends the whole prompt.
 - **OpenCode's base policy is `allow *`.** Denying `edit`/`shell` alone is not
   read-only; MCP servers stay reachable. Deny `*` first.
-- **The three adv agents are injected, not installed** (`--agent adv-drafter` /
-  `-reviewer` / `-writer`, definitions in `src/agents.ts`). They arrive in
+- **The four adv agents are injected, not installed** (`--agent adv-council` /
+  `-council-answer`, plus `adv-drafter` / `adv-writer` for the ping,
+  definitions in `src/agents.ts`). They arrive in
   `OPENCODE_CONFIG_CONTENT`, which OpenCode **only reads when it starts its own
   server** — so every `opencode run` must pass `--standalone`, and anything that
   strips that variable produces `Agent not found`. The old file-based install,
   the markdown templates and `adv init --global` are gone; nothing is written to
   the target repo or to `~/.config/opencode`. They are `hidden: true`, but
   `opencode debug agents` lists hidden agents too — it is not a visibility test.
-- **Each call asks for one thing** — prose, or one JSON block. Merging them is
-  where models get flaky.
-- **A run's model identity lives in `state.json`, not in the config.**
-  `adv run --resume` uses the recorded pair (`resumedModels`), because the
-  rebuttal is written by the drafter: resuming with the config default lets a
-  model rewrite a plan it did not write. An explicit `--drafter`/`--reviewer`
-  still wins, and is reported as an override.
+- **Each call asks for one thing** — a take, or the synthesis. The old
+  split (prose plus a separate JSON block per call) is where models got
+  flaky; the council asks for prose only.
 - **`family` is a statement; `familyOf()` is a guess.** The diversity check
   compares the explicit `family` fields. `familyOf` only labels models in the
   picker. Do not use it to decide whether a pair is diverse.
@@ -528,24 +499,14 @@ spike/              M0
   up with the model.
 - **A failure writes `state: "failed"` plus the error.** A run left at
   `created` means the process died before it could record anything — that is
-  different from a run parked at the gate, and used to be indistinguishable.
+  different from a run that died mid-takes, and used to be indistinguishable.
 - **A citation can be broken in a way nobody can see.** A zero-width space
-  inside a URL is invisible on screen and fatal when copied; a 20B reviewer
-  returned "10 confirmed, 0 refuted" on a plan containing one. `src/urls.ts`
-  removes invisible characters **inside URL spans only** before the review sees
-  the plan, records the repair in `state.json`, and flags invisible characters
-  in evidence. It deliberately leaves prose alone and leaves visible non-ASCII
-  (an IDN, an accented path) alone: removing those would change the address
-  rather than fix it. Do not ask a model to be the only check on this.
-- **One verdict may cite more than one place.** `README.md:8-9; src/rateLimit.ts:3-4`
-  is a legitimate evidence string. The existence check splits on `;` first;
-  checking the combined string as a path reports both files as missing. A run
-  did exactly that on 17 Oct before the split was added.
-- **Reviewers propose shell pipelines.** `sh -c '… | grep …'` is a reasonable way
-  to prove a file is absent, and it is precisely what the allowlist must refuse.
-  The prompt says argv only, no shell; the executor has no shell, so a pipeline
-  can never run. If a check cannot be expressed as one command, the claim stays
-  `unverifiable` — and the reviewer is told to say so.
+  inside a URL is invisible on screen and fatal when copied. `src/urls.ts`
+  removes invisible characters **inside URL spans only** before the takes run,
+  and records the repair in `state.json`. It deliberately leaves prose alone
+  and leaves visible non-ASCII (an IDN, an accented path) alone: removing those
+  would change the address rather than fix it. Do not ask a model to be the
+  only check on this.
 - **Nothing removes Markdown any more.** The answer is shown because it *is*
   Markdown: `src/markdown.ts` turns the syntax into styles and keeps the text.
   The old path stripped `#`, `*`, backticks and reformatted tables before the
@@ -565,11 +526,9 @@ spike/              M0
   by it; inside a fence it stays code. Table cells are parsed for emphasis too,
   so `**hits**` in a cell is bold rather than four literal characters.
 - **Columns wrap under themselves, not back to the margin.** The commentary
-  sections are rows of fields (`  V14  fixed     <summary>`), so `fitLines`
-  takes a hanging indent and the changelog and decision sections compute theirs
-  from the widest id in them. It wraps at spaces and keeps the spacing as
-  written — `toWords` is for Markdown, where runs of spaces mean nothing, and
-  using it here collapsed the columns.
+  sections are rows of fields, so `fitSpans` takes a hanging indent. It wraps
+  at spaces and keeps the spacing as written — `toWords` is for Markdown,
+  where runs of spaces mean nothing, and using it here collapsed the columns.
 - **Colour is a palette of roles, in `src/theme.ts`, and it never carries
   meaning on its own.** `accent` marks structure (section rules, headings, pane
   titles, the selected option), `code` marks literals, `warn`/`danger` mark state
@@ -599,25 +558,15 @@ spike/              M0
   digit order matters. A quote-only or separator-only pattern parses to
   nothing or to terms that can never hit, so the screen refuses it before it
   is stored — an empty term list would match everything.
-- **The commentary is built as spans and printed as text.** `resultSections`
-  returns styled lines; `renderResult` joins their text for anything that is not
-  a terminal. That is why `adv run > plan.md` is unchanged by a colour change:
-  there is one layout and two deliveries, and the pipe simply drops the styles.
-- **The diff names its two sides `draft` and `final`, and only a header may be
-  rewritten.** `git diff --no-index` labels files with the paths it is handed,
-  which here are the absolute paths of `plan.v1.md` and `plan.v2.md` inside the
-  run directory — so a question asked in answer mode read as a change to
-  whatever repository the session happened to start in. `relabelDraftToFinal`
-  rewrites the header **before the first hunk only**: a removed line whose text
-  begins with `--` also renders as `--- something`, and rewriting that corrupts
-  the patch. Runs recorded before this keep their old labels — `diff.patch` is a
-  record and the pane shows what is in it.
-- **The "what it was changed for" pane joins by item id, never by hunk.**
-  `assessDiff` counts hunks against changelog entries and cannot map one to the
-  other, so the pane says which items were authorised, what the writer reported
-  doing about each, and shows two absences that matter: a change to an item that
-  was never authorised, and an authorised item the changelog says nothing about.
-  Do not "improve" it into a hunk-to-item mapping: there is no such mapping.
+- **The commentary is built as spans and printed as text.**
+  `councilSections` returns styled lines; `renderCouncil` joins their text for
+  anything that is not a terminal. That is why `adv run > plan.md` is unchanged
+  by a colour change: there is one layout and two deliveries, and the pipe
+  simply drops the styles.
+- **The diff is take 1 vs the final answer, plain.** `unifiedDiff` shells to
+  `git diff --no-index` on two temp files and trims the output — no relabelling,
+  no changelog cross-check. `diff.patch` is a record and the pane shows what is
+  in it.
 - **A pane and the screen it opens over are the same component.** React reuses
   the `Scroller` instance when only the panel toggles, so its scroll offset
   carries over — and a pane opened after scrolling another renders past its own
@@ -629,19 +578,10 @@ spike/              M0
   run's task into the same state, so Ctrl+R ate the prompt you were typing).
   `runTask` is the task of the run on screen, set from the draft by `beginRun`
   and from the record by `openRun`; `runHead`/`runTail` and the head effect read
-  it. `n` is the way back to the debate screen from a result, a gate or the runs
+  it. `n` is the way back to the debate screen from a result or the runs
   list, and Ctrl+R opens the list from any settled screen. Esc is inert on the
   result on purpose — quitting is `q`, never a stray Escape. The `Scroller`
-  swallows Ctrl/meta combos so Ctrl+R cannot also read as `r` (revisit) or
-  Ctrl+Y as `y` (copy).
-- **The custom row is a view concern, not a gate item.** `buildItems` never
-  contains it — the model never proposed it — so `GateItem.values` has no
-  entry for it and `commit` must never record its label. The TUI appends it
-  (`displayOptions`), the cursor index for it is `customRowIndex(item)`
-  (== `values.length`), and `selectionForCurrent` lands a recorded free-text
-  answer there. A custom choice must pass through `sanitizeCustomChoice`:
-  `decisions.md` entries read `**choice**`, so a `*` in the text breaks the
-  entry regex and silently drops the decision from the next draft's feed.
+  swallows Ctrl/meta combos so Ctrl+Y cannot also read as `y` (copy).
 - **Continuing is a dedicated key, and it is forceful.** `C` on the result sets
   a pending continuation (parent name/dir/mode/result) and an empty prompt;
   `beginRun` composes the full task at run time. Enter was tried first, with an
@@ -660,14 +600,14 @@ spike/              M0
   made "what is this repo about" come back about the *enclosing* tool — PWD
   and cwd were correct; the model read upward, and the evidence checker then
   flagged every citation as missing. The prompts pin the subject to the
-  working directory ("cite only files under it"), which the checker polices
-  afterwards.
+  working directory ("cite only files under it").
 - **The result screen is the answer; the commentary is behind `i`.** What
-  happened, what changed and decisions open pushed the answer below the fold
-  on the very screen that exists to show it. `renderAnswerOnlyLines` /
-  `renderCommentaryLines` split `resultSections` by prefix — the answer and
-  sources are always the first sections — and `i` renders the complement.
-  The CLI's piped report keeps everything: a pipe is for scripting.
+  we learned and what happened pushed the answer below the fold on the very
+  screen that exists to show it. `renderCouncilAnswerLines` /
+  `renderCouncilCommentaryLines` split `councilSections` by prefix — the
+  answer and sources are always the first sections — and `i` renders the
+  complement. The CLI's piped report keeps everything: a pipe is for
+  scripting.
 - **The prompt invites what the sandbox denies, and the model apologises in
   print.** The plan-mode prompt said "or a git command you actually ran" while
   the drafter agent has no shell — so it tried, was denied, and opened the
@@ -675,16 +615,6 @@ spike/              M0
   only ask for what the agent's tools can produce. The same pass added "do not
   recite the settled decisions" (a draft quoted them all back as a section)
   and "answers stay answers" (a question had come back as an options-plan).
-- **The gate opens on the draft, once per entry.** The pane is opened by the
-  phase transition itself — a ref flag set on entry and reset whenever the
-  phase leaves the gate — not by the panel's own state, or closing it would
-  reopen it. `d` is the manual way back; the footer says `d read draft`, not
-  `d plan`, which read like a label rather than an invitation.
-- **`^T` is proven to work at the gate.** The pty probe drives the TUI to a
-  parked run's gate and asserts the mouse-off bytes (`?1006l`/`?1000l`) and the
-  mode-line flip. Selection itself is then the terminal's — the visible rows
-  only, no scrollback on the alternate screen — so when a reader wants text
-  *out*, `y` copies it whole; drag-selection is not a copy API.
 - **Every screen needs a way out, and the text on it has to name a key that
   exists.** The error phase had no input handler: its own words said "Esc for the
   other runs" while the only key that worked was Ctrl+C, so a reader who opened a
@@ -695,8 +625,8 @@ spike/              M0
   `src/tui-phase.test.ts` pins every `Phase` member to the render chain.
 - **Esc means "back", and back is where you came from.** `openedFrom` records
   whether the run on screen came from the past-runs list or from the debate screen, and
-  `goBack()` is the only thing that reads it: the result, the gate and the error
-  screen all call it. Returning to the list does not reload it — the list is a
+  `goBack()` is the only thing that reads it: the result and the error
+  screen both call it. Returning to the list does not reload it — the list is a
   snapshot and keeps its tags and its scroll — which is why `goBack` sets the
   phase and nothing else. `n` stays the unconditional way to the debate screen for when
   "back" is not where you want to be. Note the corollary: Ctrl+R does nothing
@@ -737,8 +667,8 @@ spike/              M0
     `process.once("exit")`), or the reader's shell is left sending reports. There
     is no package to borrow: `ink-mouse` and `ink-mouse-events` do not exist, and
     `ink-scroll-box` is a scroll container with no events.
-- **In a pane, one element must be one row.** The result and gate panes scroll
-  by line offset (`clampOffset`/`maxOffset` in `gate-model.ts`), so if a line is
+- **In a pane, one element must be one row.** The result and diff panes scroll
+  by line offset (`clampOffset`/`maxOffset` in `viewport.ts`), so if a line is
   wider than the pane, Ink wraps it, the count stops matching what is on screen,
   and the scroll jumps. That is why `renderMarkdownLines` pre-wraps, why a long
   URL or code line is split rather than allowed to overflow, and why the section
@@ -749,8 +679,8 @@ spike/              M0
   the root is `<Box height={termRows}>`, the log sits on top, the screen fills
   the middle (`flexGrow` + `overflow="hidden"`), and the mouse line is pinned
   last. The budgets live in `src/viewport.ts` and every screen subtracts only
-  its own chrome — the arithmetic is tested in `src/viewport.test.ts`, next to
-  the gate-model rule. A screen that miscounts clips instead of corrupting the
+  its own chrome — the arithmetic is tested in `src/viewport.test.ts`. A screen
+  that miscounts clips instead of corrupting the
   redraw, but none should have to: the invariant is log + spinner + content +
   mouse ≤ rows.
 - **`<Static>` is banned.** It is designed for inline rendering; on the
@@ -776,29 +706,23 @@ spike/              M0
   promises selection only — "wheel scrolls back" is false there and the line
   must not say it. The current wording is "drag to select text · Ctrl+T takes
   it back".
-- The diff check is a **heuristic** (hunk count vs changelog entries). It flags
-  possible out-of-scope edits; it cannot prove one, and a legitimately unclaimed
-  consequence of a decision will be flagged as readily as a real edit.
 
 ---
 
 ## Next task
 
-**M2 (evidence execution) and M4 (`adv revise`) are done.** M2's two slices are
-in and tested: the contract, exact-argv matcher, executor, the quick-vs-slow
-approval split, `audit.json`, the merged review view, and the URL/evidence
-checks. M4 is `adv revise`: the gate asked again, prefilled, with only the
-rewrite re-run — spec in `docs/REVISE.md` — and its TUI door: `r` on the result
-screen and the past-runs picker (Ctrl+R) drive the same shared revise logic, so
-the two front ends cannot drift. The 12 settled decisions in
-`docs/M2-PLAN.md` §3 stand; do not reopen them without saying why.
+**The council is the workflow and the gate is gone.** 21 Oct removed the whole
+adversarial-review apparatus — draft, claims, review, gate, rebuttal, audit,
+`adv decide`, `adv revise`, `adv run --resume` — and the `.adv/` setup screen
+with it. `docs/M2-PLAN.md` §3's settled decisions and `docs/REVISE.md` stand as
+history; do not re-litigate them, and do not rebuild a gate without saying why
+the council's takes-plus-synthesis fails to settle something a gate would.
 
-Not yet done (parked, not lost):
+Not yet done:
 
-1. `adv audit <run>` for re-running checks later — the plan's §6 item 3. There is
-   no data to build a Tier 2 list from, so it is deliberately unbuilt;
+1. the §12 eval (`PLAN.md`), which needs a body of runs first: 5–10 completed
+   council runs across pairs before any measurement is worth reading;
 2. the MCP server-level disable (plan §6; still open from the spike);
-3. the §12 eval, which needs a body of runs first: 5–10 completed runs across
-   pairs before any measurement is worth reading.
+3. `docs/PLAN-USE-OPENCODE-API.md` — a proposed runner change, not started.
 
 Before anything that calls a model, ask the human.
