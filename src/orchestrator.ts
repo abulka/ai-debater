@@ -87,6 +87,12 @@ export function runPaths(repo: string, dir: string) {
     /** The synthesised final answer. */
     final: path.join(dir, "final.md"),
     diff: path.join(dir, "diff.patch"),
+    /**
+     * The run's own log: subject, takes, timings, warnings — one line each,
+     * appended as the run happens. Read by the result screen's info panel and
+     * the whole-result export; removed with the directory, like everything else.
+     */
+    log: path.join(dir, "log.md"),
     state: path.join(dir, "state.json"),
     /**
      * Written when the human copies the answer out of the TUI: the clipboard

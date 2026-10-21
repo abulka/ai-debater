@@ -67,6 +67,7 @@ import {
   type RunSummary,
 } from "./orchestrator.ts";
 import {
+  formatCallLine,
   loadCouncil,
   runSynthesis,
   runTakes,
@@ -93,8 +94,6 @@ import {
   contentRows,
   logWindow,
   maxOffset,
-  LOG_MAX_ROWS,
-  MIN_CONTENT_ROWS,
   filterHistoryListHeight,
   highlightListHeight,
   pairsListHeight,
@@ -134,7 +133,7 @@ type Panel = { title: string; lines: StyledLine[] };
  * Every key the result screen answers to.
  *
  * A list, not a paragraph in the footer: the footer has room for four or five
- * of them, and the ones a reader needs once — the other takes, the full log —
+ * of them, and the ones a reader needs once — the other takes, the run log —
  * are exactly the ones that would not fit. `?` shows this,
  * and it is the same list the key handler is written against, so a new key that
  * is not here is a key nobody can find.
@@ -146,8 +145,7 @@ const RESULT_KEYS: { key: string; what: string }[] = [
   { key: "1 / d", what: "model 1's original take" },
   { key: "2 / R", what: "model 2's original take" },
   { key: "3", what: "model 3's original take (when a third model took part)" },
-  { key: "i", what: "what we learned — what the peers contributed, what happened" },
-  { key: "l", what: "the full run log" },
+  { key: "i", what: "what we learned — what the peers contributed, what happened, the run log" },
   { key: "C", what: "continue this debate — the desk asks for your follow-up only; the result rides along" },
   { key: "X", what: "back to the menu" },
   { key: "n", what: "new question — the desk opens with a cleared prompt" },
@@ -2494,6 +2492,7 @@ function Runs({
   offset,
   height,
   tagged,
+  notice,
 }: {
   runs: RunSummary[];
   index: number;
@@ -2501,6 +2500,7 @@ function Runs({
   offset: number;
   height: number;
   tagged: Set<string>;
+  notice: string | null;
 }) {
   const width = Math.max(8, useTerminalWidth() - 6);
   const window = runs.slice(offset, offset + height);
@@ -2561,6 +2561,11 @@ function Runs({
           {tagged.size ? ` · ${tagged.size} tagged` : ""}
         </Text>
       </Box>
+      {notice && (
+        <Box marginTop={1}>
+          <Text color={THEME.ok}>{notice}</Text>
+        </Box>
+      )}
       <Box>
         <Text>
           <Line
@@ -2652,12 +2657,13 @@ function ConfirmDelete({
 /**
  * The run log, and the one live line that goes with it.
  *
- * A bounded in-frame window over the session's log: the last rows that fit the
- * viewport budget, with the spinner below while a model is thinking. There is
- * deliberately no `<Static>` here — on the alternate screen there is no
- * scrollback, and Ink replays the whole accumulated static output on any full
- * clear, pushing the live frame off the screen. The full log stays in state
- * for the session, and `l` shows it whole in a pane.
+ * A bounded in-frame window over the current run's log, shown only while the
+ * run is in flight: the last rows that fit the viewport budget, with the
+ * spinner below while a model is thinking. There is deliberately no `<Static>`
+ * here — on the alternate screen there is no scrollback, and Ink replays the
+ * whole accumulated static output on any full clear, pushing the live frame
+ * off the screen. The finished log is persisted to the run directory
+ * (`log.md`) and read from there by the result screen's info panel.
  */
 function Log({ lines, label, maxLines }: { lines: StyledLine[]; label: string | null; maxLines: number }) {
   const [frame, setFrame] = useState(0);
@@ -2719,23 +2725,6 @@ function workingLabel(log: string[], phase: Phase): string | null {
   if (last.startsWith("synthesising")) return "synthesising the takes…";
   return log.length ? "working…" : "starting…";
 }
-function callLine(info: {
-  kind: "take" | "synthesis";
-  step: string;
-  retry: boolean;
-  ms: number;
-  usage: { cost: number; costKnown: boolean };
-}): string {
-  const what =
-    info.kind === "take"
-      ? "take written"
-      : "synthesis written";
-  // $0 is an absence, not a number: a gateway that reports no cost must not
-  // make a paid run display as free.
-  const cost = info.usage.costKnown ? `$${info.usage.cost.toFixed(6)}` : "cost not reported";
-  return `${what}${info.retry ? " (retry)" : ""} — ${(info.ms / 1000).toFixed(1)}s, ${cost}`;
-}
-
 function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; altScreen: boolean; onRecap?: (text: string | null) => void; initial?: "browser"; standalone?: boolean }) {
   const { exit } = useApp();
   /* One handler for the whole app, in every phase, so no screen forgets it. */
@@ -2781,8 +2770,16 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
      draft the moment you pressed Ctrl+R. */
   const [task, setTask] = useState("");
   const [runTask, setRunTask] = useState("");
+  /** The run's continuation, stashed at start: the effect that runs the council
+      cannot read `pendingContinue` (cleared before the run starts), so the
+      parent reference and follow-up travel here, next to the composed task. */
+  const [runParent, setRunParent] = useState<{ name: string; dir: string } | null>(null);
+  const [runFollowUp, setRunFollowUp] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
-  const [council, setCouncil] = useState<{ takes: { index: number; model: ModelRef; text: string }[]; final: string; learned: string; patch: string; dir: string } | null>(null);
+  /** The live log, mirrored for the run's end: the completion handler reads the
+      ref because the effect closure must not depend on the log it appends to. */
+  const logRef = useRef<string[]>([]);
+  const [council, setCouncil] = useState<{ takes: { index: number; model: ModelRef; text: string }[]; final: string; learned: string; patch: string; dir: string; log: string[] } | null>(null);
   const [error, setError] = useState("");
   const [index, setIndex] = useState(0);
   const [selection, setSelection] = useState(0);
@@ -3041,7 +3038,10 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
      not be hijacked by opening a run that happened to be in the other mode. */
   const effectiveMode: Mode = runMode ?? mode;
 
-  const addLog = (line: string) => setLog((l) => [...l, line]);
+  const addLog = (line: string) => {
+    logRef.current.push(line);
+    setLog((l) => [...l, line]);
+  };
 
   useEffect(() => {
     void (async () => {
@@ -5118,16 +5118,13 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     const fullTask = pendingContinue
       ? composeContinuation(pendingContinue.name, pendingContinue.result, followUp).task
       : followUp;
-    // The two things the human just chose. They belong in the log: without them
-    // the history starts at "drafting" and does not say what was asked or who is
-    // doing it.
+    // A fresh run starts with a blank log: the header, takes and timings the
+    // pipeline reports land here, and nothing from an earlier run survives to
+    // haunt another screen. The log bar shows only while running; the finished
+    // log is read from the run directory afterwards.
     setOpenedFrom("start");
-    addLog(`${next === "answer" ? "general question" : "repository"} · ${cfg.models.drafter.ref} + ${cfg.models.reviewer.ref}${cfg.models.peer ? ` + ${cfg.models.peer.ref}` : ""} (parallel takes)`);
-    addLog(
-      pendingContinue
-        ? `continuing ${pendingContinue.name} · follow-up: ${followUp}`
-        : `${next === "answer" ? "question" : "task"}: ${fullTask}`,
-    );
+    setLog([]);
+    logRef.current = [];
     if (next !== mode) {
       setMode(next);
       void persist(cfg, next);
@@ -5137,6 +5134,8 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     setRunMode(next);
     setRunModels(cfg.models);
     setRunTask(fullTask);
+    setRunParent(pendingContinue ? { name: pendingContinue.name, dir: pendingContinue.dir } : null);
+    setRunFollowUp(pendingContinue ? followUp : null);
     setCouncil(null);
     setPendingContinue(null);
     setIndex(0);
@@ -5153,15 +5152,10 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       try {
         const criteria =
           effectiveMode === "answer" ? { text: NO_CRITERIA, found: false } : await readCriteria(repo);
-        // Answer mode has no repository and needs no criteria; only a plan run
-        // is missing something when the file is absent.
-        if (!criteria.found && effectiveMode === "plan") {
-          addLog("! no criteria found — using a fallback (adv init to add some)");
-        }
         const decisions =
           effectiveMode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
         const reporting: Reporting = {
-          onCall: (info) => addLog(callLine(info)),
+          onCall: (info) => addLog(formatCallLine(info)),
           onNote: (text) => addLog(text),
         };
         const takes = await runTakes(
@@ -5172,6 +5166,10 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
           cfg.models,
           effectiveMode,
           reporting,
+          {
+            ...(runParent ? { parent: runParent } : {}),
+            ...(runFollowUp ? { followUp: runFollowUp } : {}),
+          },
         );
         if (cancelled) return;
         const tail = await runSynthesis(
@@ -5185,7 +5183,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
           reporting,
         );
         if (cancelled) return;
-        setCouncil({ takes: takes.takes, final: tail.final, learned: tail.learned, patch: tail.patch, dir: takes.paths.dir });
+        setCouncil({ takes: takes.takes, final: tail.final, learned: tail.learned, patch: tail.patch, dir: takes.paths.dir, log: [...logRef.current] });
         setRunModels(cfg.models);
         setPhase("result");
       } catch (e) {
@@ -5270,7 +5268,9 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   async function deleteSelected(dirs: string[]) {
     setPendingDelete(null);
     const result = await deleteRuns(dirs);
-    addLog(
+    // A notice, not a log line: the choice is confirmed inline, and a log line
+    // would follow every later screen after the runs it names are gone.
+    setNotice(
       result.failed.length
         ? `deleted ${result.deleted.length} run(s); ${result.failed.length} refused: ` +
             result.failed.map((f) => `${f.dir} — ${f.error}`).join("; ")
@@ -5289,7 +5289,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     if (council && result.deleted.includes(council.dir)) {
       setCouncil(null);
       setRunTask("");
-      addLog("the run on screen was deleted — back home");
       setPhase("home");
     }
   }
@@ -5332,7 +5331,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         return;
       }
       const c = await loadCouncil(p);
-      setCouncil({ takes: c.takes, final: c.final, learned: c.learned, patch: c.patch, dir: p.dir });
+      setCouncil({ takes: c.takes, final: c.final, learned: c.learned, patch: c.patch, dir: p.dir, log: c.log });
       setRunModels(state.models);
       setRunMode(state.mode);
       setRunTask(state.task);
@@ -5370,7 +5369,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       setDeskSel(5);
       setOpenedFrom("start");
       setPanel(null);
-      addLog(`continuing run ${parentName} — type your follow-up, then Enter runs it`);
+      // No log line: the desk banner already names the run being continued.
       setPhase("start");
     }
   }
@@ -5398,6 +5397,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       learned: council.learned,
       takes: council.takes,
       patch: includeDiff ? council.patch : undefined,
+      log: council.log,
       ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
       ...(runTask ? { question: runTask, questionLabel: effectiveMode === "answer" ? "question" : "task" } : {}),
     };
@@ -5410,6 +5410,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       learned: council.learned,
       takes: council.takes,
       patch: council.patch,
+      log: council.log,
       ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
       ...(runTask ? { question: runTask, questionLabel: effectiveMode === "answer" ? "question" : "task" } : {}),
     };
@@ -5470,7 +5471,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     );
   }
 
-  /** What the peers contributed, plus what happened — behind `i`. */
+  /** What the peers contributed, plus what happened, plus the run log — behind `i`. */
   function openCouncilInfo() {
     if (council) {
       const report = councilReport()!;
@@ -5482,18 +5483,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       );
       return;
     }
-  }
-
-  function openCouncilLog() {
-    showPanel(
-      "run log",
-      (log.length ? log : ["(nothing logged yet)"]).flatMap((line) =>
-        line.startsWith("!")
-          ? [spans({ text: line, color: THEME.warn })]
-          : [spans({ text: line })],
-      ),
-      0,
-    );
   }
 
   /**
@@ -5517,7 +5506,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   useInput(
     (input, key) => {
       if (key.escape) {
-        addLog("that run is on disk but cannot be continued");
         goBack();
         return;
       }
@@ -5621,8 +5609,8 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
 
   /* Fullscreen budgets: the frame is the terminal, so every screen takes its
      rows from the viewport rather than a constant. `contentRows` is the frame
-     minus the pinned mouse line; the log shows the last rows that leave the
-     content its minimum (while running, the log is the screen and fills);
+     minus the pinned mouse line; while running, the log is the screen and
+     fills it, and everywhere else the log takes no rows at all;
      each screen then subtracts only its own chrome. The content box below is
      `overflow="hidden"`, so a screen that miscounts clips instead of pushing
      the frame past the terminal. */
@@ -5649,11 +5637,16 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
   );
   const usable = contentRows(termRows);
   const running = phase === "running";
-  const logWant = logWindow(logRows.length, usable, {
-    label: logLabel !== null,
-    minContent: running ? 0 : MIN_CONTENT_ROWS,
-    maxLog: running ? usable : LOG_MAX_ROWS,
-  });
+  // The log bar shows only while a run is in flight. Everywhere else the
+  // finished log belongs to the result screen's info panel, not the top of
+  // the frame — a stale log over the model browser was the bug.
+  const logWant = running
+    ? logWindow(logRows.length, usable, {
+        label: logLabel !== null,
+        minContent: 0,
+        maxLog: usable,
+      })
+    : 0;
   // The hints wrap to the terminal width (see `hints.ts`), uncapped — the
   // menu shows everything. What yields instead is the log window: it shrinks
   // toward what is left after the picker takes the full menu with a 3-row
@@ -5886,7 +5879,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         continuing={pendingContinue?.name ?? null}
         onAbandonContinue={() => {
           setPendingContinue(null);
-          addLog("continuation abandoned — the desk is a plain question again");
+          setNotice("continuation abandoned — the desk is a plain question again");
         }}
         onViewParent={() => {
           if (!pendingContinue) return;
@@ -5936,6 +5929,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         offset={runsOffset}
         height={runsH}
         tagged={taggedRuns}
+        notice={notice}
       />
     );
 
@@ -6049,10 +6043,6 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
             openCouncilInfo();
             return true;
           }
-          if (input === "l") {
-            openCouncilLog();
-            return true;
-          }
           return false;
         }}
       />
@@ -6103,12 +6093,13 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
 
   return (
     /* Fullscreen: the frame is the terminal, so it is exactly `termRows` high —
-       the bounded log on top, the screen in the middle, the mouse line pinned
-       last. The middle clips (`overflow="hidden"`) rather than growing: a
-       screen taller than its budget loses rows instead of pushing the frame
-       past the terminal and corrupting the redraw. */
+       the running log on top (only while a run is in flight), the screen in
+       the middle, the mouse line pinned last. The middle clips
+       (`overflow="hidden"`) rather than growing: a screen taller than its
+       budget loses rows instead of pushing the frame past the terminal and
+       corrupting the redraw. */
     <Box flexDirection="column" height={termRows}>
-      <Log lines={logRows} label={logLabel} maxLines={logTake} />
+      {running && <Log lines={logRows} label={logLabel} maxLines={logTake} />}
       <Box flexDirection="column" flexGrow={1} overflow="hidden">
         {content}
       </Box>

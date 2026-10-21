@@ -126,6 +126,8 @@ export function councilSections(a: {
   question?: string;
   /** "question" in answer mode, "task" in plan mode. */
   questionLabel?: string;
+  /** The run's log, one line each: subject, takes, timings, warnings. */
+  log?: string[];
 }): Section[] {
   const sections: Section[] = [];
   if (a.question?.trim()) {
@@ -149,6 +151,19 @@ export function councilSections(a: {
     spans({ text: `  takes: ${a.takes.map((t) => `take ${t.index} (${t.model.ref})`).join(" · ")}`, dim: true }),
   );
   sections.push({ header: `── what happened ${rule(47)}`, body: happened, hang: 2 });
+  // Absent on runs recorded before the log file existed: those render as
+  // before, with no section and no placeholder.
+  if (a.log?.length) {
+    sections.push({
+      header: `── run log ${rule(51)}`,
+      body: a.log.map((line) =>
+        line.startsWith("!")
+          ? spans({ text: `  ${line}`, color: THEME.warn })
+          : spans({ text: `  ${line}` }),
+      ),
+      hang: 2,
+    });
+  }
   if (a.patch) {
     sections.push({
       header: `── exact changes ${rule(46)}`,

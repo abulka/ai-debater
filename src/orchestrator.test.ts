@@ -293,6 +293,7 @@ describe("deleting runs", () => {
       const run = path.join(runsDir(repo), "2026-10-17T12-00-00");
       await writeRun(runsDir(repo), "2026-10-17T12-00-00", runState());
       await writeFile(path.join(run, "final.md"), "the answer\n");
+      await writeFile(path.join(run, "log.md"), "repository · a + b (parallel takes)\n");
 
       const result = await deleteRuns([run]);
       expect(result.deleted).toEqual([run]);

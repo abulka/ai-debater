@@ -22,6 +22,7 @@
  */
 
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { loadConfig } from "./config.ts";
 import type { FamilyCheck } from "./config.ts";
 import { loadCatalogue } from "./catalogue.ts";
@@ -220,6 +221,9 @@ async function finalizeCouncil(
     models,
     question: task,
     questionLabel: mode === "answer" ? "question" : "task",
+    log: await readFile(paths.log, "utf8")
+      .then((text) => text.split("\n").filter((line) => line.length > 0))
+      .catch(() => [] as string[]),
   };
   // A terminal gets the rendered Markdown, a pipe gets the Markdown itself:
   // `adv run … > plan.md` should write an answer, not an answer with its
@@ -244,6 +248,7 @@ async function runFreshTask(
     check: FamilyCheck;
     checkSource: string;
     parent?: { name: string; dir: string };
+    followUp?: string;
   },
 ) {
   const { task, models, mode, check, checkSource } = opts;
@@ -251,23 +256,14 @@ async function runFreshTask(
   // in, and no settled decisions either.
   const criteria =
     mode === "answer" ? { text: NO_CRITERIA, found: false } : await readCriteria(repo);
-  // Answer mode assumes no repository, so no criteria is the normal case, not a
-  // fault. Warning about it there is noise that makes a correct state look broken.
-  if (!criteria.found && mode === "plan") {
-    console.log(
-      "  warning: no criteria found — using a minimal fallback (adv init to add some).",
-    );
-  }
   const decisions =
     mode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
 
-  const peerBit = models.peer ? ` + ${models.peer.ref} [${models.peer.family}]` : "";
-  console.log(
-    `  subject ${mode === "answer" ? "general question" : "this repository"} · ` +
-      `${models.drafter.ref} [${models.drafter.family}] + ${models.reviewer.ref} [${models.reviewer.family}]${peerBit} (parallel takes, ${models.drafter.ref} synthesises)`,
-  );
   checkFamily(models, check, checkSource);
-  const head = await runTakes(repo, task, criteria.text, decisions, models, mode, reporting);
+  const head = await runTakes(repo, task, criteria.text, decisions, models, mode, reporting, {
+    ...(opts.parent ? { parent: opts.parent } : {}),
+    ...(opts.followUp ? { followUp: opts.followUp } : {}),
+  });
   console.log(`  run: ${displayPath(head.paths.dir)}`);
   for (const r of head.urlRepairs) {
     console.log(`  warning: repaired a URL in a take: ${r.before} -> ${r.after}`);
@@ -380,6 +376,7 @@ async function cmdContinue(flags: Map<string, string | true>, positional: string
     check,
     checkSource,
     parent: { name: parentName, dir: parentPaths.dir },
+    followUp,
   });
 }
 

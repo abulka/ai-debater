@@ -3,6 +3,7 @@ import {
   renderAnswer,
   renderCouncil,
   renderCouncilAnswerLines,
+  renderCouncilCommentaryLines,
   splitSources,
 } from "./render.ts";
 
@@ -87,5 +88,43 @@ describe("council question header", () => {
       .map((line) => line.map((s) => s.text).join(""))
       .join("\n");
     expect(lines).toContain("Why?");
+  });
+});
+
+describe("run log section", () => {
+  const base = {
+    final: "The answer.",
+    learned: "",
+    takes: [{ index: 1, model: { ref: "lead/a" }, text: "Take one." }],
+  };
+  const log = [
+    "repository · lead/a [fam] + peer/b [fam] (parallel takes, lead/a synthesises)",
+    "take written — 10.1s, $0.000348",
+    "! no criteria found — using a fallback (adv init to add some)",
+  ];
+
+  test("the log renders after what happened", () => {
+    const text = renderCouncil({ ...base, log });
+    const happened = text.indexOf("what happened");
+    const runLog = text.indexOf("run log");
+    expect(runLog).toBeGreaterThan(happened);
+    expect(text).toContain("take written — 10.1s, $0.000348");
+    expect(text).toContain("! no criteria found");
+  });
+
+  test("no log means no section — old runs render as before", () => {
+    expect(renderCouncil(base)).not.toContain("run log");
+    expect(renderCouncil({ ...base, log: [] })).not.toContain("run log");
+  });
+
+  test("the info panel carries the log, the answer view does not", () => {
+    const info = renderCouncilCommentaryLines({ ...base, log }, 80)
+      .map((line) => line.map((s) => s.text).join(""))
+      .join("\n");
+    expect(info).toContain("take written");
+    const answer = renderCouncilAnswerLines({ ...base, log }, 80)
+      .map((line) => line.map((s) => s.text).join(""))
+      .join("\n");
+    expect(answer).not.toContain("take written");
   });
 });

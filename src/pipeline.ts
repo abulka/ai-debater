@@ -1,7 +1,8 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { unifiedDiff } from "./diff.ts";
 import {
+  NO_CRITERIA,
   createRun,
   loadState,
   markFailed,
@@ -10,6 +11,7 @@ import {
 } from "./orchestrator.ts";
 import { OpencodeRunRunner, type CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
+import { displayTaskOf } from "./continue.ts";
 import { repairUrls } from "./urls.ts";
 import { nameTakesInLearned, splitLearned } from "./prompts.ts";
 
@@ -50,6 +52,62 @@ export interface CouncilTail {
   patch: string;
 }
 
+/**
+ * One call's timing and cost, as the one line the run log keeps.
+ *
+ * `$0` is an absence, not a number: a gateway that reports no cost must not
+ * make a paid run display as free.
+ */
+export function formatCallLine(info: {
+  kind: "take" | "synthesis";
+  step: string;
+  retry: boolean;
+  ms: number;
+  usage: { cost: number; costKnown: boolean };
+}): string {
+  const what =
+    info.kind === "take" && info.step === "take"
+      ? "take written"
+      : info.kind === "synthesis" && info.step === "synthesis"
+        ? "synthesis written"
+        : `${info.kind}/${info.step}`;
+  const cost = info.usage.costKnown ? `$${info.usage.cost.toFixed(6)}` : "cost not reported";
+  return `${what}${info.retry ? " (retry)" : ""} — ${(info.ms / 1000).toFixed(1)}s, ${cost}`;
+}
+
+/**
+ * A reporting wrapper that persists every line to the run's log file as the
+ * run happens, then forwards it for live display. Both front ends share it,
+ * so the CLI and the TUI cannot tell two different stories about one run.
+ *
+ * Appends are chained, so the file order matches the call order even when
+ * takes finish in parallel. `flush` settles the chain: callers await it before
+ * reading the file back.
+ */
+function createLogWriter(
+  paths: Paths,
+  reporting: Reporting,
+): Reporting & { flush: () => Promise<void> } {
+  let tail: Promise<void> = Promise.resolve();
+  const append = (line: string) => {
+    tail = tail.then(() => appendFile(paths.log, `${line}\n`).then(
+      () => {},
+      () => {},
+    ));
+  };
+  return {
+    onCall: (info) => {
+      append(formatCallLine(info));
+      reporting.onCall?.(info);
+    },
+    onNote: (text) => {
+      append(text);
+      reporting.onNote?.(text);
+    },
+    flush: () => tail,
+  };
+}
+
 function activeModels(models: Models): ModelRef[] {
   return [models.drafter, models.reviewer, ...(models.peer ? [models.peer] : [])];
 }
@@ -67,13 +125,32 @@ export async function runTakes(
   models: Models,
   mode: Mode,
   reporting: Reporting = {},
+  opts: { parent?: { name: string; dir: string }; followUp?: string } = {},
 ): Promise<CouncilHead> {
-  const note = reporting.onNote ?? (() => {});
+  const paths = await createRun(repo, task, models, mode, {
+    ...(opts.parent ? { parent: opts.parent } : {}),
+  });
+  const rep = createLogWriter(paths, reporting);
+  const note = rep.onNote ?? (() => {});
   const list = activeModels(models);
-  const runner = new OpencodeRunRunner({ repo, ...models, onCall: reporting.onCall });
-  const paths = await createRun(repo, task, models, mode);
+  const runner = new OpencodeRunRunner({ repo, ...models, onCall: rep.onCall });
   try {
     await saveState(paths, { ...(await loadState(paths)), state: "taking" });
+    // The header is emitted through the run's own reporting, so it lands in
+    // the log file as well as on screen. A continuation logs its follow-up
+    // only: the full task carries the whole previous result, which would
+    // bloat the log with what task.md already keeps.
+    note(
+      `${mode === "answer" ? "general question" : "repository"} · ${list.map((m) => `${m.ref} [${m.family}]`).join(" + ")} (parallel takes, ${models.drafter.ref} synthesises)`,
+    );
+    note(
+      opts.parent && opts.followUp
+        ? `continuing ${opts.parent.name} · follow-up: ${displayTaskOf(opts.followUp)}`
+        : `${mode === "answer" ? "question" : "task"}: ${displayTaskOf(task)}`,
+    );
+    if (mode === "plan" && criteria === NO_CRITERIA) {
+      note("! no criteria found — using a fallback (adv init to add some)");
+    }
     note(`taking — ${list.length} model(s) in parallel: ${list.map((m) => m.ref).join(", ")}`);
     const results = await Promise.all(
       list.map(async (model, i) => {
@@ -89,12 +166,15 @@ export async function runTakes(
     for (const r of urlRepairs) note(`! repaired a URL in a take: ${r.before} -> ${r.after}`);
     const state = await loadState(paths);
     await saveState(paths, { ...state, state: "synthesizing" });
-    return {
+    const head = {
       paths,
       takes: results.map((r, i) => ({ index: i + 1, model: r.model, text: r.text })),
       urlRepairs,
     };
+    await rep.flush();
+    return head;
   } catch (err) {
+    await rep.flush();
     await markFailed(paths, err);
     throw err;
   }
@@ -111,11 +191,12 @@ export async function runSynthesis(
   mode: Mode,
   reporting: Reporting = {},
 ): Promise<CouncilTail> {
-  const note = reporting.onNote ?? (() => {});
+  const rep = createLogWriter(paths, reporting);
+  const note = rep.onNote ?? (() => {});
   try {
     const peers = takes.slice(1).map((t) => t.model.ref).join(", ");
     note(`synthesising — ${models.drafter.ref} reads ${peers || "its own take"}`);
-    const runner = new OpencodeRunRunner({ repo, ...models, onCall: reporting.onCall });
+    const runner = new OpencodeRunRunner({ repo, ...models, onCall: rep.onCall });
     const raw = await runner.synthesize({
       mode,
       task,
@@ -133,8 +214,10 @@ export async function runSynthesis(
     const current = await loadState(paths);
     await saveState(paths, { ...current, state: "done", error: undefined });
     note(`synthesised — final answer written`);
+    await rep.flush();
     return { final, learned, patch };
   } catch (err) {
+    await rep.flush();
     await markFailed(paths, err);
     throw err;
   }
@@ -156,7 +239,7 @@ async function diffTakes(before: string, after: string): Promise<string> {
 }
 
 /** Rebuild a council run's takes + final from disk (for the TUI past-runs list). */
-export async function loadCouncil(paths: Paths): Promise<{ takes: CouncilTake[]; final: string; learned: string; patch: string }> {
+export async function loadCouncil(paths: Paths): Promise<{ takes: CouncilTake[]; final: string; learned: string; patch: string; log: string[] }> {
   const state = await loadState(paths);
   const order: ModelRef[] = [
     state.models.drafter,
@@ -176,5 +259,10 @@ export async function loadCouncil(paths: Paths): Promise<{ takes: CouncilTake[];
   const raw = await readFile(paths.final, "utf8");
   const { final, learned } = splitLearned(raw);
   const patch = await readFile(paths.diff, "utf8").catch(() => "");
-  return { takes, final, learned, patch };
+  // Runs recorded before the log file existed read as an empty log, and
+  // render as before — no section, no placeholder.
+  const log = await readFile(paths.log, "utf8")
+    .then((text) => text.split("\n").filter((line) => line.length > 0))
+    .catch(() => [] as string[]);
+  return { takes, final, learned, patch, log };
 }
