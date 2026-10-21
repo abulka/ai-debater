@@ -134,7 +134,7 @@ export class OpencodeRunRunner implements Runner {
     // wrong, and refusing to run would be worse than saying so.
     this.familyWarning =
       o.drafter.family === o.reviewer.family
-        ? `drafter and reviewer share family "${o.drafter.family}" — the review adds less than it could`
+        ? `drafter and reviewer share family "${o.drafter.family}" — the second take adds less than a cross-family one would`
         : null;
     this.repo = o.repo;
     this.agents = o.agents ?? {

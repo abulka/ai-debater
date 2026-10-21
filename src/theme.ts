@@ -14,8 +14,8 @@
  * - `code` marks *literals* — a path, a flag, a function name, a whole block of
  *   code. Things you might copy rather than read.
  * - `warn` and `danger` mark *state that needs attention* — never agreement.
- *   The tool does not colour a confirmed claim green: a verdict says a file
- *   matched, and whether that is good is the human's call, which is the whole
+ *   The tool does not colour agreement green: a model's answer is not a
+ *   verdict, and whether it is good is the human's call, which is the whole
  *   point of this tool.
  * - `sort` marks the actively-sorted column header — purple, deliberately
  *   neither the cyan the structure uses nor the yellow of warnings, so the
@@ -28,7 +28,7 @@
  * cyan (selection), green (`key`/`ok`), yellow (`warn`) or red (`danger`).
  *
  * Colour never carries meaning on its own. Every signal keeps its textual
- * marker (`!`, `DISAGREES`, `REFUTED`, the counts), so a monochrome terminal or
+ * marker (`!`, `✗`, the counts), so a monochrome terminal or
  * a colourblind reader loses nothing but decoration.
  *
  * Not blue: Apple Terminal's blue is close to unreadable on a dark background,

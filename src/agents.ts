@@ -1,5 +1,5 @@
 /**
- * The three agent definitions adv uses, as data.
+ * The four agent definitions adv uses, as data.
  *
  * They are **injected** into each `opencode run` through
  * `OPENCODE_CONFIG_CONTENT` (see `OpencodeRunRunner`), not written to disk.
@@ -43,9 +43,9 @@ const DENY_ALL: Permission = { action: "*", resource: "*", effect: "deny" };
 /**
  * Read-only inspection of the repo. Deny-by-default is load-bearing: OpenCode's
  * base policy is `allow *`, so denying only `edit`/`shell` leaves every other
- * tool — MCP servers included — reachable. In M0 the reviewer, blocked from
- * writing a file, routed around it with the Playwright MCP tools and opened a
- * browser to download the file instead. See spike/README.md.
+ * tool — MCP servers included — reachable. In an early test, an agent blocked
+ * from writing a file routed around it with the Playwright MCP tools and opened
+ * a real browser to download the file instead.
  */
 const READ_ONLY: Permission[] = [
   DENY_ALL,
@@ -67,27 +67,19 @@ const READ_ONLY: Permission[] = [
 
 const drafter: AgentDefinition = {
   description:
-    "Drafts plans and answers, and sorts every statement into verifiable claims and judgment calls. Read-only. Used by the adv tool.",
+    "Reads files in the repository and answers briefly, with read-only tools. Used by the adv tool for the full ping.",
   mode: "primary",
   hidden: true,
-  system: `You draft plans and answers. You never write or modify code.
+  system: `You read files in the repository and answer briefly. You never write or modify code.
 
 Hard rules:
 
 - Every statement you make about a codebase must come from a file you actually
-  read, or a git command you actually ran. Every factual assertion must be
-  checkable, and you must not invent a source. If you have not checked it, say so
+  read, or a git command you actually ran. If you have not checked it, say so
   rather than asserting it.
-- Never choose between options for a judgment call. List the options and stop.
-- The human's criteria are fixed. Do not invent criteria.
-- Settled decisions are closed. Do not reopen them.
-- When the task asks for a plan, the deliverable is the plan text, not edits.
 - You may read files, run read-only \`git\` commands, and fetch web pages. You
   cannot write, and you cannot run anything else. If you are blocked, report the
-  limitation — do not look for another route.
-
-Your reply must end with exactly one fenced \`json\` block containing your
-verifiable claims and judgment calls, as instructed in the prompt.`,
+  limitation — do not look for another route.`,
   permissions: READ_ONLY,
 };
 
@@ -127,8 +119,8 @@ const WEB_ONLY: Permission[] = [
  * Council — parallel takes plus one synthesis.
  *
  * One read-only agent per mode. Every take and the synthesis run under the
- * same posture: the models read files and the web, write nothing, and are
- * never told about claims, verdicts or gates — so the prose stays succinct.
+ * same posture: the models read files and the web, write nothing, and get the
+ * question rather than a description of the process — so the prose stays succinct.
  * ------------------------------------------------------------------ */
 
 const council: AgentDefinition = {

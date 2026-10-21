@@ -2,7 +2,7 @@
  * Saved model pairs — the two models that were used, under a name.
  *
  * `Config.models` holds exactly one drafter and one reviewer, so the pair behind
- * the fast test run, the M3 trial or anything else has to be retyped from
+ * the fast test run, a trial, or anything else has to be retyped from
  * memory. A pair is those two refs with a name attached, and it is the unit a
  * person actually thinks about: "the trial pair", "the cheap pair".
  *

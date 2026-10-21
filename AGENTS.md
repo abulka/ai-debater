@@ -1,7 +1,7 @@
 # AGENTS.md — working rules for this repo
 
-Read this first. It exists because a previous session burned hours on avoidable
-waits, and the person you are working with has said plainly: **do not block me.**
+Read this before changing anything. It exists because a previous session burned
+hours on avoidable waits: **do not block me.**
 
 ---
 
@@ -20,9 +20,8 @@ waits, and the person you are working with has said plainly: **do not block me.*
 
 3. **Use the fast test pair** unless the task is specifically about model
    quality: `anthropic/claude-haiku-5-5` (drafter) + `openrouter/openai/gpt-6-luna`
-   (reviewer). The toy repo (`fixtures/toy-repo/.adv/config.json`) is configured
-   this way. Groq's pair is faster still but **more expensive and less smart** —
-   18 Oct correction: it is *not* free. Use it only when speed is the point.
+   (reviewer). Groq's pair is faster still but **more expensive and less smart** —
+   it is not free. Use it only when speed is the point.
 
 4. **Clean up after yourself.** Never leave a stray `src/cli.ts`, browser, or
    `CANARY*` file behind. Check with:
@@ -33,8 +32,9 @@ waits, and the person you are working with has said plainly: **do not block me.*
    route will reach for another (that is how a real browser once opened).
 
 5. **Do not chase model availability.** Verify a model with a 10-second probe
-   before wiring it in. Several models are listed but dead (see below). One
-   probe, then move on.
+   before wiring it in. Several models are listed but dead. One probe, then
+   move on. `adv ping <model>` settles it; the model table in this file used to
+   go stale, so there is no table any more.
 
 6. **Never let an agent write to the repo.** The orchestrator owns every
    artifact. All four agents are read-only.
@@ -45,43 +45,16 @@ waits, and the person you are working with has said plainly: **do not block me.*
 
 `adv` runs a task through two or three different models in parallel: each
 writes its own independent take, then the lead synthesises the takes into one
-final answer ending with a short "what we learned" note. One pass, no gate, no
-rebuttal. Models answer; the human judges.
+final answer ending with a short "what we learned" note. One pass. Models
+answer; the human judges.
 
-The technique and the problem it solves are summarised in `README.md`; the
-design and decisions are in `PLAN.md`; M0's findings are in `spike/README.md`.
+The technique and the problem it solves are summarised in `README.md`. `ocm`
+(`src/models-cli.ts`) is the model picker standalone — same code, same caches,
+no debate.
 
-**Non-goals.** Not a debate engine, not a multi-agent framework, not a
-replacement for tests. The models pick sensible defaults and recommend; the
-human settles the rest with follow-ups.
-
----
-
-## Status
-
-| Milestone | State |
-| --- | --- |
-| M0 feasibility spike | **done** — `spike/README.md` |
-| M1 core loop | **done** — `adv init`, `run`, `decide`, `run --resume` |
-| TUI | **done early** (was scheduled for M4) — bare `adv` |
-| Visibility batch | **done 17 Oct** — gate panels, readable progress, resume/family/failed fixes |
-| M3 real trial | **done 17 Oct** — spec in `docs/M2-PLAN.md` |
-| M2 evidence execution | **done 17–18 Oct** — both slices: contract, matcher, executor, approval split, merged view (`src/audit.ts`). Parked: `adv audit <run>`, MCP disable |
-| M4 revise | **done 18 Oct** — `adv revise [<run>] [--rewrite]`; spec in `docs/REVISE.md` |
-| Model pairs + favourites | **done 18 Oct** — named pairs, OpenCode's favourites inherited read-only |
-| Model ping | **done 18 Oct** — `p`/`P`/`A` in the picker, `adv ping` on the CLI, price and tool-calling badges, the provider pane. Findings in `docs/OPENCODE-MODELS.md` |
-| TUI revise door | **done 18 Oct** — the same revise, reachable from the TUI: `r` on the result screen, past-runs picker (Ctrl+R) |
-| Gate custom answer | **done 20 Oct** — `t` on a judgment call opens a free-text editor; the CLI records any non-number, non-`open` reply (confirmed on a TTY). No schema change: `choice` was always free text |
-| Chained runs | **done 20 Oct** — `adv continue [<run>] [--instructions "…"]`, `Enter` on the result screen; spec in `docs/CONTINUE.md` |
-| Clarify screen | **done 20 Oct, retired same day** — the answer-or-plan question drew (fixed with `src/tui-phase.test.ts`, which pins every `Phase` member to the render chain), then went away entirely: the desk's mode switch is the choice, and asking again after Enter was the same question twice |
-| Gate workflow batch | **done 20 Oct** — the gate opens on the draft; "I don't know" wording; `y` copies the question out; `?` lists the gate's keys; the typing warning retired (clarify asks once); `^T` proven at the gate by pty |
-| Workflow round two | **done 20 Oct** — clarify retired; lean plan-mode drafts (no shell scope-notes, no reciting decisions, answers stay answers); continue seeds a follow-up prompt instead of flooding it; toy fixture's test decisions removed |
-| Workflow round three | **done 20 Oct** — the result screen is the answer (commentary behind `i`); `C` continues forcefully (no arming); `Ctrl+L` re-reads the parent result from the desk; prompts pin the subject to the working directory and keep open decisions to one line; declined-check warnings truncate |
-| Council simplification | **done 21 Oct** — the gate, draft/review/rebut, audit, claims, `decide`, `revise`, `run --resume` and the `.adv/` setup screen are gone: two/three parallel takes plus one synthesis (`src/pipeline.ts`). Model choice is global-only (`~/.config/adv/config.json`); `.adv/` holds only opt-in `criteria.md`/`decisions.md` via `adv init`. Pre-council runs on disk are not openable (state without takes); their directories were deleted |
-
-Typecheck must stay clean: `bun run typecheck`. Tests must stay green:
-`bun test` (council load, failed-state write and the phase/render-chain pin are
-covered there; the TUI layout itself is not).
+**Non-goals.** Not a multi-agent framework, not a replacement for tests. The
+models pick sensible defaults and recommend; the human settles the rest with
+follow-ups.
 
 ---
 
@@ -92,237 +65,56 @@ bun install
 bun run typecheck              # must pass
 bun test                       # must pass
 
-bun link                       # once: puts `adv` on PATH
+bun link                       # once: puts `adv` and `ocm` on PATH
 adv                            # TUI for the current directory
 adv --dir /path/to/repo        # TUI for another repo
 
 # CLI (scriptable)
 adv init --dir <repo>          # criteria and decisions (optional)
 adv run "<task>" --dir <repo> [--general] [--plan] [--strict]
-adv continue [<run>] [--instructions "…"] # new run from a finished one: result + follow-up
+adv continue [<run>] [--instructions "…"] # new run from a finished one
 adv status [<run>]
 adv ping <model-or-pair>… [--full] [--timeout <ms>]
 adv benchmarks [--refresh] [<ref>]
 adv rm <run> | --all | --older-than 30d [--yes]
-
-# spike (archival: M0 used the retired draft/review API; @ts-nocheck, not typechecked)
-bun run spike/m0.ts endpoints permissions artifacts   # cheap, no model calls for endpoints
 ```
+
+Typecheck must stay clean, tests must stay green. Neither calls a model.
 
 `--general` (or Tab in the TUI) switches to answer mode: a general question, no
 repository assumed, facts checked against URLs. Nothing is installed and nothing
 is written into the directory you started in — answer mode works immediately,
 and `adv init` is only needed if you want criteria and settled decisions.
 
-Run artifacts go to `~/.local/share/adv/runs/`: a repository's runs under
-`<repo-name>-<hash>/<timestamp>/`, and every general question under
-`answers/<timestamp>/` — a question belongs to no repository, so it is filed
-where it can be found from anywhere. The past-runs list shows both, each labelled
-`task` or `question`, and a run carries its own directory, so opening a row
-cannot open a same-stamped run from the other bucket. `adv continue`/`status`
-take a bare run name and search both buckets (a repository's own run wins the
-only ambiguous case: the same second in both). `adv run --resume`, `adv
-decide` and `adv revise` are retired: council runs finish in one pass, so just
-run again or continue.
-
-`adv rm <run> | --all | --older-than 30d [--yes]` removes runs, and the TUI's
-runs screen does the same with `d`/`D`. Deleting removes only run directories
-under the store: never a repository, never `.adv/`, never `~/.config/adv`.
-Decisions are hand-written and never appended by a run, so there is nothing to
-un-settle — which is why this is "delete the run", not "undo". Nothing is
-deleted on one keystroke: the TUI confirms with the count,
-the split (this repository's runs versus questions from any directory) and each
-run by name, and the CLI prints the same and asks, refusing without a terminal
-unless `--yes` is passed.
-
-The answer is `final.md`; `answer.md` (the answer) and `result.md` (the answer
-plus the commentary) appear when the TUI copies them out. `x` shows the diff
-from take 1 to the final answer.
-
-The CLI's final report is rendered Markdown on a terminal and plain Markdown in a
-pipe, so `adv run "…" > plan.md` writes an answer rather than an answer with its
-headings and emphasis scraped off. `NO_COLOR` turns the styling off.
-
-### TUI keys
-
-| Key | Action |
-| --- | --- |
-| m / n / p / s / q | Home — models browser · new debate · past runs · settings · quit (↑↓ · Enter works too; cursor starts on models browser) |
-| Ctrl+P | Settings — pairs, the AA benchmark key, highlights, the cache window, a manual refresh (from home or the debate screen; Esc home) |
-| ↑↓ · Enter | Settings: on **edit drafter/reviewer pairs**, the list — saved pairs last used first, then pairs past runs used, then `new pair…` (pick a drafter, a reviewer, name it), then `save current as…`. On **which models to highlight in colour**, one text line plus the list — Enter adds at the front, Tab renames in place, `^O` recolours, `^D` deletes, `^U` clears, Esc cancels a rename, then back |
-| d | Pairs: delete the highlighted saved pair, after a confirmation that names it (settings only — inert from the debate screen). A pair that belongs to a run is not stored here and goes when the run does |
-| r / R | Pairs: rename the highlighted saved pair — `r` edits its name, `R` prefills a name suggested from its models (settings only). The name prompt prefills a suggestion for new saves too |
-| ↑↓ · Enter | New debate: on **drafter/reviewer preset**, choose a saved preset (creating and deleting live in settings). On **model 1 / 2 / 3**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt and snaps the cursor back to it |
-| models browser | Home's first row: the same model list — Enter does nothing, Esc home. Everything else (filter, views, ping, export) works as in the picker |
-| P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran: `P to test`, `T? try tools`, `✓ 4.2s`, `✓ 7.4s T` |
-| A | Picker: ping every model shown — the list after the filter, the lock, F, the view and H. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown, and it says how to narrow |
-| auto-refresh | Settings: **when to refresh caches**, 1/3/7/14/30 days (default 7) — the staleness window for the benchmark scores, AI Coding Daily and the price catalogue, background and keyless. **refresh caches now** refetches all three at once, loud. The picker has no refresh key: the caches refresh themselves |
-| V | Picker: cycle the view — provider groups, intelligence-ranked, value (cheap per output token under the ceiling), taskcost (cheap per measured task under its own ceiling). Both cheap views rank by intelligence |
-| C | Picker: toggle the price basis — base price or the above-threshold price a long session pays. Cells and the value-view ceiling move together; the count line says `price: high tier` when high |
-| D | Picker: rank the flat views by AI Coding Daily (points for the order, ACD $/task for the taskcost ceiling) instead of Artificial Analysis/OpenRouter — session-only, ignored in the provider view |
-| S | Picker: rank the flat views by measured cost ($/task, or ACD $/task with D) instead of by score, cheapest first — session-only, ignored in the provider view |
-| H | Picker: hide models with no benchmark, in every view |
-| M | Picker: mute the auto-highlight rows for this session — the patterns stay stored, the rows just stop reading in colour. Session-only, like the views; deleting the patterns is the persistent off. Only named when a pattern exists; the count line says `highlights off (M)` while muted |
-| N | Picker: list only the highlighted models, in every view — the rows the patterns would colour (the same rule as `M`'s colour, but it drops the rest rather than recolouring them). Session-only, like `H` and `M`; composes with the filter, the views, the lock and `F`. Refused with no patterns stored. The count line says `highlighted only (N)` while it is on |
-| L | Picker: lock to the selected provider — the view, the filter and H all still apply inside it, and so does A. Press again to clear |
-| F | Picker: providers on/off — every provider with a checkbox for whether the picker shows it. Space toggles, `a` all on, `o` all off, Esc returns. Applies to every view and persists in `~/.config/adv/picker.json` |
-| Tab | Picker: cycle the filter AND (every word, the default) → OR (any word) → OFF (text kept, ignored) — session-only, in every view. `"…"` quotes an ordered phrase (`"deep 4.1"` lands on `deepseek-v4.1-flash`) |
-| R | Picker: filter history — every filter used on the list, newest first. Pausing, moving (↑↓ wheel pages), any command key, Enter, Esc, and `R` itself all record. One provisional entry per visit, replaced as you refine. `d` removes one, `D` clears all after `y`. Persists in `~/.config/adv/picker.json` |
-| highlights | Settings → **which models to highlight in colour**: the list of matches — every entry is live at once, a row reading in the colour of its first match, newest first. Each entry is a filter text (`muse 1.3`, `"deep 4.1"`) with loose AND matching inside it, against the ref and the AA name. `deepseek flash v4.1` is the seeded entry, editable and deletable like any other; empty means none. Tab renames in place (position is priority, so a rename never front-bumps); `^O` recolours the selected entry with the next palette colour no other entry uses (stored beside the patterns; rename carries it, delete drops it). `M` in the picker mutes the rows for the session. Each entry's colour derives from its text; `muse 3.1` matches nothing (the ref is `muse-spark-1.3`). Persists in `~/.config/adv/picker.json` |
-| ^F ^B | Picker: page the list; ^D ^U half a page, matching the results view |
-| < > | Cheap views: move the active ceiling — value in $0.10 steps, taskcost geometrically (×1.5 / ÷1.5). Capped at the dearest measured cost, so `>` past everything is a no-op. Saved to `~/.config/adv/picker.json` |
-| ? | Picker help — providers and their bills, the model notes behind the `· note` badge, ping state with every failure found, and the table reference (marks, columns, views, keys) |
-| Y | Picker: export the table as Markdown with a legend — for a second opinion in another LLM — to the clipboard and `~/.local/share/adv/models.md` (overwritten each time). Arms a choice: `e` entire shown table, `v` just the visible window |
-| Tab | New debate: switch subject — **this repository** or a **general question** (also the subject row, Enter toggles) |
-| Enter | New debate: on the prompt, run the typed task — in the subject the desk shows (the mode switch is the choice; Tab corrects it) |
-| y | Result: copy the answer as Markdown — the final text, into the clipboard, and to `answer.md` in the run directory |
-| x | Result: the diff from take 1 to the final answer (Esc back) |
-| 1 / d · 2 / R · 3 | Result: each model's original take, unedited |
-| i | Result: what we learned — what the peers contributed, what happened |
-| l | Result: the full run log |
-| ? | Result: the keys that work on this screen |
-| Y | Result: copy the whole result as Markdown, commentary included — to `result.md` as well |
-| Enter | Result: inert (a slipped Enter starts nothing). `C` is continue |
-| C | Result: continue this debate — forceful, no arming. The desk asks for your follow-up only (one editable line; the parent's result is composed into the task at run time, never into the prompt); Ctrl+U abandons. `adv continue [<run>] [--instructions "…"]` is the CLI form |
-| Ctrl+L | Desk, while continuing: view the parent result in a pane — Esc straight back to your follow-up |
-| n | Result/Runs: back to the debate screen — the draft, subject and models you had are kept |
-| Esc | Back, one level: home is the root (debate · runs · settings → home; pick browse → home, pick select/build → debate screen/pairs screen; pairs → settings or debate screen). A panel closes; a result opened from the past-runs list returns to that list (tags, scroll and all). `n` is the unconditional way to the debate screen, `q` quits |
-| n · Esc · q | Error: the same rule — Esc back where you came from, n to the debate screen, q quits. This screen had no handler at all, which is how a reader got stuck on it |
-| Ctrl+R | Past runs — open a finished run, from home, the debate screen, a result or an error |
-| space | Runs: tag the highlighted run (`●`), and move on — tag several in a row |
-| a / A | Runs: tag all listed / clear the tags |
-| d | Runs: delete the tagged runs, or the highlighted one when none are tagged |
-| D | Runs: delete every run listed, questions included — the confirmation states the split |
-| Ctrl+U | New debate: clear the prompt |
-| ←→ · ⌥←→ · ^A · ^E · ^K | Every text field: step within the line, jump by word, jump to start/end, kill to end of line — prompt, filter, pair name, key. Backspace deletes before, Del under |
-| ↑↓ · j/k | Scroll a line |
-| space · f | Page down (both do the same; `space` is what a reader tries first) |
-| b · u · Ctrl+D · Ctrl+U | Page up · half up · half down · half up |
-| g / G | Top / end of the pane |
-| wheel | Scrolls the pane (the app asks the terminal for mouse reports) |
-| Ctrl+T | Mouse: hand it to the terminal to select text, and take it back. The mode is on the bottom line of every screen |
-| ↑↓ · q | Scroll the result; `q` quits |
-
-Models are chosen on the debate screen (↑↓ to lead / peer, Enter opens the
-picker); the models browser on home is the read-only way in. There is no
-setup screen: a directory with no `.adv/` just runs with a fallback, and
-`adv init` is the opt-in for criteria and settled decisions.
+Run artifacts go to `~/.local/share/adv/runs/`. The answer is `final.md`; `x`
+shows the diff from take 1 to the final answer. The TUI lists its own keys
+behind `?` — do not duplicate that table here.
 
 ---
 
-## Models — verified 17 Oct 2026
+## Models
 
-| Model | Verdict |
-| --- | --- |
-| `groq/openai/gpt-oss-120b` + `-20b` | fast but **more expensive and less smart** — not free; speed-only use |
-| `anthropic/claude-haiku-5-5` + `openrouter/openai/gpt-6-luna` | **use for testing** — fast, cross-family, cheaper than sonnet; the toy repo is configured this way |
-| `anthropic/claude-sonnet-5-5` | works, instant plain reply — **trial drafter** |
-| `opencode-go/gpt-6-luna` | works, fast — **trial reviewer** (family openai) |
-| `opencode-go/deepseek-v4.1-flash` | works, ~86s per agent step |
-| `opencode-go/glm-5.3-flash` | works, ~130s per agent step |
-| `opencode-go/qwen3.8-flash` | 7.6s for a plain reply, slow with tool use |
-| `openai/gpt-5.2` | **no credit** — `credit_balance_exhausted` on the direct OpenAI account |
-| `opencode-go/mimo-v2.6-flash` | **dead** — `model_coming_soon` |
-| `opencode-go/muse-spark-1.3-contributor` | **blocked** — trains on request data; the workspace privacy opt-in is not in the desktop app |
-| `opencode/*` (incl. `big-pickle`, `muse-spark-1.3`) | **no credit** — separate account, `402` |
-| `opencode/big-pickle`, `opencode/space-bunny-free`, `opencode/mimo-v2.6-flash-free` | **app only** — they work in the OpenCode app; `FreeTierError` 403 refuses any terminal call. Not a fault, and not fixable from here |
-| `groq/groq/compound-mini`, `groq/groq/compound` | **listed but unusable** — `model_not_found`. Also `tool_call: false`, so the catalogue catches them for free |
-| `opencode-go/space-bunny-free` | **listed but unroutable** — `provider.no-route`. The Console one, `opencode/space-bunny-free`, is separate |
-| `opencode-go/*-free` (5 models) | free on the subscription; only `beam-free` and `longcat-2.5-preview-free` are in `opencode models` |
-
-The `opencode` provider is *not* the `opencode-go` subscription. Do not use it.
-
-**Three failure shapes arrived with the ping**, and only two of them are faults.
-
-- `provider.no-route` ("Model unavailable") is OpenCode refusing before the
-  provider is reached. Same answer as `model_not_found`, so `classify` folds it
-  into `no-access` rather than leaving it as an unrecognised `failed`.
-- `FreeTierError` 403 — "OpenCode's free tier can only be used from within
-  OpenCode" — is its own verdict, **`app-only`**, and it is not a fault at all.
-  Those models work in the OpenCode app; the human has used them there and says
-  so; they are simply unreachable from a terminal, which is the only way `adv`
-  can call anything. It is separate from `blocked` because the remedy is
-  opposite: nothing about the model or the account is wrong and no setting the
-  reader can reach will change it. Treating it as a fault is what made
-  `opencode/big-pickle` look broken for an afternoon.
-- A **tool-less reply to `T`** is `no-tools`, and it is decided from the event
-  stream rather than the words. A model that answers from memory without calling
-  `read` passes any prose check and then fails the first real run.
-
-**Success is never inferred from the model's prose.** The first `classify`
-sniffed for the literal word "ok", which is right for `Reply with exactly: ok`
-and wrong for everything else: a full ping that had genuinely read `README.md`
-and answered `# adv — adversarial two-model plan review` was reported **failed**,
-quoting its own good output as the reason. The caller decides success now, and
-`classify` only ever classifies failures.
-
-**Verify with `adv ping <model>`, not by reading the table.** The table is dated
-and these rows are observations. One call is a few seconds and settles it; the
-table costs nothing and might be wrong.
-
-The trial pair is anthropic + openai **families** on two different providers: the
-direct OpenAI account has no credit, so the reviewer goes through the gateway.
-Do not "fix" that by pairing two `opencode-go` models and leaving both families
-as `opencode-go` — the check compares the explicit `family` field.
-
-**`DEFAULT_CONFIG` is now this pair**, because it is the configuration the tool is
-meant to be used in: competent, cross-family, fast. It costs real money per run.
-For a free loop, pass the groq pair explicitly:
-
-```sh
-adv run "…" --drafter groq/openai/gpt-oss-120b --drafter-family gpt \
-            --reviewer groq/openai/gpt-oss-20b --reviewer-family gpt
-```
-
-**A model choice sticks, globally.** Choosing models writes only
-`~/.config/adv/config.json` (honours `XDG_CONFIG_HOME`) — never anything into
-a repository. Every directory uses the last choice rather than
-`DEFAULT_CONFIG`. There is no per-repository override; a flag on the command
-line is the way to run one-off models.
-
-**Pairs are named pairs of models, and they are personal.** `~/.config/adv/pairs.json` holds
-`{name, drafter, reviewer, savedAt, lastUsedAt}` — its own file, because a
-pair list on `Config` would otherwise be stamped into every repository the
-moment a model was chosen. The settings screen's **edit drafter/reviewer pairs** row names the pair the
-current two models are, matched by model rather than by name. Pairs sort by
-`lastUsedAt`, so the pair you used last is first. Pairs a past run used are
-derived from `state.json` and not stored anywhere: **deleting a run deletes its
-entry**, which is the one thing to know about that list. A saved pair is never
-dropped for being stale — a pair whose models now share a family, or that
-`opencode models` no longer lists, is shown and marked `!`.
-
-**The picker inherits OpenCode's favourites, read-only.** `adv` reads
-`~/.local/state/opencode/model.json` (`XDG_STATE_HOME`, then
-`~/.local/state/opencode`, then `~/.cache/opencode`) and marks those models `★`
-at the top of the model list, then OpenCode's recents, then everything else. It
-never writes that file: OpenCode rewrites it wholesale on any change and has
-reshaped it before (#8375 wiped favourites), so two programs writing it would
-risk losing the reader's list. A missing or broken file is an empty list, not an
-error — which is why there is no star key in `adv`.
-
-**The subject is personal.** It starts as a **general question** (no repository
-read); Tab switches to **this repository**, which reads the code and lets the task
-decide the deliverable — a plan for a change, or an answer about the code. The
-choice is saved like the models and applies in every directory; a repository
-cannot pin it. One workflow either way: parallel takes, one synthesis.
-
-**A filter is recorded when it is used, not when it is left.**
-`R` recalls past filters, and recording only on leaving left the history blank
-for a browse visit whose Enter is inert. So a use is anything that proves the
-filter did something: a ~800 ms pause after typing, moving through the narrowed
-list (arrows, pages, wheel), any uppercase command or `?`, Enter, Esc — and `R`
-itself, which keeps the current filter before opening history. A visit
-contributes at most one provisional entry, replaced as the filter is refined,
-so `mus` paused on the way to `muse 1.3` leaves only the full filter. Final
-commits are never replaced. Empty text and `OFF`-mode text record nothing, so
-applying an entry always narrows.
-
-Probe a model before relying on it:
-
-```sh
-cd fixtures/toy-repo && opencode run --standalone --format json \
-  --model <provider/model> --auto "Reply with exactly: ok"
-```
+- **Default pair** (`DEFAULT_CONFIG` in `src/config.ts`, the pair the tool is
+  meant to be used in): anthropic drafter + openai-family reviewer through the
+  gateway — competent, cross-family, fast. It costs real money per run. For a
+  free loop, pass the groq pair explicitly on the command line.
+- **`family` is a statement; `familyOf()` is a guess.** The diversity check
+  compares the explicit `family` fields. `familyOf` only labels models in the
+  picker. The direct OpenAI account has no credit, so the reviewer goes through
+  the gateway — do not "fix" that by pairing two `opencode-go` models and
+  leaving both families as `opencode-go`.
+- **A model choice sticks, globally.** Choosing models writes only
+  `~/.config/adv/config.json` — never anything into a repository. There is no
+  per-repository override; a flag on the command line is the way to run
+  one-off models. Pairs live in `~/.config/adv/pairs.json`, personal to the
+  user. The picker inherits OpenCode's favourites read-only and never writes
+  them.
+- **`opencode models` is a catalogue, not an availability check.**
+  `docs/OPENCODE-MODELS.md` has the diff and the reproduction. Three layers sit
+  above it: not-listed (no credential, free), the models.dev `tool_call: false`
+  flag (cannot be a repository agent, free), and the ping (a real call, and the
+  only trustworthy one). Success is never inferred from a model's prose, and
+  nothing pings on its own — `P`, `T`, `A` and `adv ping` are the only callers.
 
 ---
 
@@ -377,7 +169,6 @@ src/
   init.ts           `adv init` scaffolding (criteria + decisions only)
   viewport.ts       fullscreen budgets; scroll clamps. Tested.
 fixtures/toy-repo/  the test problem (a deliberate lie in its README)
-spike/              M0 (archival; the retired draft/review API, @ts-nocheck)
 ```
 
 ### Things that will bite you if you forget them
@@ -386,7 +177,8 @@ spike/              M0 (archival; the retired draft/review API, @ts-nocheck)
   `Bun.spawn({ cwd })` does not set `PWD`. Both `--standalone` and an explicit
   `PWD` are required or the agents silently target the wrong project.
 - **Each `--standalone` run has its own session store**, so `--session` cannot
-  continue a session across runs. Validate-with-retry re-sends the whole prompt.
+  continue a session across runs. A rejected tool call or a transient provider
+  error gets one retry, with the whole prompt re-sent.
 - **OpenCode's base policy is `allow *`.** Denying `edit`/`shell` alone is not
   read-only; MCP servers stay reachable. Deny `*` first.
 - **The four adv agents are injected, not installed** (`--agent adv-council` /
@@ -394,335 +186,78 @@ spike/              M0 (archival; the retired draft/review API, @ts-nocheck)
   definitions in `src/agents.ts`). They arrive in
   `OPENCODE_CONFIG_CONTENT`, which OpenCode **only reads when it starts its own
   server** — so every `opencode run` must pass `--standalone`, and anything that
-  strips that variable produces `Agent not found`. The old file-based install,
-  the markdown templates and `adv init --global` are gone; nothing is written to
-  the target repo or to `~/.config/opencode`. They are `hidden: true`, but
-  `opencode debug agents` lists hidden agents too — it is not a visibility test.
-- **Each call asks for one thing** — a take, or the synthesis. The old
-  split (prose plus a separate JSON block per call) is where models got
-  flaky; the council asks for prose only.
-- **`family` is a statement; `familyOf()` is a guess.** The diversity check
-  compares the explicit `family` fields. `familyOf` only labels models in the
-  picker. Do not use it to decide whether a pair is diverse.
-- **`opencode models` is a catalogue, not an availability check.** It lists every
-  models.dev model for any provider holding a credential and never asks the
-  provider which of those the key can call. On this machine it offered four Groq
-  models Groq answers `model_not_found` for and hid four it can call —
-  `docs/OPENCODE-MODELS.md` has the diff and the reproduction. So the listing is
-  **candidates**, and three layers sit above it: not-listed (no credential, free),
-  the models.dev `tool_call: false` flag (cannot be a repository agent, free), and
-  the ping (a real call, and the only trustworthy one). Do not let anything above
-  the ping claim a model works.
+  strips that variable produces `Agent not found`. Nothing is written to the
+  target repo or to `~/.config/opencode`.
+- **Each call asks for one thing** — a take, or the synthesis. The council asks
+  for prose only; mixing prose with a JSON block made models flaky.
 - **Absent metadata is `?`, never `free` — with one suffix-shaped exception.**
-  77 of the 651 listed models have no cost upstream. Rendering an unknown cost
-  as "free" bills real money at 3am, so `costOf` keeps its third state — but a
-  ref missing from the catalogue whose name ends in `-free` reads `free`:
-  every `-free` ref models.dev lists (68 of them, all providers) is free,
-  with no priced and no null counterexample. It fills silences only, never
-  overrides a listed price, and a bare `free` is a name, not a tier.
+  Rendering an unknown cost as "free" bills real money at 3am — but a ref
+  missing from the catalogue whose name ends in `-free` reads `free`: every
+  `-free` ref models.dev lists is free, with no priced and no null
+  counterexample. It fills silences only, never overrides a listed price.
 - **The price catalogue refreshes itself.** OpenCode's
-  `~/.cache/opencode/models.json` has no refresh owner — nothing fetches it
-  on any schedule (a 6-day-old file proved it). Past the reader's window (7
-  days by default, changed in settings) `adv` fetches models.dev into its own
+  `~/.cache/opencode/models.json` has no refresh owner. Past the reader's window
+  (7 days by default, changed in settings) `adv` fetches models.dev into its own
   `~/.local/share/adv/catalogue.json` in the background at picker open and
-  reads whichever copy is newer, falling back to the older when the newer
-  parses to nothing. Never writes OpenCode's file.
-- **The serving-tier strip is shared, not copied.** The ACD resolver once had
-  its own weaker chain and lost every `-contributor` serving while the
-  benchmarks kept theirs. `stripTier` is now exported from `benchmarks.ts`
-  and `resolveAcd` calls it — one vocabulary, one place, so the two columns
-  cannot drift apart again.
+  reads whichever copy is newer. Never writes OpenCode's file.
 - **`model.json` and `models.json` are one character apart and read differently.**
   OpenCode's favourites state is `~/.local/state/opencode/model.json`; the
-  catalogue is `~/.cache/opencode/models.json`. Reading the wrong one does not
-  fail — the state file parses as JSON, every lookup misses, and every row renders
-  `?` with nothing reporting an error. `parseCatalogue` rejects the state file's
-  shape by name and that rejection is a test. `openCodeStateDirs()` also lists
-  `~/.cache/opencode` as a candidate for the singular file, which is how the two
-  get confused in the first place.
+  catalogue is `~/.cache/opencode/models.json`. `parseCatalogue` rejects the
+  state file's shape by name and that rejection is a test.
 - **The models.dev `family` is finer-grained than ours and must not replace it.**
-  It says `claude-haiku`, `gpt-luna`, `deepseek-flash` where `familyOf` says
-  `claude`, `gpt`, `deepseek`. Substituting it would make `familyClash` *miss* a
-  `deepseek` drafter against a `deepseek-flash` reviewer under
-  `familyCheck: "require"` — measuring "an extra pass" while claiming
-  cross-family review. The catalogue family is display-only; the comparison is
-  made prefix-tolerant instead. Do not "fix" this by trusting the catalogue.
-- **A ping is a real model call and nothing fires one on its own.** `P`, `T`, `A`
-  and `adv ping` are the only callers. There is deliberately no background ping
-  on launch: an earlier draft proposed one and it was dropped, because a tool
-  that spends calls the reader did not ask for is a different tool. `A` arms and
-  names the spend, only `y` spends it, and it is refused above 40 targets by name,
-  because a single keypress cannot tell a deliberate `A` from a slipped Shift
-  and forty calls is real money.
-  The command keys are uppercase (`P`, `T`, `A`) so lowercase `p` still types
-  into the filter — `p` as a ping key made a letter untypeable for no gain, since
-  every one of the 651 refs is lowercase anyway.
-- **The two ping depths are the row's job, not the footer's.** `P` asks for one
-  word; `T` asks the drafter agent to read a file, and the verdict comes from
-  whether the event stream shows a tool call — not from what the model said. The
-  badge therefore carries which depth answered (`✓ 4.2s` vs `✓ 7.4s T`), an
-  untested row says `P to test`, and a cheaply-tested one says `T? try tools`. A
-  footer can say "ping+tools" once; it cannot say, per row, that the stronger
-  question is still open on this one. **`loadProbes` must preserve `depth`** —
-  `recordProbe` reads the whole file and writes one entry back, so a field the
-  reader drops is a field every subsequent write erases. That bug silently
-  un-marked every `T`.
-- **Every footer lights its keys the same way.** Command keys read green +
-  bold (`THEME.key`) on every screen — the picker footer (`hintRowSpans` in
-  `hints.ts` splits a wrapped row into key/label spans and renders them
-  through `Line`), every `hints()` footer, the `?` key list, and the three
-  `Scroller` footers that used to leave their keys dim. Green deliberately,
-  not accent cyan: selection, headers and the view mode are all cyan, so cyan
-  keys would dissolve into the chrome instead of reading as "press me". Only
-  the part before a word’s first NBSP can be a key (`D`, `Tab` —
-  never the `AA`/`OR` in the tail), and concatenating the spans reproduces the row
-  byte-for-byte, so the one-row budget is untouched.
-- **A model row must never exceed the terminal's real width.** The picker lays
-  out marks + ref + price + status, and every part is truncated rather than
-  allowed to wrap, because the window counts lines. Two bugs lived here: a
-  `Math.max(60, columns - 2)` floor made every row 60 wide on a narrower
-  terminal, so rows that fitted at 100 columns wrapped into two visual rows at
-  58 and the list looked double-spaced — and it looked *fine* on re-entering the
-  screen, because Ink re-measures on the next render rather than on resize. And
-  the price and status columns must yield before the ref does: held at 14 and 16
-  on a 44-column terminal they left nine characters of model name.
-- **The whole row is a band, not just the ref.** The price and status sit in
-  fixed columns 60 characters to the right; a cursor on the ref alone left the
-  reader guessing which price belonged to which model. The band is a neutral
-  background (`SELECTION_BG`) across every cell — gutter, gaps and separator
-  spaces included, so it has no holes — and the highlight hue stays on the
-  text instead of being repainted; a selected row with no hue reads
-  `SELECTION_FG`. A coloured band would compete with the highlight exactly
-  as the old cyan row did, which is why the band is grey. `❯` takes the
-  row's foreground and stays the textual marker; monochrome loses the band
-  and nothing else. The band adds no width, so the padded columns still line
-  up with the model.
+  The catalogue family is display-only; the comparison is made prefix-tolerant
+  instead. Do not "fix" this by trusting the catalogue.
+- **A ping is a real model call and nothing fires one on its own.** `A` arms and
+  names the spend, only `y` spends it, refused above 40 targets. The two ping
+  depths are the row's job, not the footer's: `P` asks for one word, `T` asks an
+  agent to read a file and judges from the event stream, not the words.
+  **`loadProbes` must preserve `depth`** — `recordProbe` rewrites the file per
+  entry, so a dropped field is erased everywhere.
 - **A failure writes `state: "failed"` plus the error.** A run left at
-  `created` means the process died before it could record anything — that is
-  different from a run that died mid-takes, and used to be indistinguishable.
+  `created` means the process died before it could record anything.
 - **A citation can be broken in a way nobody can see.** A zero-width space
   inside a URL is invisible on screen and fatal when copied. `src/urls.ts`
-  removes invisible characters **inside URL spans only** before the takes run,
-  and records the repair in `state.json`. It deliberately leaves prose alone
-  and leaves visible non-ASCII (an IDN, an accented path) alone: removing those
-  would change the address rather than fix it. Do not ask a model to be the
-  only check on this.
+  removes invisible characters **inside URL spans only** before the takes run.
+  Do not ask a model to be the only check on this.
 - **Nothing removes Markdown any more.** The answer is shown because it *is*
-  Markdown: `src/markdown.ts` turns the syntax into styles and keeps the text.
-  The old path stripped `#`, `*`, backticks and reformatted tables before the
-  human saw it, which both read worse and quietly destroyed the text they were
-  trying to copy. The one rewrite left is `【url】` → `[n]` plus a source list,
-  because that is a citation syntax no terminal can show and the URL has to
-  survive. A pipe gets the Markdown itself; a terminal gets it rendered.
-- **Models nest emphasis, and a parser that refuses it mangles the sentence.**
-  `**Original *Law & Order* ranks first**` is one bold sentence with an italic
-  title in it. The first version of `inline()` would not let a `*` appear inside
-  a `**` run, so the bold failed, the single-star rule then matched across the
-  middle of the sentence, and a stray `*` appeared at each end — a real run's
-  first paragraph, seen by the human and missed by every test. Emphasis content
-  is now parsed again (`styled()`), the closing delimiter may not be part of a
-  longer run, and a marker run that opens nothing is emitted whole rather than
-  split. A `<br>` outside a fence is a line break, which is what the model meant
-  by it; inside a fence it stays code. Table cells are parsed for emphasis too,
-  so `**hits**` in a cell is bold rather than four literal characters.
-- **Columns wrap under themselves, not back to the margin.** The commentary
-  sections are rows of fields, so `fitSpans` takes a hanging indent. It wraps
-  at spaces and keeps the spacing as written — `toWords` is for Markdown,
-  where runs of spaces mean nothing, and using it here collapsed the columns.
+  Markdown; `src/markdown.ts` turns the syntax into styles and keeps the text. A
+  pipe gets the Markdown itself; a terminal gets it rendered.
 - **Colour is a palette of roles, in `src/theme.ts`, and it never carries
-  meaning on its own.** `accent` marks structure (section rules, headings, pane
-  titles, the selected option), `code` marks literals, `warn`/`danger` mark state
-  that wants attention, `dim` is scaffolding. Every signal keeps its textual
-  marker — `!`, `DISAGREES`, `REFUTED`, the counts — so a monochrome terminal
-  loses decoration and nothing else. The tool deliberately does **not** colour a
-  confirmed claim green: a file agreeing with a sentence is not a verdict on the
-  sentence, and deciding that is the human's job. A test asserts every colour the
-  palette names has an ANSI code, because `toAnsi` silently drops the ones it
-  does not know — which would be the TUI and the CLI describing one run two ways.
-  Colour costs no width, so the row invariant above is untouched by any of it.
-- **Highlight rows are decoration in `src/highlight.ts`, outside the roles.**
-  The old hardwired `isReferenceRow` is gone: each pattern matches with the
-  picker's own `matchesFilter` (ref and AA name, quoted phrases), newest first,
-  and each colour hashes from its text into `HIGHLIGHT_PALETTE` — thirteen
-  across the spectrum (gold, blue, indigo, violet, orange, pink, coral, red,
-  sand, mauve, grey, amber, sky), every one mid-bright for a black background
-  (the old violet sank into it). Never cyan or teal (selection and chrome),
-  green (footer keys and confirmations — green stays reserved), magenta (the
-  sort column) or yellow (warnings); red appears in no picker row, only on
-  confirm screens. Orange sits at the index the seed hashes to, so the default
-  row keeps its colour — keep it there when extending the palette. `^O`
-  cycles the selected entry past colours other entries use (a stored override;
-  rename carries it, delete drops it) and reports when every colour is taken;
-  cycling home drops the override again. `muse 3.1` matching
-  nothing is the rule working, not a bug: the ref is `muse-spark-1.3` and
-  digit order matters. A quote-only or separator-only pattern parses to
-  nothing or to terms that can never hit, so the screen refuses it before it
-  is stored — an empty term list would match everything.
-- **The commentary is built as spans and printed as text.**
-  `councilSections` returns styled lines; `renderCouncil` joins their text for
-  anything that is not a terminal. That is why `adv run > plan.md` is unchanged
-  by a colour change: there is one layout and two deliveries, and the pipe
-  simply drops the styles.
-- **The diff is take 1 vs the final answer, plain.** `unifiedDiff` shells to
-  `git diff --no-index` on two temp files and trims the output — no relabelling,
-  no changelog cross-check. `diff.patch` is a record and the pane shows what is
-  in it.
-- **A pane and the screen it opens over are the same component.** React reuses
-  the `Scroller` instance when only the panel toggles, so its scroll offset
-  carries over — and a pane opened after scrolling another renders past its own
-  end, which is a blank pane with no error. Each screen is keyed by what is on
-  it, so every pane starts at the top.
-- **There are two task states, and the TUI is not allowed to trap you in a
-  run.** `task` is the draft on the question desk: the debate screen owns it, and
-  opening a past run must never touch it (it briefly did — `openRun` wrote the
-  run's task into the same state, so Ctrl+R ate the prompt you were typing).
-  `runTask` is the task of the run on screen, set from the draft by `beginRun`
-  and from the record by `openRun`; `runHead`/`runTail` and the head effect read
-  it. `n` is the way back to the debate screen from a result or the runs
-  list, and Ctrl+R opens the list from any settled screen. Esc is inert on the
-  result on purpose — quitting is `q`, never a stray Escape. The `Scroller`
-  swallows Ctrl/meta combos so Ctrl+Y cannot also read as `y` (copy).
-- **Continuing is a dedicated key, and it is forceful.** `C` on the result sets
-  a pending continuation (parent name/dir/mode/result) and an empty prompt;
-  `beginRun` composes the full task at run time. Enter was tried first, with an
-  arm-and-warn for a non-empty desk draft — but the desk always held the task
-  that started the run, so every continue warned, and a slipped Enter started
-  a run. An explicit capital key needs no guard: the guard's real job is on
-  *openRun*, which still never touches `task`. The prompt field is one line;
-  the parent's result travels in state, never in the field. An empty
-  follow-up refuses to run (it would replay the parent verbatim), and Ctrl+U
-  abandons the continuation. It also switches the subject to the parent's
-  mode: a continued question must not start reading a repository.
-  `state.parent` stays display-only provenance — the composed task carries the
-  chain regardless.
-- **The model resolves "this repo" as the git repo, not the directory.** A
-  repo that sits inside a larger checkout (the toy fixture inside ai-debater)
-  made "what is this repo about" come back about the *enclosing* tool — PWD
-  and cwd were correct; the model read upward, and the evidence checker then
-  flagged every citation as missing. The prompts pin the subject to the
-  working directory ("cite only files under it").
-- **The result screen is the answer; the commentary is behind `i`.** What
-  we learned and what happened pushed the answer below the fold on the very
-  screen that exists to show it. `renderCouncilAnswerLines` /
-  `renderCouncilCommentaryLines` split `councilSections` by prefix — the
-  answer and sources are always the first sections — and `i` renders the
-  complement. The CLI's piped report keeps everything: a pipe is for
-  scripting.
-- **The prompt invites what the sandbox denies, and the model apologises in
-  print.** The plan-mode prompt said "or a git command you actually ran" while
-  the drafter agent has no shell — so it tried, was denied, and opened the
-  plan with a scope-note about the commands it could not run. A prompt must
-  only ask for what the agent's tools can produce. The same pass added "do not
-  recite the settled decisions" (a draft quoted them all back as a section)
-  and "answers stay answers" (a question had come back as an options-plan).
+  meaning on its own.** Every signal keeps its textual marker, so a monochrome
+  terminal loses decoration and nothing else. A test asserts every colour the
+  palette names has an ANSI code.
+- **A pane and the screen it opens over are the same component.** Each screen is
+  keyed by what is on it, so every pane starts at the top.
+- **There are two task states: `task` (the desk draft) and `runTask` (the run on
+  screen).** Opening a past run must never touch `task`. `C` continues
+  forcefully with an empty prompt; the parent's result travels in state, never
+  in the field.
+- **The model resolves "this repo" as the git repo, not the directory.** The
+  prompts pin the subject to the working directory ("cite only files under it").
+- **The result screen is the answer; the commentary is behind `i`.**
+- **The prompt must only ask for what the agent's tools can produce.**
 - **Every screen needs a way out, and the text on it has to name a key that
-  exists.** The error phase had no input handler: its own words said "Esc for the
-  other runs" while the only key that worked was Ctrl+C, so a reader who opened a
-  failed run from the past-runs list was stuck. When adding a phase, add its
-  handler in the same commit, and make the hint line name the keys the handler
-  answers to. The handler is not enough on its own: the clarify phase shipped
-  one and still drew a blank frame for lack of a render branch, so
+  exists.** When adding a phase, add its handler in the same commit, and
   `src/tui-phase.test.ts` pins every `Phase` member to the render chain.
-- **Esc means "back", and back is where you came from.** `openedFrom` records
-  whether the run on screen came from the past-runs list or from the debate screen, and
-  `goBack()` is the only thing that reads it: the result and the error
-  screen both call it. Returning to the list does not reload it — the list is a
-  snapshot and keeps its tags and its scroll — which is why `goBack` sets the
-  phase and nothing else. `n` stays the unconditional way to the debate screen for when
-  "back" is not where you want to be. Note the corollary: Ctrl+R does nothing
-  while the list is already open, because it opens the list rather than
-  refreshing it; leave the list and come back to see a run created meanwhile.
-- **A Mac terminal keeps PageUp and PageDown for its own scrollback.** They
-  never reach the app, so `space`/`f`/`b`/`u` are the paging keys that work, with
-  `pageUp`/`pageDown` still handled for terminals that do send them.
-- **The mouse is the platform's boundary, not an Ink feature, and it has two
-  modes.** Ink 8 exports no mouse API: `useCursor` only *sets* the cursor (for
-  IMEs), and the only mouse-aware thing in Ink is that `App.js` refuses mouse
-  reports as printable input — which is why no field here has to guard its text,
-  and why a harness check pins that behaviour rather than a guard of our own.
-  What Ink *does* offer is the hand-off its `measureElement` docs describe, and
-  the defaults it does not change are the right ones: **the wheel is asked for**
-  (`1000h` + `1006h`, decoded in `src/mouse.ts`), and **motion is not** (`1002`),
-  because motion is what would take text selection away from the terminal.
-  - **The two modes are the point.** With the mouse reported, the wheel scrolls
-    the pane but the terminal will not drag-select; without it, drag-selection is
-    native and precise but the wheel scrolls the scrollback. `Ctrl+T` swaps them,
-    and the mode is printed on the bottom line of *every* screen (`◌ mouse: the
-    pane` / `◉ mouse: the terminal's`) — a mode you cannot see is a mouse that
-    works at random. That line is truncated, not wrapped, so it is always exactly
-    one row.
-  - An earlier version implemented drag-selection *in the app* (1002 + hit-testing
-    + copy on release). It was removed: it needed the app to know its own screen
-    origin — which is not row 1, because the shell's prompt is above it — and it
-    fought the wheel while dragging. The terminal does selection better than we
-    did. Do not rebuild it without solving the origin first. Click-to-select in
-    the picker (`src/click.ts`, `clickY` in `src/mouse.ts`) is the solved half
-    of that problem, not a reopening: the fullscreen alternate screen puts the
-    live region at row 1, `<Static>` is banned so nothing sits above it, Ink 8
-    omits the trailing newline when the frame fills the viewport, and each row
-    is measured with `measureElement` rather than chrome arithmetic — so a
-    terminal row minus one is a layout row. `--no-alt-screen` has no knowable
-    origin, so clicks stay off there; a click selects, never commits.
-  - `startTui` turns reporting off again on the way out (`finally` plus
-    `process.once("exit")`), or the reader's shell is left sending reports. There
-    is no package to borrow: `ink-mouse` and `ink-mouse-events` do not exist, and
-    `ink-scroll-box` is a scroll container with no events.
-- **In a pane, one element must be one row.** The result and diff panes scroll
-  by line offset (`clampOffset`/`maxOffset` in `viewport.ts`), so if a line is
-  wider than the pane, Ink wraps it, the count stops matching what is on screen,
-  and the scroll jumps. That is why `renderMarkdownLines` pre-wraps, why a long
-  URL or code line is split rather than allowed to overflow, and why the section
-  headers are re-fitted to the width. Any new line put into a pane has to go
-  through the renderer or `fitLines`.
+- **Esc means "back", and back is where you came from.** `n` is the
+  unconditional way to the debate screen; quitting is `q`, never a stray Escape.
+- **`<Static>` is banned.** The log is a bounded in-frame window over state.
+- **In a pane, one element must be one row.** Pre-wrap through the renderer or
+  `fitLines`, or the scroll offset stops matching what is on screen.
 - **The TUI is fullscreen, and the frame must never exceed the terminal.**
-  Ink renders into the alternate screen (`render(node, {alternateScreen})`),
-  the root is `<Box height={termRows}>`, the log sits on top, the screen fills
-  the middle (`flexGrow` + `overflow="hidden"`), and the mouse line is pinned
-  last. The budgets live in `src/viewport.ts` and every screen subtracts only
-  its own chrome — the arithmetic is tested in `src/viewport.test.ts`. A screen
-  that miscounts clips instead of corrupting the
-  redraw, but none should have to: the invariant is log + spinner + content +
-  mouse ≤ rows.
-- **`<Static>` is banned.** It is designed for inline rendering; on the
-  alternate screen Ink replays the whole accumulated static output on any full
-  clear (a resize, leaving a fullscreen frame), pushing the live frame off the
-  screen. The log is a bounded in-frame window over state instead, and `l`
-  shows it whole in a pane. Do not reintroduce `Static` without leaving the
-  alternate screen first.
-- **The log is a window, not a history.** While a screen is up it shows the
-  last rows that leave the content its minimum (`MIN_CONTENT_ROWS`, at most
-  `LOG_MAX_ROWS`); while running it fills. The full log stays in state for the
-  session, and the exit recap (state, run dir, plan path) is printed after Ink
-  restores the shell — the alt screen leaves with everything else. The escape
-  hatch is `--no-alt-screen` / `ADV_NO_ALT_SCREEN=1`, for terminals that
-  misbehave with the alternate screen.
-- **Only run progress is logged, never navigation.** A log line follows every
-  later screen until pushed out, so logging "opening …" or `pair "x" · a -> b`
-  stamped settled screens with claims that misled on runs using another pair —
-  and the pair already appears where it belongs (the debate screen, the pairs
-  list). Choosing a pair and opening a run confirm inline (notice, rows, the
-  run's own screens) and stay out of the log.
-- **On the alternate screen there is no scrollback.** The handed-over mouse mode
-  promises selection only — "wheel scrolls back" is false there and the line
-  must not say it. The current wording is "drag to select text · Ctrl+T takes
-  it back".
+  The budgets live in `src/viewport.ts`; the arithmetic is tested in
+  `src/viewport.test.ts`.
+- **The mouse has two modes** (pane vs terminal, `Ctrl+T` swaps), printed on
+  the bottom line of every screen. Motion is never requested; clicks select,
+  never commit, and stay off under `--no-alt-screen`.
 
 ---
 
-## Next task
+## Open work
 
-**The council is the workflow and the gate is gone.** 21 Oct removed the whole
-adversarial-review apparatus — draft, claims, review, gate, rebuttal, audit,
-`adv decide`, `adv revise`, `adv run --resume` — and the `.adv/` setup screen
-with it. `docs/M2-PLAN.md` §3's settled decisions and `docs/REVISE.md` stand as
-history; do not re-litigate them, and do not rebuild a gate without saying why
-the council's takes-plus-synthesis fails to settle something a gate would.
-
-Not yet done:
-
-1. the §12 eval (`PLAN.md`), which needs a body of runs first: 5–10 completed
-   council runs across pairs before any measurement is worth reading;
-2. the MCP server-level disable (plan §6; still open from the spike);
-3. `docs/PLAN-USE-OPENCODE-API.md` — a proposed runner change, not started.
+1. The MCP server-level disable. The agent permissions deny by tool name
+   (`*` deny first, see `src/agents.ts`), but an MCP server's tools are not yet
+   removed per server, so one could still be reached by a route the allowlist
+   does not name.
 
 Before anything that calls a model, ask the human.

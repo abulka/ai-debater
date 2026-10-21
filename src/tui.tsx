@@ -134,8 +134,8 @@ type Panel = { title: string; lines: StyledLine[] };
  * Every key the result screen answers to.
  *
  * A list, not a paragraph in the footer: the footer has room for four or five
- * of them, and the ones a reader needs once — the draft the review saw, the
- * claims as recorded — are exactly the ones that would not fit. `?` shows this,
+ * of them, and the ones a reader needs once — the other takes, the full log —
+ * are exactly the ones that would not fit. `?` shows this,
  * and it is the same list the key handler is written against, so a new key that
  * is not here is a key nobody can find.
  */
@@ -794,7 +794,7 @@ function Start({
             ! {clash}
             {cfg?.familyCheck === "require"
               ? " — familyCheck is \"require\", so Enter is blocked (↑↓ to choose models)"
-              : " (fine for testing; use --strict or familyCheck: \"require\" for a trial)"}
+              : " (fine for testing; use --strict or familyCheck: \"require\" to insist on cross-family)"}
           </Text>
         </Box>
       )}
@@ -5944,7 +5944,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     const report = councilData;
     // A panel opens over the result and Esc puts it away. The result screen is
     // where a finished run is read, and reading it means being able to look up
-    // the draft, the claims and the reviewer's own words without leaving.
+    // each model's own take without leaving.
     content = panel ? (
       <Scroller
         key={`panel:${panel.title}`}

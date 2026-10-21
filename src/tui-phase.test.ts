@@ -40,8 +40,6 @@ describe("every Phase member has a render branch", () => {
     // make every assertion below vacuous, so the parse itself is asserted.
     expect(members.length).toBeGreaterThan(10);
     expect(members).toContain("result");
-    // gate was retired with the council simplification: council runs finish in
-    // one pass with no gate. setup went with it — no `.adv/` prompt.
     expect(members).not.toContain("gate");
     expect(members).not.toContain("setup");
     expect(members).not.toContain("working");

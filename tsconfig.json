@@ -16,5 +16,5 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "spike"]
+  "include": ["src"]
 }

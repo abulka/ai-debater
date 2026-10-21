@@ -1,6 +1,6 @@
 # toy-repo
 
-A deliberately small service, used to exercise the `adv` spike. It contains at
+A deliberately small service, used to exercise `adv`. It contains at
 least one statement that does not match the code, on purpose.
 
 ## Rate limiting

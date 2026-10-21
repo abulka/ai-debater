@@ -526,12 +526,11 @@ export function fitSpans(lines: StyledLine[], width = wrapWidth(), hang = 0): St
  *
  * The same invariant as the Markdown renderer, for text that is not Markdown:
  * the pane's scroll arithmetic counts array elements, so one element has to be
- * one row. A patch line, a changelog summary and a header rule all pass through
- * here.
+ * one row. A patch line, a table-like summary row and a header rule all pass
+ * through here.
  *
- * `hang` is where a continuation line starts: a changelog entry is a row of
- * columns, and its wrapped summary belongs under the summary, not under the
- * item id.
+ * `hang` is where a continuation line starts: a row of columns has its wrapped
+ * text under the text column, not under the leading id.
  */
 export function fitLines(lines: string[], width = wrapWidth(), hang = 0): StyledLine[] {
   return fitSpans(textLines(lines), width, hang);
@@ -539,7 +538,7 @@ export function fitLines(lines: string[], width = wrapWidth(), hang = 0): Styled
 
 /**
  * Build a styled line from strings and spans, so a builder reads like what it
- * draws: `spans("  ", { text: "REFUTED", color: THEME.danger }, " ", claim)`.
+ * draws: `spans("  ", { text: "!", color: THEME.danger }, " ", line)`.
  */
 export const spans = (...parts: (string | Span)[]): StyledLine =>
   parts.map((part) => (typeof part === "string" ? { text: part } : part));

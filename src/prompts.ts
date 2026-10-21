@@ -6,11 +6,9 @@ import type { Mode } from "./runner.ts";
  * Two modes:
  *   "plan"   — an implementation plan for a repository (reads files).
  *   "answer" — a general question. No repo assumed; facts are checked
- *              against URLs, and the reviewer may search the web.
+ *              against URLs, and the model may search the web.
  *
- * Each call asks for ONE thing: prose, or a single JSON block. Mixing them
- * is where models get flaky — a drafter will write a good plan and forget
- * the JSON block entirely.
+ * Each call asks for ONE thing: a take, or the synthesis, as prose.
  * ------------------------------------------------------------------ */
 
 /* --- council: parallel takes plus one synthesis ------------------- */
@@ -24,7 +22,7 @@ export function takePrompt(i: { mode: Mode; task: string; criteria: string; deci
     return `Answer the question below, thoroughly and concretely.
 
 RULES
-- Answer in your own voice, succinctly. No mention of claims, reviewers, gates or open decisions.
+- Answer in your own voice, succinctly. No mention of the process or of other models.
 - Lead with the answer in one sentence, then the detail. No preamble.
 - If the question asks which option is best, RECOMMEND ONE and say why. Never hand the choice back.
 - Prefer short prose: the answer, the reasoning, then sources. Bullets only when the answer is genuinely a list. Aim for about 300 words.

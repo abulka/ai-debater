@@ -75,8 +75,7 @@ export function familyOf(ref: string): string {
  * `deepseek` for `opencode-go/deepseek-v4.1-flash`; the models.dev catalogue
  * says `deepseek-flash`. A drafter labelled `deepseek` and a reviewer labelled
  * `deepseek-flash` are the same family, and under `familyCheck: "require"` that
- * pair must not be allowed to start a trial and measure "an extra pass" while
- * claiming to measure cross-family review.
+ * pair must not be allowed to run as if it were cross-family.
  *
  * Note what this is *not* allowed to become: the catalogue's own family labels
  * are not a drop-in replacement. They are finer-grained (`claude-haiku`,
@@ -95,7 +94,7 @@ export function familyClash(models: {
   if (a !== b && !a.startsWith(b) && !b.startsWith(a)) return null;
   return (
     `drafter and reviewer share family "${models.drafter.family}" — ` +
-    `the review adds less than a cross-family one would`
+    `the second take adds less than a cross-family one would`
   );
 }
 

@@ -162,6 +162,7 @@ function checkFamily(models: Models, check: FamilyCheck, source: string): void {
  * would compare "opencode-go" with "opencode-go" and pass regardless.
  */
 function requireFamily(which: "drafter" | "reviewer" | "peer", flags: Map<string, string | true>) {
+  if (which === "peer" && (flags.get("peer") === "none" || flags.get("peer") === "off")) return;
   if (flags.has(which) && !flags.has(`${which}-family`)) {
     throw new Error(
       `--${which} needs --${which}-family. The provider is not the family: a gateway ` +

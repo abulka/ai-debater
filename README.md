@@ -1,4 +1,4 @@
-# adv — two takes plus what we learned
+# ai-debater
 
 `adv` runs a task through two or three different models in parallel. Each
 writes its own independent take; then the lead model reads all the takes and
@@ -38,6 +38,36 @@ other, no record of which model said what, and no single answer to keep.
 `adv` makes the loop repeatable and cheap, and enforces the independence in
 code rather than in prompt wording the models can drift from.
 
+## Requirements
+
+- [Bun](https://bun.sh) — `adv` runs on Bun's runtime (`Bun.spawn`,
+  `Bun.file`), not plain Node.
+- [OpenCode](https://opencode.ai) — every model call goes through
+  `opencode run`, so nothing works without it.
+
+## Install
+
+No npm account, no registry — install straight from GitHub:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/abulka/ai-debater/main/install.sh | sh
+```
+
+The script installs Bun if it is missing, warns if `opencode` is missing,
+clones (or updates) the repo into `~/.local/share/ai-debater`, runs
+`bun install`, and symlinks `adv` and `ocm` into `~/.local/bin`. Re-running it
+updates an existing install. It takes `--repo`, `--dir` and `--bin` flags —
+run it with `--help` to see them.
+
+Or by hand:
+
+```sh
+git clone https://github.com/abulka/ai-debater.git
+cd ai-debater
+bun install
+bun link                       # once: puts `adv` and `ocm` on PATH
+```
+
 ## What it does
 
 One command, and behind it:
@@ -49,19 +79,12 @@ One command, and behind it:
   (`final.md`), keeping what was right, taking what the peers did better, and
   ending with a **what we learned** note naming each model by ref.
 
-One pass, no gate, no rebuttal round. The `x` key shows the diff from take 1
-to the final answer, so what the synthesis changed is visible.
+One pass. The `x` key shows the diff from take 1 to the final answer, so what
+the synthesis changed is visible.
 
-**Non-goals.** Not a debate engine, not a multi-agent framework, not a
-replacement for tests, and not a code-writing tool — it produces plans and
+**Non-goals.** Not a multi-agent framework, not a replacement for tests, and
+not a code-writing tool — it produces plans and
 answers, and never edits the repository.
-
-## Quick start
-
-```sh
-bun install
-bun link                       # once: puts `adv` and `ocm` on PATH
-```
 
 There are two front ends over the same pipeline: an interactive **TUI** (bare
 `adv`) and a scriptable **CLI** (`adv <command>`). Both drive `src/pipeline.ts`.
@@ -71,9 +94,6 @@ high-stakes questions; skip it for small or familiar tasks, where the overhead
 exceeds the gain.
 
 ### CLI mode
-
-The CLI is the scriptable path — everything can run non-interactively and pipe
-its output.
 
 ```sh
 adv init --dir <repo>          # criteria and decisions (optional)
@@ -101,53 +121,30 @@ models, and `--strict` to make a same-family pair a hard stop.
 
 Bare `adv` opens the interactive TUI for the current directory (`adv --dir
 /path/to/repo` for another). Home first — models browser, new debate, past
-runs, settings — then keys. Every screen lists its own keys behind `?`.
+runs, settings — then keys. Every screen lists its own keys behind `?`; the
+essentials:
 
 | Key | Action |
 | --- | --- |
-| m / n / p / s / q | Home — models browser · new debate · past runs · settings · quit (↑↓ · Enter works too; cursor starts on models browser) |
-| models browser | Home's first row: the same model list — Enter does nothing, Esc home. Everything else (filter, views, ping, export) works as in the picker |
-| ↑↓ · Enter | New debate: on **drafter/reviewer preset**, choose a saved pair (creating and deleting live in settings). On **model 1 / 2 / 3**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt |
-| Tab | New debate: switch subject — **this repository** or a **general question** (also the subject row, Enter toggles) |
-| Enter | New debate: on the prompt, run the typed task — in the subject the desk shows |
-| Ctrl+P | Settings — pairs, the AA benchmark key, highlights, the cache window, a manual refresh (from home or the debate screen; Esc home) |
-| P · T | Picker: **ping** the highlighted model. `P` asks it one word — *does this account reach it at all?* `T` asks it to read a file — *does it also reach for a tool?* The row says which ran |
-| A | Picker: ping every model shown. **Press A, then y** — the first press arms and names the models and the call count, `y` spends it, `n`/`Esc`/anything else stands down. Refused above 40 shown |
-| F | Picker: providers on/off — every provider with a checkbox for whether the picker shows it. Applies to every view and persists between sessions |
-| V / C / D / S / H / M / N / L | Picker: change the view, price basis, ranking, or which rows show. `?` explains all of them |
-| Y | Picker: export the table as Markdown with a legend — to the clipboard and `~/.local/share/adv/models.md` |
-| y / Y | Result: copy the answer as Markdown (also `answer.md` in the run directory) / the whole result, commentary included (also `result.md`) |
-| x | Result: the diff from take 1 to the final answer (Esc back) |
-| 1 / d · 2 / R · 3 | Result: each model's original take, unedited |
-| i | Result: what we learned — what the peers contributed, what happened |
-| l | Result: the full run log |
-| C | Result: continue this debate — the desk asks for your follow-up only; the parent's result rides along. `Ctrl+L` re-reads the parent result from the desk |
-| X / n / e | Result: back to the menu / new question with a cleared prompt / edit this question pre-filled |
-| ? | Result: the keys that work on this screen |
-| Esc | Closes an open panel only — never leaves the result |
-| Ctrl+R | Past runs — open a finished run, from home, the debate screen, a result or an error |
-| space / a / A | Runs: tag the highlighted run, and move on / tag all / clear the tags |
-| d / D | Runs: delete the tagged runs (or the highlighted one) / every run listed — the confirmation states the split |
-| Ctrl+U | New debate: clear the prompt |
-| ←→ · ⌥←→ · ^A · ^E · ^K | Every text field: step within the line, jump by word, jump to start/end, kill to end of line |
-| ↑↓ · j/k · space · f · b · u | Scroll a line / page down / page up |
-| g / G · wheel · q | Top / end of the pane · scrolls the pane · quit |
-| Ctrl+T | Mouse: hand it to the terminal to select text, and take it back. The mode is on the bottom line of every screen |
-
-Word jump (⌥←/⌥→) needs the terminal to send Option as Meta — in
-Terminal.app tick **Use Option as Meta key** (elsewhere it is usually the
-default); Ctrl+←/→ works everywhere instead, including Windows and Linux.
+| m / n / p / s / q | Home — models browser · new debate · past runs · settings · quit |
+| ↑↓ · Enter | Choose a model pair or preset; on the prompt, run the typed task |
+| Tab | Switch subject — **this repository** or a **general question** |
+| P · T | Ping the highlighted model (one word / read-a-file); `A` pings every row shown |
+| y / Y | Copy the answer / the whole result as Markdown |
+| x | Diff from take 1 to the final answer |
+| 1 / d · 2 / R · 3 | Each model's original take, unedited |
+| i | What we learned |
+| C | Continue this debate with a follow-up |
+| Ctrl+R | Past runs — open a finished run |
+| space · d / D | Runs: tag rows · delete tagged / every run listed |
+| Ctrl+T | Mouse: hand it to the terminal to select text, and take it back |
 
 Your models, subject and thresholds follow you between directories: choosing
 them writes only the global `~/.config/adv/config.json` — never anything into
-a repository. The pair you use most is worth a name: build it from
-**drafter/reviewer pairs** (`new pair…` — pick the models, name it) or name
-the current two with `save current as…`, and it is one keystroke away next
-time, listed last-used first. Pairs live in `~/.config/adv/pairs.json`; the
-pairs past runs used are offered from the run records themselves, so deleting
-a run withdraws its pair from that list. The model picker marks the models
-you have favourited in OpenCode with `★` and puts them first — `adv` reads
-OpenCode's favourites and never writes them.
+a repository. The pair you use most is worth a name; pairs live in
+`~/.config/adv/pairs.json`. The model picker marks the models you have
+favourited in OpenCode with `★` and puts them first — `adv` reads OpenCode's
+favourites and never writes them.
 
 `adv init` is the one thing that writes into a repository, and only when you
 ask: it creates `.adv/criteria.md` and `.adv/decisions.md` (both read on
@@ -174,10 +171,9 @@ prices are the same files.
 
 `opencode models` lists every model in the models.dev catalogue for any
 provider you hold a key for. It never asks the provider which of those the
-key can call, so it offers models that fail on first use — on this machine it
-listed four Groq models Groq answers `model_not_found` for, and hid four it
-can call. `docs/OPENCODE-MODELS.md` has the diff, the reproduction, and the
-two dead ends (config filtering and plugins, neither of which works).
+key can call, so it offers models that fail on first use. `docs/OPENCODE-MODELS.md`
+has the diff, the reproduction, and the two dead ends (config filtering and
+plugins, neither of which works).
 
 So `adv` treats that listing as candidates and adds two things the catalogue
 and a real call can answer:
@@ -197,8 +193,7 @@ and a real call can answer:
 
 One verdict is worth knowing about, because it looks like the opposite of a
 fault: **`✗ app only`**. OpenCode's free tier refuses calls that come from a
-terminal, so models like `opencode/big-pickle` and
-`opencode/space-bunny-free` work perfectly in the OpenCode app and cannot be
+terminal, so those models work perfectly in the OpenCode app and cannot be
 used by `adv` at all. The model is fine and your account is fine; the ping is
 reporting that the tool cannot reach it.
 
@@ -251,24 +246,15 @@ Both are the same workflow.
 one: the previous final answer plus your follow-up becomes the new task. The
 new run is otherwise normal — fresh takes, fresh synthesis — and it keeps the
 parent's mode, so a continued question does not start reading a repository.
-`docs/CONTINUE.md` has the design.
+The same continuation is on the result screen behind `C`, and `Ctrl+L`
+re-reads the parent result while composing the follow-up.
 
 ## Docs
 
-- [`AGENTS.md`](AGENTS.md) — working rules, current status, TUI keys, and the
-  architecture. Read this before changing anything.
-- [`docs/CONTINUE.md`](docs/CONTINUE.md) — chained runs design.
+- [`AGENTS.md`](AGENTS.md) — working rules for contributors and agents.
 - [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — benchmarks in the picker.
 - [`docs/OPENCODE-MODELS.md`](docs/OPENCODE-MODELS.md) — why `opencode
   models` is candidates, not availability, with the reproduction.
-- [`PLAN.md`](PLAN.md) — the original build plan and its locked decisions
-  (historical: the workflow has since been simplified to takes + synthesis).
-- [`docs/M2-PLAN.md`](docs/M2-PLAN.md), [`docs/REVISE.md`](docs/REVISE.md) —
-  retired designs (evidence execution, revisiting the gate), kept for the
-  reasoning.
-- [`docs/PLAN-USE-OPENCODE-API.md`](docs/PLAN-USE-OPENCODE-API.md) — a
-  proposed runner change (not started).
-- [`spike/README.md`](spike/README.md) — M0 feasibility findings.
 
 ## License
 

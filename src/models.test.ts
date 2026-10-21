@@ -54,8 +54,8 @@ describe("familyClash", () => {
 
   test("a label that is a prefix of another is still the same family", () => {
     // The miss this exists for. `familyOf` says `deepseek`; the catalogue says
-    // `deepseek-flash`. Under `familyCheck: "require"` a trial started on this
-    // pair would measure "an extra pass" while claiming cross-family review.
+    // `deepseek-flash`. Under `familyCheck: "require"` a run on this pair would
+    // pass as cross-family when it is not.
     expect(
       familyClash({ drafter: ref("a/deepseek-v4.1", "deepseek"), reviewer: ref("b/deepseek-flash", "deepseek-flash") }),
     ).toContain("share family");

@@ -1,11 +1,10 @@
 /**
- * Deterministic defects in URLs, because a reviewer cannot be relied on to see
+ * Deterministic defects in URLs, because a model cannot be relied on to see
  * them and a human cannot see them at all.
  *
  * The 17 Oct answer-mode run cited
  * `https://en.wikipedia.org/wiki/Consider_Phleb<U+200B>as` — a zero-width space
- * between two letters — and the reviewer returned 10 confirmed, 0 refuted. The
- * link breaks when copied and looks perfect on screen. That is not a judgment
+ * between two letters. The link breaks when copied and looks perfect on screen. That is not a judgment
  * call and it is not something a second model should be asked to notice: it is a
  * character-class check.
  *

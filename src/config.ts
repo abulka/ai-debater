@@ -12,7 +12,7 @@ export interface Config {
 
 export const DEFAULT_CONFIG: Config = {
   models: {
-    // The trial pair: two families, two providers, both verified live, both fast
+    // The default pair: two families, two providers, both verified live, both fast
     // enough to use in anger. This costs real money per run — for cheap test
     // runs pass the haiku pair explicitly (see AGENTS.md, rule 3).
     drafter: { ref: "anthropic/claude-sonnet-5-5", family: "anthropic" },

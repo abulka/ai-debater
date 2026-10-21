@@ -23,8 +23,8 @@
  * - `full` — `adv-drafter` in the repository, forced to make one tool call. The
  *   only thing that catches a model which answers but cannot actually work as a
  *   drafter: gpt-oss invents a `search` tool that does not exist, and OpenCode
- *   rejects the turn. Names the agent it used, because in answer mode the
- *   drafter is `DENY_ALL` and a tool call would prove nothing.
+ *   rejects the turn. Names the agent it used, so a reader can see which
+ *   definition the call ran under.
  *
  * Results are classified rather than pass/fail, because "it did not work" is not
  * actionable and every failure mode `adv` has ever hit is distinguishable from

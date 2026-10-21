@@ -1,6 +1,7 @@
 {
-  "name": "adv",
+  "name": "ai-debater",
   "private": true,
+  "description": "Run a task through two or three models in parallel, then synthesise one answer. Installs the `adv` and `ocm` commands; runs on Bun and calls models through the `opencode` CLI. Not published to npm — install from GitHub (see README).",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -9,7 +10,6 @@
   },
   "scripts": {
     "adv": "bun run src/cli.ts",
-    "spike": "bun run spike/m0.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

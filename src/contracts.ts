@@ -52,8 +52,8 @@ export type RunState = z.infer<typeof RunState>;
  * Council — parallel takes plus one synthesis.
  *
  * Each model answers the same prompt independently (take.1.md, take.2.md,
- * optional take.3.md); the lead then synthesises the final answer. No claims,
- * no verdicts, no gate: the synthesis carries a short "what we learned" note.
+ * optional take.3.md); the lead then synthesises the final answer. The synthesis
+ * carries a short "what we learned" note.
  * ------------------------------------------------------------------ */
 
 /** One independent take, as written to take.N.md. */
