@@ -106,7 +106,7 @@ runs, settings — then keys.
 | ↑↓ · Enter | New debate: on **drafter/reviewer preset**, choose a saved preset (creating and deleting live in settings). On **drafter** or **reviewer**, open the model picker in select mode — Enter assigns and returns to the debate screen. Typing always goes to the prompt |
 | Tab | New debate: switch subject — **this repository** or a **general question** (also the subject row, Enter toggles) |
 | Enter | New debate: on the prompt, run the typed task. A task that reads like a question in repository mode first asks **general question** or **this repository** |
-| Ctrl+P | Settings — **edit drafter/reviewer pairs** or the benchmarks key (from home or the debate screen; Esc home) |
+| Ctrl+P | Settings — **edit drafter/reviewer pairs** or the AA benchmark key (from home or the debate screen; Esc home) |
 | ↑↓ · Enter | Settings: on **edit drafter/reviewer pairs**, the list — saved pairs last used first, then pairs past runs used, then `new pair…` (pick a drafter, a reviewer, name it), then `save current as…` |
 | d | Pairs: delete the highlighted saved pair, after a confirmation that names it |
 | r / R | Pairs: rename the highlighted saved pair — `r` edits its name, `R` prefills a name suggested from its models. The name prompt prefills a suggestion for new saves too |

@@ -958,6 +958,16 @@ function Start({
   );
 }
 
+/**
+ * The settings rows, in the order they draw and the order Enter dispatches
+ * them by — one list, so the screen and the handler cannot disagree.
+ */
+const SETTINGS_ROWS = ["highlights", "pairs", "aakey", "refresh-days", "refresh-now", "back"] as const;
+type SettingsRow = (typeof SETTINGS_ROWS)[number];
+/** Standalone (`ocm`) has no pairs: the row is absent, not disabled. */
+const settingsOrder = (hidePairs?: boolean): SettingsRow[] =>
+  SETTINGS_ROWS.filter((id) => !(hidePairs && id === "pairs"));
+
 function Settings({
   selection,
   saved,
@@ -985,19 +995,25 @@ function Settings({
       : highlights.length <= 2
         ? highlights.join(", ")
         : `${highlights.slice(0, 2).join(", ")} +${highlights.length - 2} more`;
-  const rows: { label: string; value: string }[] = [
-    // Matched by model, not by position: a pair saved under another name is
-    // still the pair in use, and showing nothing would read as "no pair".
-    ...(!hidePairs ? [{ label: "edit drafter/reviewer pairs" as const, value: `current pair: ${pair ?? "—"}` }] : []),
-    {
-      label: "benchmarks",
-      value: aaKey ? "artificialanalysis.ai · key set" : "artificialanalysis.ai · no key — OpenRouter benchmarks",
-    },
-    { label: "auto-highlight models", value: hlSummary },
-    { label: "auto-refresh caches", value: formatRefreshDays(refreshDays) },
-    { label: "refresh caches now", value: "benchmarks · ACD · prices" },
-    { label: "back", value: "" },
-  ];
+  const rowFor = (id: SettingsRow): { label: string; value: string } => {
+    switch (id) {
+      case "highlights":
+        return { label: "which models to highlight in colour", value: hlSummary };
+      case "pairs":
+        // Matched by model, not by position: a pair saved under another name is
+        // still the pair in use, and showing nothing would read as "no pair".
+        return { label: "edit drafter/reviewer pairs", value: `current pair: ${pair ?? "—"}` };
+      case "aakey":
+        return { label: "set AA benchmark key", value: aaKey ? "key set" : "no key — OpenRouter benchmarks" };
+      case "refresh-days":
+        return { label: "when to refresh caches", value: formatRefreshDays(refreshDays) };
+      case "refresh-now":
+        return { label: "refresh caches now", value: "benchmarks · ACD · prices" };
+      case "back":
+        return { label: "back", value: "" };
+    }
+  };
+  const rows = settingsOrder(hidePairs).map((id) => ({ id, ...rowFor(id) }));
 
   return (
     <Box flexDirection="column">
@@ -1005,10 +1021,10 @@ function Settings({
         <Header right="settings" />
       </Box>
       {rows.map((r, i) => (
-        <Box key={r.label}>
+        <Box key={r.id}>
           <Text color={i === selection ? THEME.accent : undefined}>{i === selection ? "❯ " : "  "}</Text>
           <Text color={i === selection ? THEME.accent : undefined} bold={i === selection}>
-            {r.label.padEnd(28)}
+            {r.label.padEnd(37)}
           </Text>
           <Text>{r.value}</Text>
         </Box>
@@ -1899,7 +1915,7 @@ function providerLines(
   ]);
   lines.push([
     {
-      text: "rows matching your auto-highlight patterns read in their own colours — M mutes them for this session, settings → auto-highlight models to edit them. The selected row keeps its band over any hue; the name on the row still says what it is.",
+      text: "rows matching your auto-highlight patterns read in their own colours — M mutes them for this session, settings → which models to highlight in colour to edit them. The selected row keeps its band over any hue; the name on the row still says what it is.",
       dim: true,
     },
   ]);
@@ -2196,7 +2212,7 @@ function Highlights({
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Header right="auto-highlight models" />
+        <Header right="which models to highlight in colour" />
       </Box>
       <Text dimColor>
         {rules.length === 0
@@ -3866,9 +3882,9 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
     setPhase("pairs");
   }
 
-  /* Settings: pairs (unless standalone), the benchmarks key, highlights, the cache window, a manual refresh.
+  /* Settings: highlights, pairs (unless standalone), the AA key, the cache window, a manual refresh.
      The key lives in the user's config dir alone, never in a repo. */
-  const settingsMax = standalone ? 4 : 5;
+  const settingsMax = settingsOrder(standalone).length - 1;
   useInput(
     (_input, key) => {
       if (!cfg) return;
@@ -3886,12 +3902,12 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
       }
       if (!key.return) return;
 
-      const sel = standalone ? settingsSel + 1 : settingsSel;
-      if (sel === 0) {
+      const row = settingsOrder(standalone)[settingsSel];
+      if (row === "pairs") {
         void openPairs("settings");
         return;
       }
-      if (sel === 1) {
+      if (row === "aakey") {
         // A fresh field every visit: a key left on screen is a key photographed.
         setAAKeyInput("");
         setAAKeyCaret(0);
@@ -3899,11 +3915,11 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         setPhase("aakey");
         return;
       }
-      if (sel === 2) {
+      if (row === "highlights") {
         openHighlights();
         return;
       }
-      if (sel === 3) {
+      if (row === "refresh-days") {
         const next = cycleRefreshDays(refreshDays);
         void (async () => {
           await saveRefreshDays(next);
@@ -3915,7 +3931,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         })();
         return;
       }
-      if (sel === 4) {
+      if (row === "refresh-now") {
         // Loud, all three at once: the reader asked, so each reports — the
         // per-cache notices land on the next screen, the confirmation stays here.
         setSaved("refreshing benchmarks, AI Coding Daily and prices…");
@@ -4894,7 +4910,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         setPingArmed(null);
         commitFilter(true);
         if (hlRules.length === 0) {
-          setNotice("no highlight patterns — settings → auto-highlight models to add some");
+          setNotice("no highlight patterns — settings → which models to highlight in colour to add some");
           return;
         }
         setHighlightsOn((on) => !on);
@@ -4910,7 +4926,7 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         commitFilter(true);
         if (hlRules.length === 0) {
           setHighlightsOnly(false);
-          setNotice("no highlight patterns — settings → auto-highlight models to add some");
+          setNotice("no highlight patterns — settings → which models to highlight in colour to add some");
           return;
         }
         setHighlightsOnly((on) => !on);
