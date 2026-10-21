@@ -18,6 +18,11 @@ describe("unifiedDiff", () => {
       expect(patch).toContain("--- ");
       expect(patch).toContain("+++ ");
       expect(await readFile(b, "utf8")).toBe("different\n");
+      await writeFile(a, "same");
+      await writeFile(b, "different");
+      const bare = await unifiedDiff(a, b);
+      expect(bare).toContain("--- ");
+      expect(bare).not.toContain("No newline");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
