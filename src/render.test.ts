@@ -4,6 +4,8 @@ import {
   changeReasons,
   diffPane,
   renderAnswer,
+  renderCouncil,
+  renderCouncilAnswerLines,
   renderDiffLines,
   renderResult,
   renderResultLines,
@@ -343,5 +345,42 @@ describe("renderResultLines", () => {
       const width = line.reduce((n, span) => n + span.text.length, 0);
       expect(width).toBeLessThanOrEqual(60);
     }
+  });
+});
+
+describe("council question header", () => {
+  const base = {
+    final: "The answer.",
+    learned: "",
+    takes: [{ index: 1, model: { ref: "lead/a" }, text: "Take one." }],
+  };
+
+  test("the question renders above the answer", () => {
+    const text = renderCouncil({ ...base, question: "Why is the sky blue?", questionLabel: "question" });
+    const q = text.indexOf("the question");
+    const a = text.indexOf("the answer");
+    expect(q).toBeGreaterThanOrEqual(0);
+    expect(a).toBeGreaterThan(q);
+    expect(text).toContain("Why is the sky blue?");
+  });
+
+  test("a continued run shows the follow-up, not the payload", () => {
+    const text = renderCouncil({
+      ...base,
+      question: "Continuing the debate from run n.\n\nPREVIOUS RESULT\nold answer\n\nFOLLOW-UP\nmy real question\n",
+    });
+    expect(text).toContain("my real question");
+    expect(text).not.toContain("PREVIOUS RESULT");
+  });
+
+  test("no question means no header — old runs render as before", () => {
+    expect(renderCouncil(base)).not.toContain("the question");
+  });
+
+  test("the answer-only view includes the question", () => {
+    const lines = renderCouncilAnswerLines({ ...base, question: "Why?", questionLabel: "question" }, 80)
+      .map((line) => line.map((s) => s.text).join(""))
+      .join("\n");
+    expect(lines).toContain("Why?");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { composeContinuation, followUpOf } from "./continue.ts";
+import { composeContinuation, displayTaskOf, followUpOf, questionOf } from "./continue.ts";
 
 describe("composeContinuation", () => {
   test("the task names the parent, carries the result whole, and ends with the follow-up", () => {
@@ -28,5 +28,30 @@ describe("followUpOf", () => {
   test("nothing typed is null, so the caller can ask for it", () => {
     expect(followUpOf(undefined, [])).toBeNull();
     expect(followUpOf("   ", ["  "])).toBeNull();
+  });
+});
+
+describe("displayTaskOf", () => {
+  test("a plain task flattens to one line", () => {
+    expect(displayTaskOf("what is this repo about\nand what next")).toBe(
+      "what is this repo about and what next",
+    );
+  });
+
+  test("a continued run shows the follow-up, not the payload", () => {
+    const { task } = composeContinuation("2026-10-19T12-00-00", "line one\nline two", "redo §3");
+    expect(displayTaskOf(task)).toBe("redo §3");
+    expect(questionOf(task)).toBe("redo §3");
+  });
+
+  test("questionOf keeps a plain task whole, newlines included", () => {
+    expect(questionOf("line one\nline two")).toBe("line one\nline two");
+  });
+
+  test("no PREVIOUS RESULT or blank lines leak through", () => {
+    const { task } = composeContinuation("n", "the answer", "my real question");
+    const shown = displayTaskOf(task);
+    expect(shown).not.toContain("PREVIOUS RESULT");
+    expect(shown).not.toContain("\n");
   });
 });

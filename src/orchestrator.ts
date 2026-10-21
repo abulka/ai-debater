@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import { RunState } from "./contracts.ts";
+import { displayTaskOf } from "./continue.ts";
 import type { ModelRef } from "./runner.ts";
 
 /** The human's own files: criteria, settled decisions, model choice. Per repo. */
@@ -79,6 +80,12 @@ export function runPaths(repo: string, dir: string) {
   return {
     dir,
     task: path.join(dir, "task.md"),
+    /** Council takes: each model's independent answer. take.1.md is the lead's. */
+    take1: path.join(dir, "take.1.md"),
+    take2: path.join(dir, "take.2.md"),
+    take3: path.join(dir, "take.3.md"),
+    /** The synthesised final answer. */
+    final: path.join(dir, "final.md"),
     planV1: path.join(dir, "plan.v1.md"),
     claims: path.join(dir, "claims.json"),
     review: path.join(dir, "review.json"),
@@ -158,11 +165,11 @@ export type ModelPair = {
 /**
  * Which models a resumed run uses.
  *
- * The rebuttal is written by the drafter, so a resumed run must use the models
+ * The synthesis is written by the lead, so a resumed run must use the models
  * recorded in `state.json`, not whatever `.adv/config.json` says today. These
  * diverge the moment someone passes `--drafter`, changes the config, or picks a
  * new model in the TUI — and the failure is silent: a different model rewrites
- * a plan it did not write, and the artifacts look normal.
+ * a take it did not write, and the artifacts look normal.
  *
  * An explicit flag still wins, because a human naming a model is an instruction,
  * not an accident. It is reported so the inconsistency is on the record.
@@ -280,7 +287,7 @@ export function deletionSummary(runs: RunSummary[], repo: string): DeletionSumma
       text:
         `${run.name}  ${run.state.padEnd(8)} ` +
         `${run.mode === "answer" ? "question" : "task    "} · ` +
-        run.task.replace(/\s+/g, " ").trim(),
+        displayTaskOf(run.task),
     })),
   };
 }

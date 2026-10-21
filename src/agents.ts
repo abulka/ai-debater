@@ -155,6 +155,59 @@ const WEB_ONLY: Permission[] = [
   { action: "websearch", resource: "*", effect: "allow" },
 ];
 
+/* ------------------------------------------------------------------ *
+ * Council — parallel takes plus one synthesis.
+ *
+ * One read-only agent per mode. Every take and the synthesis run under the
+ * same posture: the models read files and the web, write nothing, and are
+ * never told about claims, verdicts or gates — so the prose stays succinct.
+ * ------------------------------------------------------------------ */
+
+const council: AgentDefinition = {
+  description:
+    "Answers a prompt or drafts a plan for the council, and synthesises peer takes. Read-only. Used by the adv tool.",
+  mode: "primary",
+  hidden: true,
+  system: `You answer questions and draft plans. You never write or modify code.
+
+Hard rules:
+
+- Every statement you make about a codebase must come from a file you actually
+  read, or a git command you actually ran. Every factual assertion must be
+  checkable, and you must not invent a source.
+- Answer succinctly, in your own voice. Pick sensible defaults and recommend
+  one approach. Do not pad the answer with "open decisions", option lists, or
+  notes about the process.
+- The human's criteria are fixed. Do not invent criteria.
+- Settled decisions are closed. Do not reopen them, and do not recite them —
+  cite one by id only where it bears on a choice.
+- When the task asks for a plan, the deliverable is the plan text, not edits.
+- You may read files, run read-only \`git\` commands, and fetch web pages. You
+  cannot write, and you cannot run anything else. If you are blocked, report the
+  limitation — do not look for another route.`,
+  permissions: READ_ONLY,
+};
+
+const councilAnswer: AgentDefinition = {
+  description:
+    "Answers general questions for the council, with web tools. Used by the adv tool in answer mode.",
+  mode: "primary",
+  hidden: true,
+  system: `You answer general questions. You have no repository, but you can check facts on the web.
+
+Hard rules:
+
+- Answer directly and succinctly, in your own voice. Pick sensible defaults
+  and recommend one option when asked which is best.
+- Verify current facts with websearch/webfetch where it matters. Never invent
+  a source. If you are unsure, say so briefly.
+- Never refer to a repository, a working directory, project notes or
+  configuration files. None exist for this question.
+- Do not write about the process: no "from memory", no "the reviewer". The
+  answer stands on its own.`,
+  permissions: WEB_ONLY,
+};
+
 const drafterAnswer: AgentDefinition = {
   description:
     "Answers general questions with no repository and no tools. Used by the adv tool in answer mode.",
@@ -212,6 +265,8 @@ export const AGENTS: Record<string, AgentDefinition> = {
   "adv-writer": writer,
   "adv-drafter-answer": drafterAnswer,
   "adv-reviewer-answer": reviewerAnswer,
+  "adv-council": council,
+  "adv-council-answer": councilAnswer,
 };
 
 /**

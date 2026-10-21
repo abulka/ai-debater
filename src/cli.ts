@@ -1,15 +1,12 @@
 #!/usr/bin/env bun
 /**
- * adv — adversarial two-model plan review.
+ * adv — two takes plus what we learned.
  *
  *   adv                        open the TUI
  *   adv init [--dir <repo>]
- *   adv run "<task>" [--drafter <model>] [--reviewer <model>]
- *                    [--drafter-family <f>] [--reviewer-family <f>]
- *                    [--no-gate] [--general] [--plan] [--dir <repo>]
- *   adv run --resume [<run>]
- *   adv decide [<run>]
- *   adv revise [<run>] [--rewrite]
+ *   adv run "<task>" [--drafter <model>] [--reviewer <model>] [--peer <model>]
+ *                    [--drafter-family <f>] [--reviewer-family <f>] [--peer-family <f>]
+ *                    [--peer none] [--general] [--plan] [--dir <repo>]
  *   adv continue [<run>] [--instructions "…"]
  *   adv status [<run>]
  *   adv ping <model-or-pair>… [--full] [--timeout <ms>]
@@ -43,38 +40,28 @@ import { listModels } from "./models.ts";
 import { loadRefreshDays, refreshDaysMs } from "./prefs.ts";
 import { loadPairs } from "./pairs.ts";
 import { pingModel } from "./probe.ts";
-import type { Claims, Gate, Review } from "./contracts.ts";
-import type { Audit, AuditRecord } from "./contracts.ts";
-import { collectGate } from "./gate.ts";
-import { decisionEntries, describeGateChange, gateSummaryLines, gateWarnings } from "./gate-model.ts";
 import { initRepo } from "./init.ts";
 import {
-  appendDecisions,
   NO_CRITERIA,
   displayPath,
   latestRun,
   loadState,
   readCriteria,
   readDecisions,
-  readJson,
-  rotateGate,
   runPaths,
   deleteRuns,
   deletionSummary,
   findRunDir,
   listRuns,
   olderThanCutoff,
-  resumedModels,
   type Paths,
-  saveState,
 } from "./orchestrator.ts";
-import { loadArtifacts, loadTail, runHead, runTail, saveGate, type Models, type Reporting } from "./pipeline.ts";
-import { composeContinuation, followUpOf } from "./continue.ts";
+import { loadCouncil, runSynthesis, runTakes, type Models, type Reporting } from "./pipeline.ts";
+import { composeContinuation, displayTaskOf, followUpOf } from "./continue.ts";
 import { familyClash } from "./models.ts";
-import { renderResult, renderResultAnsi } from "./render.ts";
+import { renderCouncil, renderCouncilAnsi } from "./render.ts";
 import type { CallHook } from "./runners/opencode-run.ts";
 import type { Mode, ModelRef } from "./runner.ts";
-import type { ApprovalRequest } from "./audit.ts";
 
 const BOOLEAN_FLAGS = new Set(["no-gate", "general", "plan", "rewrite", "help", "strict", "all", "yes", "refresh"]);
 
@@ -128,8 +115,14 @@ const resolveRun = (repo: string, dirArg: string) => {
  */
 const progress: CallHook = ({ kind, step, retry, ms, usage }) => {
   const cost = usage.costKnown ? `$${usage.cost.toFixed(6)}` : "cost not reported";
+  const what =
+    kind === "draft" && step === "take"
+      ? "take written"
+      : kind === "rebut" && step === "synthesis"
+        ? "synthesis written"
+        : `${kind}/${step}`;
   console.log(
-    `    ${kind}/${step}${retry ? " (retry)" : ""}  ${(ms / 1000).toFixed(1)}s  ${cost}`,
+    `    ${what}${retry ? " (retry)" : ""}  ${(ms / 1000).toFixed(1)}s  ${cost}`,
   );
 };
 
@@ -143,20 +136,26 @@ const reporting: Reporting = {
  * Same-family models are a warning by default, and a hard stop when the result
  * is meant to be evidence (`familyCheck: "require"`, or `--strict`).
  *
- * The trial and the §12 eval exist to measure *cross-family* review. A run that
- * silently used one family would measure an extra pass instead, and would do it
- * with the most expensive experiment in the project.
+ * The council wants diverse takes: any two models sharing a family narrow it.
  */
 function checkFamily(models: Models, check: FamilyCheck, source: string): void {
-  const clash = familyClash(models);
-  if (!clash) return;
-  if (check === "require") {
-    throw new Error(
-      `${clash}.\n  refused: familyCheck is "require" (${source}). ` +
-        `Choose a reviewer from another family, or set it back to "warn".`,
-    );
+  const pairs: [string, ModelRef, ModelRef][] = [
+    ["drafter/reviewer", models.drafter, models.reviewer],
+    ...(models.peer ? [["drafter/peer", models.drafter, models.peer] as [string, ModelRef, ModelRef]] : []),
+    ...(models.peer ? [["reviewer/peer", models.reviewer, models.peer] as [string, ModelRef, ModelRef]] : []),
+  ];
+  for (const [label, a, b] of pairs) {
+    const clash = familyClash({ drafter: a, reviewer: b });
+    if (!clash) continue;
+    const msg = `${label} share family "${a.family}" — the council is narrower than it could be`;
+    if (check === "require") {
+      throw new Error(
+        `${msg}.\n  refused: familyCheck is "require" (${source}). ` +
+          `Choose models from different families, or set it back to "warn".`,
+      );
+    }
+    console.log(`  warning: ${msg}`);
   }
-  console.log(`  warning: ${clash}`);
 }
 
 /**
@@ -164,7 +163,7 @@ function checkFamily(models: Models, check: FamilyCheck, source: string): void {
  * exactly wrong when both models sit behind one gateway: the diversity check
  * would compare "opencode-go" with "opencode-go" and pass regardless.
  */
-function requireFamily(which: "drafter" | "reviewer", flags: Map<string, string | true>) {
+function requireFamily(which: "drafter" | "reviewer" | "peer", flags: Map<string, string | true>) {
   if (flags.has(which) && !flags.has(`${which}-family`)) {
     throw new Error(
       `--${which} needs --${which}-family. The provider is not the family: a gateway ` +
@@ -182,27 +181,15 @@ function modelFrom(
   return { ref, family: typeof family === "string" ? family : (ref.split("/")[0] ?? ref) };
 }
 
-function printGateSummary(claims: Claims, review: Review, checks: AuditRecord[] = []) {
-  for (const line of gateSummaryLines(claims, review, checks)) console.log(line);
-}
-
-/** Ask before running a slow check the reviewer proposed. */
-async function askApproval(request: ApprovalRequest): Promise<boolean> {
-  const readline = await import("node:readline/promises");
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const why = request.why ? `\n    why: ${request.why}` : "";
-    const answer = (
-      await rl.question(
-        `  the reviewer asks to run: ${request.argv.join(" ")}  (for ${request.claim})${why}\n  run it? [y/N] `,
-      )
-    )
-      .trim()
-      .toLowerCase();
-    return answer === "y" || answer === "yes";
-  } finally {
-    rl.close();
-  }
+function peerFrom(
+  flags: Map<string, string | true>,
+  fallback: ModelRef | null | undefined,
+): ModelRef | null {
+  const ref = flags.get("peer");
+  const family = flags.get("peer-family");
+  if (ref === "none" || ref === "off") return null;
+  if (typeof ref !== "string") return fallback ?? null;
+  return { ref, family: typeof family === "string" ? family : (ref.split("/")[0] ?? ref) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -216,45 +203,38 @@ async function cmdInit(flags: Map<string, string | true>) {
   console.log(`  edit .adv/criteria.md with your judgment criteria`);
 }
 
-async function finalize(
-  repo: string,
+async function finalizeCouncil(
   paths: Paths,
-  claims: Claims,
-  review: Review,
-  gate: Gate,
+  takes: { index: number; model: ModelRef; text: string }[],
+  final: string,
+  learned: string,
+  patch: string,
   models: Models,
+  task: string,
   mode: Mode,
-  checks: AuditRecord[] = [],
 ) {
-  const state = await loadState(paths);
-  const tail = await runTail(repo, paths, state, claims, review, gate, models, mode, reporting);
   const report = {
-    plan: tail.plan,
-    changelog: tail.changelog,
-    patch: tail.patch,
-    assessment: tail.assessment,
-    gate,
-    claims,
-    review,
-    checks,
+    final,
+    learned,
+    takes,
+    patch,
     models,
-    includeDiff: true,
+    question: task,
+    questionLabel: mode === "answer" ? "question" : "task",
   };
   // A terminal gets the rendered Markdown, a pipe gets the Markdown itself:
-  // `adv run … > plan.md` should write a plan, not a plan with its headings
-  // and emphasis scraped off. NO_COLOR is honoured because it is the setting
+  // `adv run … > plan.md` should write an answer, not an answer with its
+  // headings scraped off. NO_COLOR is honoured because it is the setting
   // people actually use to say "do not style this".
   const styles = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
-  console.log(`\n${styles ? renderResultAnsi(report) : renderResult(report)}`);
+  console.log(`\n${styles ? renderCouncilAnsi(report) : renderCouncil(report)}`);
   console.log(`\nartifacts: ${displayPath(paths.dir)}`);
 }
 
 /**
- * The shared tail of every fresh run: criteria, decisions, head, gate, tail.
- * `cmdRun` and `cmdContinue` differ only in where the task comes from — typed
- * by the human, or composed from a previous result — so both end here. A
- * chained run is a normal run: fresh draft, fresh cross-family review, and
- * the gate again.
+ * The shared body of every fresh run: criteria, decisions, parallel takes,
+ * one synthesis. `cmdRun` and `cmdContinue` differ only in where the task
+ * comes from — typed by the human, or composed from a previous result.
  */
 async function runFreshTask(
   repo: string,
@@ -264,8 +244,6 @@ async function runFreshTask(
     mode: Mode;
     check: FamilyCheck;
     checkSource: string;
-    gateEnabled: boolean;
-    skipGate: boolean;
     parent?: { name: string; dir: string };
   },
 ) {
@@ -280,84 +258,34 @@ async function runFreshTask(
   if (!criteria.found && mode === "plan") {
     console.log(
       "  warning: .adv/criteria.md not found — using a minimal fallback. " +
-        "Run `adv init`, or the reviewer may invent criteria.",
+        "Run `adv init`.",
     );
   }
   const decisions =
     mode === "answer" ? "(none — this is a general question)" : await readDecisions(repo);
 
+  const peerBit = models.peer ? ` + ${models.peer.ref} [${models.peer.family}]` : "";
   console.log(
     `  subject ${mode === "answer" ? "general question" : "this repository"} · ` +
-      `${models.drafter.ref} [${models.drafter.family}]  ->  ${models.reviewer.ref} [${models.reviewer.family}]`,
+      `${models.drafter.ref} [${models.drafter.family}] + ${models.reviewer.ref} [${models.reviewer.family}]${peerBit} (parallel takes, ${models.drafter.ref} synthesises)`,
   );
   checkFamily(models, check, checkSource);
-  const canAsk = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  const runReporting: Reporting = {
-    ...reporting,
-    // Only ask when there is someone to ask. Without a terminal, a slow check is
-    // recorded as declined rather than silently run.
-    ...(canAsk ? { onApprove: askApproval } : {}),
-  };
-  const head = await runHead(repo, task, criteria.text, decisions, models, mode, runReporting, {
-    ...(opts.parent ? { parent: opts.parent } : {}),
-  });
+  const head = await runTakes(repo, task, criteria.text, decisions, models, mode, reporting);
   console.log(`  run: ${displayPath(head.paths.dir)}`);
-  for (const warning of gateWarnings({
-    missing: head.missing,
-    evidenceIssues: head.evidenceIssues,
-    urlRepairs: head.urlRepairs,
-    hasCriteria: criteria.found || mode === "answer",
-  })) {
-    console.log(`  warning: ${warning}`);
+  for (const r of head.urlRepairs) {
+    console.log(`  warning: repaired a URL in a take: ${r.before} -> ${r.after}`);
   }
-
-  console.log("\n── gate ──");
-  printGateSummary(head.claims, head.review, head.checks);
-
-  // --no-gate: run straight through. No model resolves anything: every judgment
-  // call is left open, every finding untriaged, and the plan presents options.
-  if (opts.skipGate) {
-    const openGate: Gate = {
-      decisions: head.claims.judgment.map((j) => ({ id: j.id, choice: "open" })),
-      findings: head.review.extra_findings.map((f) => ({
-        id: f.id,
-        disposition: "untriaged" as const,
-      })),
-    };
-    await saveGate(head.paths, openGate);
-    console.log(
-      `\n  --no-gate: ${openGate.decisions.length} judgment call(s) left open, ` +
-        `${openGate.findings.length} finding(s) untriaged. Nothing was decided for you.`,
-    );
-    return finalize(repo, head.paths, head.claims, head.review, openGate, models, mode, head.checks);
-  }
-
-  if (!(opts.gateEnabled && canAsk)) {
-    await saveGate(head.paths, { decisions: [], findings: [] });
-    console.log(
-      `\n  paused at the gate.\n` +
-        `    adv decide ${path.basename(head.paths.dir)}\n` +
-        `    adv run --resume ${path.basename(head.paths.dir)}`,
-    );
-    return;
-  }
-
-  const gate = await collectGate(head.claims, head.review);
-  await saveGate(head.paths, gate);
-  // A gate answer to a general question is not a repository decision.
-  if (mode === "plan") {
-    await appendDecisions(
-      repo,
-      gate.decisions
-        .filter((d) => d.choice !== "open")
-        .map((d) => ({
-          id: d.id,
-          text: head.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
-          choice: d.choice,
-        })),
-    );
-  }
-  return finalize(repo, head.paths, head.claims, head.review, gate, models, mode, head.checks);
+  const tail = await runSynthesis(
+    repo,
+    head.paths,
+    task,
+    criteria.text,
+    head.takes,
+    models,
+    mode,
+    reporting,
+  );
+  return finalizeCouncil(head.paths, head.takes, tail.final, tail.learned, tail.patch, models, task, mode);
 }
 
 async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
@@ -365,9 +293,12 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
   const cfg = await loadConfig(repo);
   requireFamily("drafter", flags);
   requireFamily("reviewer", flags);
+  requireFamily("peer", flags);
+  const peer = peerFrom(flags, cfg.models.peer);
   const models: Models = {
     drafter: modelFrom(flags.get("drafter"), flags.get("drafter-family"), cfg.models.drafter),
     reviewer: modelFrom(flags.get("reviewer"), flags.get("reviewer-family"), cfg.models.reviewer),
+    ...(peer ? { peer } : {}),
   };
   // An explicit flag beats the saved subject, either way. Without `--plan` a
   // plan-mode run would require editing config or the TUI first — one key in
@@ -380,37 +311,8 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
   const check: FamilyCheck = flags.has("strict") ? "require" : cfg.familyCheck;
   const checkSource = flags.has("strict") ? "--strict" : ".adv/config.json";
 
-  const resumeFlag = flags.get("resume");
-  if (resumeFlag !== undefined) {
-    const dirArg = typeof resumeFlag === "string" ? resumeFlag : await latestRun(repo);
-    if (!dirArg) throw new Error("no run to resume");
-    const paths = resolveRun(repo, dirArg);
-    const art = await loadArtifacts(paths);
-    if (art.state.state !== "gated") {
-      throw new Error(`run is in state "${art.state.state}", not "gated" — nothing to resume`);
-    }
-    if (!art.gate) throw new Error("run has no gate answers yet — run `adv decide` first");
-
-    // The rebuttal is written by the drafter. Resuming with whatever the config
-    // says now means a model can rewrite a plan it did not write, so the run's
-    // own record wins unless the human asks for something else by name.
-    const explicit = {
-      drafter: flags.has("drafter") || flags.has("drafter-family"),
-      reviewer: flags.has("reviewer") || flags.has("reviewer-family"),
-    };
-    const { models: chosen, overrides } = resumedModels(art.state.models, models, explicit);
-    for (const o of overrides) {
-      console.log(
-        `  warning: --${o.role} ${o.chosen} is not the ${o.role} that wrote plan.v1 ` +
-          `(${o.wrote}) — the rebuttal will be written by a different model`,
-      );
-    }
-    console.log(
-      `  models: ${chosen.drafter.ref} [${chosen.drafter.family}]  ->  ` +
-        `${chosen.reviewer.ref} [${chosen.reviewer.family}]  (from the run)`,
-    );
-    checkFamily(chosen, check, checkSource);
-    return finalize(repo, paths, art.claims, art.review, art.gate, chosen, art.state.mode, art.checks);
+  if (flags.get("resume") !== undefined) {
+    throw new Error("adv run --resume is retired: council runs finish in one pass with no gate. Just run again.");
   }
 
   const task = positional.join(" ").trim();
@@ -422,8 +324,6 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
     mode,
     check,
     checkSource,
-    gateEnabled: cfg.gate,
-    skipGate: flags.has("no-gate"),
   });
 }
 
@@ -440,9 +340,12 @@ async function cmdContinue(flags: Map<string, string | true>, positional: string
   const cfg = await loadConfig(repo);
   requireFamily("drafter", flags);
   requireFamily("reviewer", flags);
+  requireFamily("peer", flags);
+  const peer = peerFrom(flags, cfg.models.peer);
   const models: Models = {
     drafter: modelFrom(flags.get("drafter"), flags.get("drafter-family"), cfg.models.drafter),
     reviewer: modelFrom(flags.get("reviewer"), flags.get("reviewer-family"), cfg.models.reviewer),
+    ...(peer ? { peer } : {}),
   };
   const check: FamilyCheck = flags.has("strict") ? "require" : cfg.familyCheck;
   const checkSource = flags.has("strict") ? "--strict" : ".adv/config.json";
@@ -457,11 +360,10 @@ async function cmdContinue(flags: Map<string, string | true>, positional: string
         `  continue needs a run with a result to continue from; this one has none.`,
     );
   }
-  // The tail is the result; a run parked at the gate has no tail yet, so the
-  // draft-so-far stands in, said out loud.
+  // The final answer is the result; fall back to take 1 / legacy artifacts.
   let previousResult: string;
   try {
-    previousResult = (await loadTail(parentPaths)).plan;
+    previousResult = (await loadCouncil(parentPaths)).final;
   } catch {
     try {
       previousResult = await readFile(parentPaths.planV1, "utf8");
@@ -488,50 +390,12 @@ async function cmdContinue(flags: Map<string, string | true>, positional: string
     mode: parentState.mode,
     check,
     checkSource,
-    gateEnabled: cfg.gate,
-    skipGate: flags.has("no-gate"),
     parent: { name: parentName, dir: parentPaths.dir },
   });
 }
 
-async function cmdDecide(flags: Map<string, string | true>, positional: string[]) {
-  const repo = repoOf(flags);
-  const dirArg = positional[0] ?? (await latestRun(repo));
-  if (!dirArg) throw new Error("usage: adv decide <run>");
-  const paths = resolveRun(repo, dirArg);
-
-  // Deciding is only meaningful for a run parked at the gate. Without this
-  // check a finished run could be re-parked at `gated` by re-answering it, and
-  // an interrupted one would fail later on a missing artifact instead of
-  // saying what state it is actually in.
-  const state = await loadState(paths);
-  if (state.state === "done") {
-    throw new Error("this run is already done — there is nothing left to decide.");
-  }
-  if (state.state !== "validated" && state.state !== "gated") {
-    throw new Error(
-      `run is in state "${state.state}", not at the gate — only a run that finished ` +
-        `drafting and reviewing can be decided. \`adv status\` shows what it has.`,
-    );
-  }
-
-  const art = await loadArtifacts(paths);
-  printGateSummary(art.claims, art.review, art.checks);
-  const gate = await collectGate(art.claims, art.review);
-  await saveGate(paths, gate);
-  if (art.state.mode === "plan") {
-    await appendDecisions(
-      repo,
-      gate.decisions
-        .filter((d) => d.choice !== "open")
-        .map((d) => ({
-          id: d.id,
-          text: art.claims.judgment.find((j) => j.id === d.id)?.text ?? "",
-          choice: d.choice,
-        })),
-    );
-  }
-  console.log(`\n  recorded. next: adv run --resume ${path.basename(paths.dir)}`);
+async function cmdDecide(_flags: Map<string, string | true>, _positional: string[]) {
+  throw new Error("adv decide is retired: council runs finish in one pass with no gate. Just run again or continue.");
 }
 
 /**
@@ -541,107 +405,8 @@ async function cmdDecide(flags: Map<string, string | true>, positional: string[]
  *
  * Spec: docs/REVISE.md.
  */
-async function cmdRevise(flags: Map<string, string | true>, positional: string[]) {
-  const repo = repoOf(flags);
-  const cfg = await loadConfig(repo);
-  requireFamily("drafter", flags);
-  requireFamily("reviewer", flags);
-  const models: Models = {
-    drafter: modelFrom(flags.get("drafter"), flags.get("drafter-family"), cfg.models.drafter),
-    reviewer: modelFrom(flags.get("reviewer"), flags.get("reviewer-family"), cfg.models.reviewer),
-  };
-  const check: FamilyCheck = flags.has("strict") ? "require" : cfg.familyCheck;
-  const checkSource = flags.has("strict") ? "--strict" : ".adv/config.json";
-
-  const dirArg = positional[0] ?? (await latestRun(repo));
-  if (!dirArg) throw new Error("no run to revise");
-  const paths = resolveRun(repo, dirArg);
-
-  // The only states revise accepts. A failed run has no completed review to
-  // revise; a run that never reached the gate has no answers to re-ask.
-  const state = await loadState(paths);
-  if (state.state === "failed") {
-    throw new Error(
-      `run failed${state.error ? ` — ${state.error.split("\n")[0]!}` : ""}.\n` +
-        `  revise needs a run that finished its review; this one did not get that far.`,
-    );
-  }
-  if (state.state !== "done" && state.state !== "gated") {
-    throw new Error(
-      `run is in state "${state.state}" — revise needs a run parked at the gate ` +
-        `or finished. \`adv status\` shows where it is.`,
-    );
-  }
-
-  const art = await loadArtifacts(paths);
-  // A CLI run paused at the gate saved an empty gate: nothing to prefill, so
-  // the gate is simply asked fresh.
-  const previous = art.gate ?? { decisions: [], findings: [] };
-
-  console.log(`  run: ${displayPath(paths.dir)}  (state: ${state.state})`);
-  console.log(`\n── the gate, asked again ${"─".repeat(20)}`);
-  printGateSummary(art.claims, art.review, art.checks);
-  const gate = await collectGate(art.claims, art.review, previous);
-
-  const change = describeGateChange(previous, gate);
-  const changed = change.decisions.length + change.findings.length;
-  for (const d of change.decisions) console.log(`  changed  ${d.id}: ${d.from} -> ${d.to}`);
-  for (const f of change.findings) console.log(`  changed  ${f.id}: ${f.from} -> ${f.to}`);
-
-  if (changed === 0 && !flags.has("rewrite")) {
-    if (state.state === "done") {
-      // The tail already ran with exactly these answers: the run stands as it
-      // is, and the head is not worth re-running to say so.
-      console.log(`\n  nothing changed — the run stands as it is. No model calls made.`);
-      console.log(`    pass --rewrite to re-run the tail with the same answers anyway.`);
-      return;
-    }
-    // A run parked at the gate (gated) never ran its tail: "nothing changed"
-    // means the recorded answers stand, and the one thing left to do is to
-    // apply them. That is a resume wearing revise's clothing.
-    console.log(`\n  no answers changed — the recorded gate stands; running the tail.`);
-  }
-
-  // The rebuttal is written by the drafter: the run's recorded models win,
-  // same as resume. An explicit flag is a human instruction, reported as such.
-  const explicit = {
-    drafter: flags.has("drafter") || flags.has("drafter-family"),
-    reviewer: flags.has("reviewer") || flags.has("reviewer-family"),
-  };
-  const { models: chosen, overrides } = resumedModels(state.models, models, explicit);
-  for (const o of overrides) {
-    console.log(
-      `  warning: --${o.role} ${o.chosen} is not the ${o.role} that wrote plan.v1 ` +
-        `(${o.wrote}) — the rewrite will be by a different model`,
-    );
-  }
-  console.log(
-    `  models: ${chosen.drafter.ref} [${chosen.drafter.family}]  ->  ` +
-      `${chosen.reviewer.ref} [${chosen.reviewer.family}]  (from the run)`,
-  );
-  checkFamily(chosen, check, checkSource);
-
-  // Order matters: the answers are asked and the gate rotated before a model is
-  // called, so an abort or a failed tail never leaves the old answers recorded
-  // under a new state — and the previous answers survive in gate.prev.json.
-  await rotateGate(paths);
-  await saveGate(paths, gate);
-  if (state.mode === "plan") {
-    await appendDecisions(repo, decisionEntries(art.claims, change));
-  }
-
-  try {
-    return await finalize(repo, paths, art.claims, art.review, gate, chosen, state.mode, art.checks);
-  } catch (err) {
-    // The head is intact and the answers just given are recorded: the run is
-    // parked at its own gate again, and `adv run --resume` retries the tail.
-    // `failed` (the head's rule) would be a dead end — decide, resume and
-    // revise all refuse it — so a failed tail comes back to `gated` with the
-    // error recorded, where `adv status` still shows what broke.
-    const error = err instanceof Error ? err.message : String(err);
-    await saveState(paths, { ...state, state: "gated", error: error.slice(0, 2000) });
-    throw err;
-  }
+async function cmdRevise(_flags: Map<string, string | true>, _positional: string[]) {
+  throw new Error("adv revise is retired: council runs finish in one pass with no gate. Just run again or continue.");
 }
 
 async function cmdStatus(flags: Map<string, string | true>, positional: string[]) {
@@ -659,19 +424,19 @@ async function cmdStatus(flags: Map<string, string | true>, positional: string[]
     const first = state.error.split("\n")[0] ?? state.error;
     console.log(`error:  ${first.length > 200 ? `${first.slice(0, 200)}…` : first}`);
   }
-  console.log(`task:   ${state.task}`);
-  console.log(`models: ${state.models.drafter.ref} -> ${state.models.reviewer.ref}`);
+  console.log(`task:   ${displayTaskOf(state.task)}`);
+  const peerBit = state.models.peer ? ` + ${state.models.peer.ref}` : "";
+  console.log(`models: ${state.models.drafter.ref} + ${state.models.reviewer.ref}${peerBit} (lead synthesises: ${state.models.drafter.ref})`);
   if (state.parent) console.log(`continues: ${state.parent.name}  (↳ ${displayPath(state.parent.dir)})`);
-  const clash = familyClash(state.models);
-  if (clash) console.log(`        ! ${clash}`);
+  try {
+    const c = await loadCouncil(paths);
+    if (c.takes.length > 0) {
+      const who = c.takes.map((t) => `take ${t.index} (${t.model.ref})`).join(" · ");
+      console.log(`takes:  ${who}, final ${c.final ? c.final.length : 0} chars${c.learned ? ", learned note present" : ""}`);
+    }
+  } catch { /* old run or interrupted — state above is the record */ }
   for (const r of state.urlRepairs ?? []) {
     console.log(`repaired: ${r.before} -> ${r.after}`);
-  }
-  const audit = await readJson<Audit>(paths.audit).catch(() => null);
-  if (audit?.records.length) {
-    const ran = audit.records.filter((r) => r.outcome !== "not-run").length;
-    const disagreed = audit.records.filter((r) => r.outcome === "mismatched").length;
-    console.log(`checks: ${ran} run, ${disagreed} disagreed, ${audit.records.length - ran} not run`);
   }
 }
 
@@ -785,38 +550,31 @@ async function readLine(): Promise<string> {
 }
 
 function usage() {
-  console.log(`adv — adversarial two-model plan review
+  console.log(`adv — two takes plus what we learned
 
   adv [--no-alt-screen]    open the TUI (fullscreen; ADV_NO_ALT_SCREEN=1 disables)
   adv init [--dir <repo>]    criteria, decisions and config (optional)
   adv run "<task>" [--general] [--plan] [--drafter <model> --drafter-family <f>]
                    [--reviewer <model> --reviewer-family <f>]
-                   [--strict] [--no-gate] [--dir <repo>]
-  adv run --resume [<run>] [--strict]
-  adv decide [<run>]
-  adv revise [<run>] [--rewrite] [--strict]
-  adv continue [<run>] [--instructions "…"] [--strict] [--no-gate]
+                   [--peer <model> --peer-family <f> | --peer none]
+                   [--strict] [--dir <repo>]
+  adv continue [<run>] [--instructions "…"] [--strict]
   adv status [<run>]
   adv ping <model-or-pair>… [--full] [--timeout <ms>]
   adv benchmarks [--refresh] [<ref>]
   adv rm <run> | --all | --older-than 30d [--yes]
 
-  rm removes run directories from the store. Nothing in a repository is touched:
-  not the source, not .adv/. Decisions already written to .adv/decisions.md stay.
-  Without a terminal it refuses unless --yes is passed.
+  how it works: the models answer independently and in parallel (take.1.md,
+  take.2.md, optional take.3.md); the lead synthesises the final answer with a
+  short "what we learned" note. No gate, no claims, no rebuttal pass.
 
   --general / --plan   force the subject for this run, without changing the saved one
-  --strict             refuse to run when both models share a family. Use it for any
-                       run whose result is evidence (the trial, the eval), not the
-                       fast pair
-  --rewrite            revise: re-run the tail even when no answers changed
+  --peer none          run with two models instead of three
+  --strict             refuse to run when any two models share a family
 
-  revise re-asks the gate with your recorded answers (Enter keeps one) and re-runs
-  only the rewrite: the draft and the review are never repeated.
-
-  continue starts a new run from a finished one: the previous result plus your
-  follow-up becomes the new task, so the debate continues with fresh eyes.
-  Needs --instructions (or trailing words) saying what should happen next.`);
+  continue starts a new run from a finished one: the previous final answer plus
+  your follow-up becomes the new task. Needs --instructions (or trailing words)
+  saying what should happen next.`);
 }
 
 /* ------------------------------------------------------------------ */

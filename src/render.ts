@@ -14,6 +14,7 @@ import {
   type StyledLine,
 } from "./markdown.ts";
 import { THEME } from "./theme.ts";
+import { questionOf } from "./continue.ts";
 
 /**
  * The result: one set of sections, two ways of drawing them.
@@ -110,6 +111,10 @@ export function resultSections(a: {
   models?: { drafter: { ref: string }; reviewer: { ref: string } };
   /** The exact text diff. Off by default in the TUI; on in the CLI. */
   includeDiff?: boolean;
+  /** The run's task: shown above the answer. Continued runs show the follow-up. */
+  question?: string;
+  /** "question" in answer mode, "task" in plan mode. */
+  questionLabel?: string;
 }): Section[] {
   const counts = verdictCounts(a.claims, a.review);
   const accepted = a.review.extra_findings.filter(
@@ -120,12 +125,17 @@ export function resultSections(a: {
     (f) => a.gate.findings.find((g) => g.id === f.id)?.disposition === "untriaged",
   );
 
-  // The answer first, then its sources in their own section. Everything else is
-  // commentary on the answer.
+  // The question first (for continued runs: the follow-up, not the payload),
+  // then the answer, then its sources. Everything else is commentary.
+  const sections: Section[] = [];
+  if (a.question?.trim()) {
+    sections.push({
+      header: `── the ${a.questionLabel ?? "question"} ${rule(48)}`,
+      markdown: questionOf(a.question),
+    });
+  }
   const answer = renderAnswer(a.plan);
-  const sections: Section[] = [
-    { header: `── the answer ${rule(50)}`, markdown: answer.body },
-  ];
+  sections.push({ header: `── the answer ${rule(50)}`, markdown: answer.body });
   if (answer.sources) {
     sections.push({ header: `── sources ${rule(49)}`, markdown: answer.sources });
   }
@@ -304,6 +314,9 @@ export function renderResult(a: Parameters<typeof resultSections>[0]): string {
  *
  * Markdown sections are rendered; the commentary is already shaped text. The
  * headers come from `resultSections`, so both paths describe the same run.
+ *
+ * Council results (parallel takes + synthesis) render through
+ * `councilSections` below: the synthesised answer first, then what we learned.
  */
 export function renderResultLines(
   a: Parameters<typeof resultSections>[0],
@@ -328,7 +341,7 @@ export function renderResultLines(
  * is a prefix, and the first non-answer header ends it.
  */
 const isAnswerSection = (section: Section): boolean =>
-  /^── (the answer|sources) /.test(section.header);
+  /^── (the question|the task|the answer|sources) /.test(section.header);
 
 export function renderAnswerOnlyLines(
   a: Parameters<typeof resultSections>[0],
@@ -560,4 +573,109 @@ export function diffPane(
 /** The result for a terminal: styled when the terminal can show styles. */
 export function renderResultAnsi(a: Parameters<typeof resultSections>[0], width?: number): string {
   return toAnsi(renderResultLines(a, width));
+}
+
+/* ------------------------------------------------------------------ *
+ * Council — parallel takes plus one synthesis.
+ * ------------------------------------------------------------------ */
+
+/** Council result: the synthesised answer, what was learned, and the takes. */
+export function councilSections(a: {
+  final: string;
+  learned: string;
+  takes: { index: number; model: { ref: string }; text: string }[];
+  patch?: string;
+  models?: { drafter: { ref: string }; reviewer: { ref: string }; peer?: { ref: string } | null };
+  /** The run's task: shown above the answer. Continued runs show the follow-up. */
+  question?: string;
+  /** "question" in answer mode, "task" in plan mode. */
+  questionLabel?: string;
+}): Section[] {
+  const sections: Section[] = [];
+  if (a.question?.trim()) {
+    sections.push({
+      header: `── the ${a.questionLabel ?? "question"} ${rule(48)}`,
+      markdown: questionOf(a.question),
+    });
+  }
+  const answer = renderAnswer(a.final);
+  sections.push({ header: `── the answer ${rule(50)}`, markdown: answer.body });
+  if (answer.sources) sections.push({ header: `── sources ${rule(49)}`, markdown: answer.sources });
+  if (a.learned.trim()) {
+    sections.push({ header: `── what we learned ${rule(43)}`, markdown: a.learned });
+  }
+  const happened: StyledLine[] = [];
+  if (a.models) {
+    const who = [a.models.drafter.ref, a.models.reviewer.ref, ...(a.models.peer ? [a.models.peer.ref] : [])];
+    happened.push(spans({ text: `  ${who.join(" · ")} took part; ${a.models.drafter.ref} synthesised.`, dim: true }));
+  }
+  happened.push(
+    spans({ text: `  takes: ${a.takes.map((t) => `take ${t.index} (${t.model.ref})`).join(" · ")}`, dim: true }),
+  );
+  sections.push({ header: `── what happened ${rule(47)}`, body: happened, hang: 2 });
+  if (a.patch) {
+    sections.push({
+      header: `── exact changes ${rule(46)}`,
+      body: a.patch.split("\n").map((line) => {
+        const colour = line.startsWith("+")
+          ? THEME.code
+          : line.startsWith("-")
+            ? THEME.danger
+            : line.startsWith("@@")
+              ? THEME.accent
+              : undefined;
+        return spans("  ", colour ? { text: line, color: colour } : { text: line });
+      }),
+      hang: 2,
+    });
+  }
+  return sections;
+}
+
+export function renderCouncil(a: Parameters<typeof councilSections>[0]): string {
+  return councilSections(a)
+    .map((section, i) => `${i === 0 ? "" : "\n"}${section.header}\n${sectionText(section)}`)
+    .join("\n");
+}
+
+export function renderCouncilLines(
+  a: Parameters<typeof councilSections>[0],
+  width = wrapWidth(),
+): StyledLine[] {
+  const out: StyledLine[] = [];
+  for (const [i, section] of councilSections(a).entries()) {
+    if (i > 0) out.push([]);
+    out.push(...sectionLines(section, width));
+  }
+  return out;
+}
+
+/** The council's question, final answer and sources — the result screen's default. */
+export function renderCouncilAnswerLines(
+  a: Parameters<typeof councilSections>[0],
+  width = wrapWidth(),
+): StyledLine[] {
+  const out: StyledLine[] = [];
+  for (const section of councilSections(a)) {
+    if (!/^── (the question|the task|the answer|sources) /.test(section.header)) break;
+    out.push(...sectionLines(section, width));
+  }
+  return out;
+}
+
+/** The complement: what we learned, what happened, the diff — behind `i`/`x`. */
+export function renderCouncilCommentaryLines(
+  a: Parameters<typeof councilSections>[0],
+  width = wrapWidth(),
+): StyledLine[] {
+  const out: StyledLine[] = [];
+  for (const section of councilSections(a)) {
+    if (/^── (the question|the task|the answer|sources) /.test(section.header)) continue;
+    out.push(...sectionLines(section, width));
+  }
+  return out;
+}
+
+export function renderCouncilAnsi(a: Parameters<typeof councilSections>[0], width?: number): string {
+  return toAnsi(renderCouncilLines(a, width));
 }

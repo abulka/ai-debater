@@ -15,7 +15,7 @@ import type { ModelRef, Mode } from "./runner.ts";
 export type FamilyCheck = "warn" | "require";
 
 export interface Config {
-  models: { drafter: ModelRef; reviewer: ModelRef };
+  models: { drafter: ModelRef; reviewer: ModelRef; peer?: ModelRef | null };
   gate: boolean;
   mode: Mode;
   familyCheck: FamilyCheck;
@@ -81,6 +81,7 @@ export async function loadConfig(repo: string): Promise<Config> {
     models: {
       drafter: local.models?.drafter ?? user.models?.drafter ?? DEFAULT_CONFIG.models.drafter,
       reviewer: local.models?.reviewer ?? user.models?.reviewer ?? DEFAULT_CONFIG.models.reviewer,
+      ...(local.models?.peer ?? user.models?.peer ? { peer: local.models?.peer ?? user.models?.peer } : {}),
     },
   };
 }
@@ -96,6 +97,7 @@ export async function loadUserConfig(): Promise<Config | null> {
     models: {
       drafter: user.models?.drafter ?? DEFAULT_CONFIG.models.drafter,
       reviewer: user.models?.reviewer ?? DEFAULT_CONFIG.models.reviewer,
+      ...(user.models?.peer ? { peer: user.models.peer } : {}),
     },
   };
 }

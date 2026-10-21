@@ -4,7 +4,8 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "adv": "./src/cli.ts"
+    "adv": "./src/cli.ts",
+    "ocm": "./src/models-cli.ts"
   },
   "scripts": {
     "adv": "bun run src/cli.ts",

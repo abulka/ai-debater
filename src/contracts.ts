@@ -186,9 +186,18 @@ export const ModelRef = z.object({
   family: z.string(),
 });
 
+export const CouncilModels = z.object({
+  drafter: ModelRef,
+  reviewer: ModelRef,
+  /** Optional third take. Null/absent means a two-model run. */
+  peer: ModelRef.nullable().optional(),
+});
+
 export const RunState = z.object({
   state: z.enum([
     "created",
+    "taking",
+    "synthesizing",
     "drafted",
     "reviewed",
     "validated",
@@ -200,7 +209,7 @@ export const RunState = z.object({
   createdAt: z.string(),
   task: z.string(),
   mode: z.enum(["plan", "answer"]),
-  models: z.object({ drafter: ModelRef, reviewer: ModelRef }),
+  models: CouncilModels,
   /**
    * The run this one continues, when it continues one: the parent's run name
    * (its timestamp directory name) and its directory. Optional so every run
@@ -229,9 +238,32 @@ export type Claims = z.infer<typeof Claims>;
 export type Review = z.infer<typeof Review>;
 export type Changelog = z.infer<typeof Changelog>;
 export type Gate = z.infer<typeof Gate>;
+export type CouncilModels = z.infer<typeof CouncilModels>;
 export type RunState = z.infer<typeof RunState>;
 export type AuditRecord = z.infer<typeof AuditRecord>;
 export type Audit = z.infer<typeof Audit>;
 export type CheckProposal = z.infer<typeof CheckProposal>;
 export type DraftEnvelope = z.infer<typeof DraftEnvelope>;
 export type RebutEnvelope = z.infer<typeof RebutEnvelope>;
+
+/* ------------------------------------------------------------------ *
+ * Council — parallel takes plus one synthesis.
+ *
+ * Each model answers the same prompt independently (take.1.md, take.2.md,
+ * optional take.3.md); the lead then synthesises the final answer. No claims,
+ * no verdicts, no gate: the synthesis carries a short "what we learned" note.
+ * ------------------------------------------------------------------ */
+
+/** One independent take, as written to take.N.md. */
+export interface CouncilTake {
+  /** 1-based: take 1 is the lead's own initial answer. */
+  index: number;
+  model: { ref: string; family: string };
+  text: string;
+}
+
+/** The synthesised final answer plus the note on what the peers contributed. */
+export interface CouncilResult {
+  final: string;
+  learned: string;
+}

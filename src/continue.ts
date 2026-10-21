@@ -39,3 +39,22 @@ export function followUpOf(flag: unknown, rest: string[]): string | null {
   const text = rest.join(" ").trim();
   return text ? text : null;
 }
+
+/**
+ * What a run asked, as one readable line.
+ *
+ * A continued run's task is a payload — parent header, the whole previous
+ * result, then FOLLOW-UP with the human's actual words. Showing the payload
+ * raw puts "PREVIOUS RESULT" and its blank lines into the past-debates list
+ * and the result header. This extracts the follow-up when there is one and
+ * flattens the rest to a single line.
+ */
+export function displayTaskOf(task: string): string {
+  return questionOf(task).replace(/\s+/g, " ").trim();
+}
+
+/** The human's words: the follow-up of a continued run, else the whole task. */
+export function questionOf(task: string): string {
+  const followUp = /^FOLLOW-UP\n([\s\S]*?)\s*$/m.exec(task)?.[1]?.trim();
+  return followUp || task.trim();
+}

@@ -18,15 +18,28 @@ import {
   rebutPrompt,
   retryPrompt,
   reviewPrompt,
+  splitLearned,
+  synthesizePrompt,
+  takePrompt,
   toolRetryPrompt,
 } from "../prompts.ts";
-import type { DraftInput, Mode, ModelRef, RebutInput, ReviewInput, Runner } from "../runner.ts";
+import type {
+  DraftInput,
+  Mode,
+  ModelRef,
+  RebutInput,
+  ReviewInput,
+  Runner,
+  SynthesizeInput,
+  TakeInput,
+} from "../runner.ts";
 
 export interface OpencodeRunOptions {
   /** Working directory the agents run in — the target repo. */
   repo: string;
   drafter: ModelRef;
   reviewer: ModelRef;
+  peer?: ModelRef | null;
   /** Agent ids under .opencode/agents/. */
   agents?: {
     drafter: string;
@@ -34,6 +47,8 @@ export interface OpencodeRunOptions {
     writer: string;
     drafterAnswer: string;
     reviewerAnswer: string;
+    council: string;
+    councilAnswer: string;
   };
   timeoutMs?: number;
   /**
@@ -117,7 +132,7 @@ export type CallHook = (info: {
 }) => void;
 
 export class OpencodeRunRunner implements Runner {
-  readonly models: { drafter: ModelRef; reviewer: ModelRef };
+  readonly models: { drafter: ModelRef; reviewer: ModelRef; peer?: ModelRef | null };
   /** Set when the two models share a family. Informational. */
   readonly familyWarning: string | null;
 
@@ -128,6 +143,8 @@ export class OpencodeRunRunner implements Runner {
     writer: string;
     drafterAnswer: string;
     reviewerAnswer: string;
+    council: string;
+    councilAnswer: string;
   };
   private readonly timeoutMs: number;
   private readonly auto: boolean;
@@ -154,6 +171,8 @@ export class OpencodeRunRunner implements Runner {
       writer: "adv-writer",
       drafterAnswer: "adv-drafter-answer",
       reviewerAnswer: "adv-reviewer-answer",
+      council: "adv-council",
+      councilAnswer: "adv-council-answer",
     };
     this.answerDir = path.join(os.tmpdir(), "adv-answer");
     mkdirSync(this.answerDir, { recursive: true });
@@ -161,7 +180,7 @@ export class OpencodeRunRunner implements Runner {
     this.auto = o.auto ?? true;
     this.standalone = o.standalone ?? true;
     this.onCall = o.onCall;
-    this.models = { drafter: o.drafter, reviewer: o.reviewer };
+    this.models = o.peer ? { drafter: o.drafter, reviewer: o.reviewer, peer: o.peer } : { drafter: o.drafter, reviewer: o.reviewer };
   }
 
   /** A general question gets a neutral cwd: no repo, no project AGENTS.md. */
@@ -177,8 +196,41 @@ export class OpencodeRunRunner implements Runner {
     return mode === "answer" ? this.agents.reviewerAnswer : this.agents.reviewer;
   }
 
-  /* Two calls, one deliverable each: a plan, then its claims. Asking for both
-   * in one reply is where drafters get flaky. */
+  private councilAgent(mode: Mode): string {
+    return mode === "answer" ? this.agents.councilAnswer : this.agents.council;
+  }
+
+  /* Council: one independent take per model, then one synthesis by the lead. */
+  async take(model: ModelRef, input: TakeInput): Promise<{ text: string }> {
+    const agent = this.councilAgent(input.mode);
+    const cwd = this.cwdFor(input.mode);
+    const call = await this.request({ model: model.ref, agent, message: takePrompt(input), cwd });
+    this.report("draft", "take", model.ref, call.call, call.retried);
+    const text = call.call.text.trim();
+    if (!text) throw new Error(`model ${model.ref} returned an empty take`);
+    return { text };
+  }
+
+  /** Synthesis with the full peer context. */
+  async synthesize(input: SynthesizeInput): Promise<{ final: string; learned: string }> {
+    const model = this.models.drafter.ref;
+    const agent = this.councilAgent(input.mode);
+    const cwd = this.cwdFor(input.mode);
+    const call = await this.request({
+      model,
+      agent,
+      message: synthesizePrompt({
+        mode: input.mode,
+        task: input.task,
+        takes: input.takes.map((t) => ({ model: t.model.ref, text: t.text })),
+      }),
+      cwd,
+    });
+    this.report("rebut", "synthesis", model, call.call, call.retried);
+    const { final, learned } = splitLearned(call.call.text);
+    if (!final) throw new Error("the synthesis returned an empty answer");
+    return { final, learned };
+  }
   async draft(input: DraftInput): Promise<{ plan: string; claims: Claims }> {
     const model = this.models.drafter.ref;
     const agent = this.drafterAgent(input.mode);

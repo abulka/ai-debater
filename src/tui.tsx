@@ -97,17 +97,22 @@ import {
 import {
   headFromArtifacts,
   loadArtifacts,
+  loadCouncil,
   loadTail,
   runHead,
+  runSynthesis,
+  runTakes,
   runTail,
   saveGate,
+  type CouncilHead,
+  type CouncilTail,
   type Head,
   type Models,
   type Reporting,
   type Tail,
 } from "./pipeline.ts";
-import { diffPane, renderAnswerOnlyLines, renderCommentaryLines, renderAnswer, renderResult } from "./render.ts";
-import { composeContinuation } from "./continue.ts";
+import { diffPane, renderAnswerOnlyLines, renderCommentaryLines, renderAnswer, renderResult, renderCouncilAnswerLines, renderCouncilCommentaryLines, renderCouncil, renderCouncilLines } from "./render.ts";
+import { composeContinuation, displayTaskOf, questionOf } from "./continue.ts";
 import {
   fitSpans,
   renderMarkdownLines,
@@ -176,16 +181,17 @@ type Panel = { title: string; lines: StyledLine[] };
 const RESULT_KEYS: { key: string; what: string }[] = [
   { key: "y", what: "copy the answer as Markdown (also answer.md in the run directory)" },
   { key: "Y", what: "copy the whole result as Markdown, commentary included (also result.md)" },
-  { key: "x", what: "the exact text diff, and what each change was for (Esc back)" },
-  { key: "d", what: "the draft the review saw, before the gate" },
-  { key: "v", what: "every verdict, with its evidence" },
-  { key: "i", what: "the run at a glance — what happened, what changed, decisions open, review summary" },
-  { key: "c", what: "the claims the drafter declared" },
-  { key: "R", what: "the reviewer's raw reply, exactly as it was written" },
+  { key: "x", what: "the exact text diff from take 1 to the final answer (Esc back)" },
+  { key: "1 / d", what: "model 1's original take" },
+  { key: "2 / R", what: "model 2's original take" },
+  { key: "3", what: "model 3's original take (when a third model took part)" },
+  { key: "i", what: "what we learned — what the peers contributed, what happened" },
   { key: "l", what: "the full run log" },
-  { key: "r", what: "revisit the gate — re-ask it with the recorded answers prefilled" },
   { key: "C", what: "continue this debate — the desk asks for your follow-up only; the result rides along" },
-  { key: "n", what: "back to your question — the draft you had typed is kept" },
+  { key: "X", what: "back to the menu" },
+  { key: "n", what: "new question — the desk opens with a cleared prompt" },
+  { key: "e", what: "edit this question — the desk opens with it pre-filled" },
+  { key: "Esc", what: "closes an open panel only — never leaves the result" },
   { key: "↑↓ · j / k", what: "scroll a line" },
   { key: "space · f", what: "page down" },
   { key: "b · u", what: "page up · half a page up" },
@@ -216,7 +222,7 @@ const GATE_KEYS: { key: string; what: string }[] = [
   { key: "w", what: "the current item's whole text, unclipped" },
   { key: "i", what: "the review summary — warnings, checks, refuted claims" },
   { key: "l", what: "the full run log" },
-  { key: "Ctrl+R", what: "past runs — open another run from here" },
+  { key: "Ctrl+R", what: "past debates — open another debate from here" },
   { key: "n", what: "back to the question desk — the run stays parked on disk" },
   { key: "Esc", what: "leave the gate — the run stays reachable (the draft pane closes back to the question)" },
 ];
@@ -264,12 +270,20 @@ function Line({ spans, wrap }: { spans: StyledLine; wrap?: "truncate" }) {
  *
  * Both take the accent, because "where am I" is the thing a reader needs
  * without reading: at a glance, the gate and the result should not look alike.
+ *
+ * `toolLabel` is "adv" in the debate tool and "ocm" in the standalone model
+ * browser — same components, no duplication, and no talk of .adv/ or repos
+ * where there is no debate to configure.
  */
+export let toolLabel = "adv";
+export const setToolLabel = (t: string): void => {
+  toolLabel = t;
+};
 function Header({ right }: { right: string }) {
   return (
     <Box>
       <Text bold color={THEME.accent}>
-        adv
+        {toolLabel}
       </Text>
       <Text color={THEME.accent}>  {right}</Text>
     </Box>
@@ -529,19 +543,22 @@ function Home({
   setSelection,
   notice,
   onChoose,
+  standalone,
 }: {
   selection: number;
   setSelection: (v: number | ((s: number) => number)) => void;
   notice: string | null;
   onChoose: (i: number) => void;
+  standalone?: boolean;
 }) {
+  const homeCount = standalone ? 3 : 5;
   useInput((input, key) => {
     if (key.upArrow) {
-      setSelection((s) => (s + 4) % 5);
+      setSelection((s) => (s + homeCount - 1) % homeCount);
       return;
     }
     if (key.downArrow) {
-      setSelection((s) => (s + 1) % 5);
+      setSelection((s) => (s + 1) % homeCount);
       return;
     }
     // Ctrl+R (past runs) and Ctrl+P (settings) are answered by the app-wide
@@ -555,31 +572,52 @@ function Home({
       onChoose(0);
       return;
     }
-    if (input === "n") {
-      onChoose(1);
-      return;
-    }
-    if (input === "p") {
-      onChoose(2);
-      return;
-    }
-    if (input === "s") {
-      onChoose(3);
-      return;
-    }
-    if (input === "q") {
-      onChoose(4);
-      return;
+    if (standalone) {
+      if (input === "s") {
+        onChoose(1);
+        return;
+      }
+      if (input === "q") {
+        onChoose(2);
+        return;
+      }
+    } else {
+      if (input === "n") {
+        onChoose(0);
+        return;
+      }
+      if (input === "p") {
+        onChoose(1);
+        return;
+      }
+      if (input === "m") {
+        onChoose(2);
+        return;
+      }
+      if (input === "s") {
+        onChoose(3);
+        return;
+      }
+      if (input === "q") {
+        onChoose(4);
+        return;
+      }
     }
   });
 
-  const rows: { label: string; hint: string }[] = [
-    { label: "models browser", hint: "the model list — browse, ping, compare" },
-    { label: "new debate", hint: "ask a question or plan a change" },
-    { label: "past runs", hint: "reopen a finished or parked run" },
-    { label: "settings", hint: "saved pairs · benchmarks key" },
-    { label: "quit", hint: "" },
-  ];
+  const rows: { label: string; hint: string }[] = standalone
+    ? [
+        { label: "models browser", hint: "the model list — browse, ping, compare" },
+        { label: "settings", hint: "benchmarks key · highlights" },
+        { label: "quit", hint: "" },
+      ]
+    : [
+        { label: "new debate", hint: "ask a question or plan a change" },
+        { label: "past debates", hint: "reopen a finished debate" },
+        { label: "models browser", hint: "the model list — browse, ping, compare" },
+        { label: "settings", hint: "saved pairs · benchmarks key" },
+        { label: "quit", hint: "" },
+      ];
 
   return (
     <Box flexDirection="column">
@@ -606,7 +644,9 @@ function Home({
       )}
       <Box marginTop={1}>
         <Text dimColor wrap="truncate">
-          ↑↓ move · Enter choose · m models · n new · p runs · s settings · q quit · Ctrl+C quit
+          {standalone
+            ? "↑↓ move · Enter choose · m models · s settings · q quit · Ctrl+C quit"
+            : "↑↓ move · Enter choose · n new · p debates · m models · s settings · q quit · Ctrl+C quit"}
         </Text>
       </Box>
     </Box>
@@ -631,6 +671,26 @@ function FieldText({ text, cursor }: { text: string; cursor: number }) {
   );
 }
 
+/**
+ * Diversity warning across the council: any two models sharing a family narrow
+ * it. Prefix-tolerant like familyClash, reported once for the first clash.
+ */
+function councilClash(models: { drafter: { ref: string; family: string }; reviewer: { ref: string; family: string }; peer?: { ref: string; family: string } | null }): string | null {
+  const all = [models.drafter, models.reviewer, ...(models.peer ? [models.peer] : [])];
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      const a = all[i]!; const b = all[j]!;
+      const fa = a.family.trim().toLowerCase();
+      const fb = b.family.trim().toLowerCase();
+      if (!fa || !fb) continue;
+      if (fa === fb || fa.startsWith(fb) || fb.startsWith(fa)) {
+        return `models ${i + 1} and ${j + 1} share family "${a.family}" — the council is narrower than it could be`;
+      }
+    }
+  }
+  return null;
+}
+
 function Start({
   repo,
   cfg,
@@ -648,6 +708,7 @@ function Start({
   onToggleMode,
   onPick,
   onPickPair,
+  onClearPeer,
   onSettings,
   onHome,
 }: {
@@ -656,7 +717,7 @@ function Start({
   mode: Mode;
   task: string;
   setTask: (v: string) => void;
-  /** Which row the cursor is on: 0 pair · 1 drafter · 2 reviewer · 3 subject · 4 prompt. */
+  /** Which row the cursor is on: 0 pair · 1 lead · 2 peer 1 · 3 peer 2 (optional) · 4 subject · 5 prompt. */
   deskSel: number;
   setDeskSel: (v: number | ((s: number) => number)) => void;
   notice: string | null;
@@ -669,8 +730,9 @@ function Start({
   onViewParent?: () => void;
   onRun: () => void;
   onToggleMode: () => void;
-  onPick: (role: "drafter" | "reviewer") => void;
+  onPick: (role: "drafter" | "reviewer" | "peer") => void;
   onPickPair: () => void;
+  onClearPeer: () => void;
   onSettings: () => void;
   onHome: () => void;
 }) {
@@ -698,7 +760,7 @@ function Start({
     if (key.ctrl && input === "u") {
       setTask("");
       setCaret(0);
-      setDeskSel(4);
+      setDeskSel(5);
       if (continuing) onAbandonContinue?.();
       return;
     }
@@ -728,7 +790,7 @@ function Start({
     }
     if (isKillToEnd(key, input)) {
       setTask(killToEnd(task, cur));
-      setDeskSel(4);
+      setDeskSel(5);
       return;
     }
     if (key.leftArrow) {
@@ -740,15 +802,15 @@ function Start({
       return;
     }
     if (key.upArrow) {
-      setDeskSel((s) => (s + 4) % 5);
+      setDeskSel((s) => (s + 5) % 6);
       return;
     }
     if (key.downArrow) {
-      setDeskSel((s) => (s + 1) % 5);
+      setDeskSel((s) => (s + 1) % 6);
       return;
     }
     if (key.return) {
-      if (deskSel === 4) {
+      if (deskSel === 5) {
         if (task.trim() && cfg) onRun();
         return;
       }
@@ -756,11 +818,16 @@ function Start({
         onPickPair();
         return;
       }
-      if (deskSel === 1 || deskSel === 2) {
-        onPick(deskSel === 1 ? "drafter" : "reviewer");
+      if (deskSel === 1 || deskSel === 2 || deskSel === 3) {
+        onPick(deskSel === 1 ? "drafter" : deskSel === 2 ? "reviewer" : "peer");
         return;
       }
       onToggleMode();
+      return;
+    }
+    // Backspace on the optional third-model row clears it.
+    if ((key.backspace || key.delete) && deskSel === 3 && cfg?.models.peer) {
+      onClearPeer();
       return;
     }
     if (key.backspace) {
@@ -768,12 +835,12 @@ function Start({
         setTask(task.slice(0, cur - 1) + task.slice(cur));
         setCaret(cur - 1);
       }
-      setDeskSel(4);
+      setDeskSel(5);
       return;
     }
     if (key.delete) {
       if (cur < task.length) setTask(task.slice(0, cur) + task.slice(cur + 1));
-      setDeskSel(4);
+      setDeskSel(5);
       return;
     }
     if (key.ctrl || key.meta) return;
@@ -783,11 +850,11 @@ function Start({
     if (input && !input.startsWith("\x1b[<")) {
       setTask(task.slice(0, cur) + input + task.slice(cur));
       setCaret(cur + input.length);
-      setDeskSel(4);
+      setDeskSel(5);
     }
   });
 
-  const clash = cfg ? familyClash(cfg.models) : null;
+  const clash = cfg ? councilClash(cfg.models) : null;
 
   return (
     <Box flexDirection="column">
@@ -806,20 +873,27 @@ function Start({
       <Box marginTop={1}>
         <Text color={deskSel === 1 ? THEME.accent : undefined}>{deskSel === 1 ? "❯ " : "  "}</Text>
         <Text color={deskSel === 1 ? THEME.accent : undefined} bold={deskSel === 1}>
-          {"drafter ".padEnd(9)}
+          {"model 1 ".padEnd(9)}
         </Text>
         <Text>{cfg ? `${cfg.models.drafter.ref} [${cfg.models.drafter.family}]` : "loading…"}</Text>
       </Box>
       <Box>
         <Text color={deskSel === 2 ? THEME.accent : undefined}>{deskSel === 2 ? "❯ " : "  "}</Text>
         <Text color={deskSel === 2 ? THEME.accent : undefined} bold={deskSel === 2}>
-          {"reviewer".padEnd(9)}
+          {"model 2 ".padEnd(9)}
         </Text>
         <Text>{cfg ? `${cfg.models.reviewer.ref} [${cfg.models.reviewer.family}]` : "loading…"}</Text>
       </Box>
       <Box>
         <Text color={deskSel === 3 ? THEME.accent : undefined}>{deskSel === 3 ? "❯ " : "  "}</Text>
         <Text color={deskSel === 3 ? THEME.accent : undefined} bold={deskSel === 3}>
+          {"model 3 ".padEnd(9)}
+        </Text>
+        <Text>{cfg?.models.peer ? `${cfg.models.peer.ref} [${cfg.models.peer.family}]` : "— optional (Enter to pick, ⌫ to clear)"}</Text>
+      </Box>
+      <Box>
+        <Text color={deskSel === 4 ? THEME.accent : undefined}>{deskSel === 4 ? "❯ " : "  "}</Text>
+        <Text color={deskSel === 4 ? THEME.accent : undefined} bold={deskSel === 4}>
           {"subject ".padEnd(9)}
         </Text>
         <Text color={THEME.accent}>{mode === "answer" ? "general question" : "this repository"}</Text>
@@ -841,7 +915,7 @@ function Start({
           </Text>
         </Box>
       )}
-      <Box borderStyle="round" borderColor={deskSel === 4 ? "cyan" : "gray"} paddingX={1} marginTop={1}>
+      <Box borderStyle="round" borderColor={deskSel === 5 ? "cyan" : "gray"} paddingX={1} marginTop={1}>
         {task ? (
           <FieldText text={task} cursor={cur} />
         ) : (
@@ -870,7 +944,7 @@ function Start({
       )}
       <Box marginTop={1}>
         <Text dimColor wrap="truncate">
-          Enter {deskSel === 4 ? "run" : "choose"} · ↑↓ pick a row · Tab subject · Esc home · Ctrl+R runs ·
+          Enter {deskSel === 5 ? "run" : "choose"} · ↑↓ pick a row · Tab subject · Esc home · Ctrl+R runs ·
           Ctrl+P settings · Ctrl+U clear · ^A ^E ends
         </Text>
       </Box>
@@ -891,11 +965,13 @@ function Settings({
   aaKey,
   refreshDays,
   highlights,
+  hidePairs,
 }: {
   selection: number;
   saved: string | null;
   /** The name of the saved pair these two models are, or null when unnamed. */
   pair: string | null;
+  hidePairs?: boolean;
   /** Whether an Artificial Analysis key is stored — the picker's benchmark source. */
   aaKey: boolean;
   /** The reader's cache window in days: the auto-refresh staleness for every keyless cache. */
@@ -912,7 +988,7 @@ function Settings({
   const rows: { label: string; value: string }[] = [
     // Matched by model, not by position: a pair saved under another name is
     // still the pair in use, and showing nothing would read as "no pair".
-    { label: "edit drafter/reviewer pairs", value: `current pair: ${pair ?? "—"}` },
+    ...(!hidePairs ? [{ label: "edit drafter/reviewer pairs" as const, value: `current pair: ${pair ?? "—"}` }] : []),
     {
       label: "benchmarks",
       value: aaKey ? "artificialanalysis.ai · key set" : "artificialanalysis.ai · no key — OpenRouter benchmarks",
@@ -1069,7 +1145,7 @@ function Pick({
   highlightsOnly,
   highlightCount,
 }: {
-  role: "drafter" | "reviewer";
+  role: "drafter" | "reviewer" | "peer";
   /** Browse: Enter does nothing, Esc goes home. Select: Enter assigns, Esc returns to the debate screen. */
   pickMode: "browse" | "select" | "build";
   list: ReturnType<typeof orderedModels>;
@@ -2535,7 +2611,7 @@ function Runs({
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Header right="past runs" />
+        <Header right="past debates" />
       </Box>
       <Text dimColor>
         open one to continue it — a finished run can be revisited, a parked one finished
@@ -2556,7 +2632,10 @@ function Runs({
           // tasks. Measured from the real prefix, with one spare column.
           const head = `${r.name}   ${r.state.padEnd(8)}${chain}${label} · `;
           const room = Math.max(8, width - 1 - 4 - head.length);
-          const text = r.task.length > room ? `${r.task.slice(0, room - 1)}…` : r.task;
+          // Continued runs carry the whole previous result in the task: show
+          // the follow-up, flattened to the one line the row can hold.
+          const shown = displayTaskOf(r.task);
+          const text = shown.length > room ? `${shown.slice(0, room - 1)}…` : shown;
           return (
             <Box key={r.dir}>
               <Text color={marked ? THEME.warn : undefined}>{marked ? "● " : "  "}</Text>
@@ -2961,6 +3040,9 @@ function workingLabel(log: string[], phase: Phase, mode: Mode): string | null {
   }
   if (phase !== "running") return null;
   const last = [...log].reverse().find((line) => !line.startsWith("!")) ?? "";
+  if (last.startsWith("taking")) return "waiting for the takes — running in parallel…";
+  if (last.startsWith("take ") && last.includes(" done")) return "waiting for the takes — running in parallel…";
+  if (last.startsWith("synthesising")) return "synthesising the takes…";
   if (last.startsWith("drafting")) return "waiting for the drafter…";
   if (last.startsWith("reviewing")) return "waiting for the reviewer — usually the slow part…";
   if (last.startsWith("review read") || last.startsWith("checking")) {
@@ -2980,21 +3062,25 @@ function callLine(info: {
 }): string {
   const what =
     info.kind === "draft"
-      ? info.step === "plan"
-        ? "plan written"
-        : "claims extracted"
+      ? info.step === "take"
+        ? "take written"
+        : info.step === "plan"
+          ? "plan written"
+          : "claims extracted"
       : info.kind === "review"
         ? "review returned"
-        : info.step === "plan"
-          ? "revision written"
-          : "changelog written";
+        : info.step === "synthesis"
+          ? "synthesis written"
+          : info.step === "plan"
+            ? "revision written"
+            : "changelog written";
   // $0 is an absence, not a number: a gateway that reports no cost must not
   // make a paid run display as free.
   const cost = info.usage.costKnown ? `$${info.usage.cost.toFixed(6)}` : "cost not reported";
   return `${what}${info.retry ? " (retry)" : ""} — ${(info.ms / 1000).toFixed(1)}s, ${cost}`;
 }
 
-function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; onRecap?: (text: string | null) => void }) {
+function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; altScreen: boolean; onRecap?: (text: string | null) => void; initial?: "browser"; standalone?: boolean }) {
   const { exit } = useApp();
   /* One handler for the whole app, in every phase, so no screen forgets it. */
   useInput((input, key) => {
@@ -3030,7 +3116,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   });
   const [cfg, setCfg] = useState<Config | null>(null);
   const [hasCriteria, setHasCriteria] = useState(false);
-  const [phase, setPhase] = useState<Phase>("home");
+  const [phase, setPhase] = useState<Phase>(initial === "browser" ? "pick" : "home");
   const [mode, setMode] = useState<Mode>("plan");
   /* Two tasks, not one. `task` is the prompt on the question desk: the start
      screen owns it and nothing else writes to it, so looking at a past run and
@@ -3043,6 +3129,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   const [log, setLog] = useState<string[]>([]);
   const [head, setHead] = useState<Head | null>(null);
   const [tail, setTail] = useState<Tail | null>(null);
+  const [council, setCouncil] = useState<{ takes: { index: number; model: ModelRef; text: string }[]; final: string; learned: string; patch: string; dir: string } | null>(null);
   const [gate, setGate] = useState<Gate | null>(null);
   const [error, setError] = useState("");
   const [index, setIndex] = useState(0);
@@ -3053,12 +3140,13 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   /** The reader's cache window in days. Read fresh in `ensureModelData`, shown on the settings row. */
   const [refreshDays, setRefreshDays] = useState(DEFAULT_REFRESH_DAYS);
   const [homeSel, setHomeSel] = useState(0);
-  /** Debate-screen cursor: 0 pair · 1 drafter · 2 reviewer · 3 subject · 4 prompt. Starts on the prompt. */
-  const [deskSel, setDeskSel] = useState(4);
+  void standalone;
+  /** Debate-screen cursor: 0 pair · 1 lead · 2 peer 1 · 3 peer 2 · 4 subject · 5 prompt. Starts on the prompt. */
+  const [deskSel, setDeskSel] = useState(5);
   /** Where the pairs list was opened from: the debate screen only chooses, settings manages. */
   const [pairOrigin, setPairOrigin] = useState<"settings" | "debate">("settings");
   /** The model list's mode: browse from home (Enter does nothing), select one model, or build a pair step by step. */
-  const [pickMode, setPickMode] = useState<"browse" | "select" | "build">("select");
+  const [pickMode, setPickMode] = useState<"browse" | "select" | "build">(initial === "browser" ? "browse" : "select");
   /** The pair being built by hand: the drafter is picked first, then the reviewer. */
   const [pairDraft, setPairDraft] = useState<{ drafter: ModelRef | null; reviewer: ModelRef | null }>({
     drafter: null,
@@ -3083,7 +3171,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   /** AND needs every filter word; OR needs any one; OFF ignores the text. Session-only, like `D`/`S`. */
   const [filterMode, setFilterMode] = useState<FilterMode>("and");
   const [pickIndex, setPickIndex] = useState(0);
-  const [pickRole, setPickRole] = useState<"drafter" | "reviewer">("drafter");
+  const [pickRole, setPickRole] = useState<"drafter" | "reviewer" | "peer">("drafter");
   /** What the picker lists: grouped providers, or a flat score-ordered view. */
   const [view, setView] = useState<PickerView>("provider");
   /** Which tier of a tiered list price the picker shows and the value view filters on. */
@@ -3343,6 +3431,24 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   useEffect(() => {
     void (async () => {
       try {
+        // Standalone model browser: no repo, no .adv/, no setup question.
+        // It shares the picker, settings (minus pairs), benchmarks and probes
+        // with adv, but there is no debate to configure here.
+        if (standalone) {
+          setToolLabel("ocm");
+          const config = await loadConfig(repo).catch(() => null);
+          if (config) {
+            setCfg(config);
+            setMode(config.mode);
+          }
+          setPickMode("browse");
+          setPhase("pick");
+          void loadPairs().then(setSavedPairs).catch(() => {});
+          void loadAAKey().then((k) => setAAKeySet(!!k)).catch(() => {});
+          void ensureModelData();
+          return;
+        }
+        setToolLabel("adv");
         const present = await advState(repo);
         const config = await loadConfig(repo);
         setCfg(config);
@@ -3494,7 +3600,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   }
 
   /** Debate screen → pick a drafter or reviewer: Enter assigns. */
-  async function openPick(role: "drafter" | "reviewer") {
+  async function openPick(role: "drafter" | "reviewer" | "peer") {
     setPickMode("select");
     setPickRole(role);
     resetFilterVisit();
@@ -3530,19 +3636,30 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     setPhase("home");
   }
 
-  /** Home menu choice: 0 browser · 1 new debate · 2 runs · 3 settings · 4 quit. */
+  /** Home menu choice (0 new · 1 past debates · 2 browser · 3 settings · 4 quit). */
   function chooseHome(i: number) {
-    if (i === 0) {
-      void openBrowser();
-      return;
+    if (standalone) {
+      if (i === 0) {
+        void openBrowser();
+        return;
+      }
+      if (i === 1) {
+        void openSettings();
+        return;
+      }
+      exit();
     }
-    if (i === 1) {
-      setDeskSel(4);
+    if (i === 0) {
+      setDeskSel(5);
       setPhase("start");
       return;
     }
-    if (i === 2) {
+    if (i === 1) {
       void openRuns();
+      return;
+    }
+    if (i === 2) {
+      void openBrowser();
       return;
     }
     if (i === 3) {
@@ -3712,7 +3829,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
    */
   async function usePair(models: PairModels, name?: string) {
     if (!cfg) return;
-    await persist({ ...cfg, models }, mode);
+    await persist({ ...cfg, models: { ...models, ...(cfg.models.peer ? { peer: cfg.models.peer } : {}) } }, mode);
     // Not logged: the choice is confirmed by the notice and the rows, and a
     // log line would follow every later screen — including a past run that
     // used another pair, where it would read as a false claim.
@@ -3738,7 +3855,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     await savePair({ name, ...models });
     const pairs = await loadPairs();
     setSavedPairs(await markPairUsed(name));
-    await persist({ ...cfg, models }, mode);
+    await persist({ ...cfg, models: { ...models, ...(cfg.models.peer ? { peer: cfg.models.peer } : {}) } }, mode);
     // Not logged, like every other pair choice: the notice confirms it inline.
     const rows = pairRows(pairs, pairRuns, new Set(allModels));
     const at = rows.findIndex((row) => row.kind === "saved" && row.pair.name === name);
@@ -3749,8 +3866,9 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     setPhase("pairs");
   }
 
-  /* Settings: pairs, the benchmarks key, highlights, the cache window, a manual refresh.
+  /* Settings: pairs (unless standalone), the benchmarks key, highlights, the cache window, a manual refresh.
      The key lives in the user's config dir alone, never in a repo. */
+  const settingsMax = standalone ? 4 : 5;
   useInput(
     (_input, key) => {
       if (!cfg) return;
@@ -3763,16 +3881,17 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         return;
       }
       if (key.downArrow) {
-        setSettingsSel((s) => Math.min(5, s + 1));
+        setSettingsSel((s) => Math.min(settingsMax, s + 1));
         return;
       }
       if (!key.return) return;
 
-      if (settingsSel === 0) {
+      const sel = standalone ? settingsSel + 1 : settingsSel;
+      if (sel === 0) {
         void openPairs("settings");
         return;
       }
-      if (settingsSel === 1) {
+      if (sel === 1) {
         // A fresh field every visit: a key left on screen is a key photographed.
         setAAKeyInput("");
         setAAKeyCaret(0);
@@ -3780,11 +3899,11 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         setPhase("aakey");
         return;
       }
-      if (settingsSel === 2) {
+      if (sel === 2) {
         openHighlights();
         return;
       }
-      if (settingsSel === 3) {
+      if (sel === 3) {
         const next = cycleRefreshDays(refreshDays);
         void (async () => {
           await saveRefreshDays(next);
@@ -3796,7 +3915,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         })();
         return;
       }
-      if (settingsSel === 4) {
+      if (sel === 4) {
         // Loud, all three at once: the reader asked, so each reports — the
         // per-cache notices land on the next screen, the confirmation stays here.
         setSaved("refreshing benchmarks, AI Coding Daily and prices…");
@@ -5369,7 +5488,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   );
 
   const items = useMemo(() => (head ? buildItems(head.claims, head.review) : []), [head]);
-  const runDir = head ? displayPath(head.paths.dir) : "";
+  const runDir = council ? displayPath(council.dir) : head ? displayPath(head.paths.dir) : "";
 
   // One place for the review-level warnings: the gate shows a count, the `i`
   // panel shows them in full, and both read from here.
@@ -5402,7 +5521,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
 
   function beginRun(next: Mode = mode) {
     if (!cfg) return;
-    const clash = familyClash(cfg.models);
+    const clash = councilClash(cfg.models);
     if (clash && cfg.familyCheck === "require") {
       setError(
         `${clash}.\n\nThis repo sets familyCheck: "require", so the run was not started. ` +
@@ -5416,7 +5535,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     const followUp = task.trim();
     if (pendingContinue && !followUp) {
       setNotice("type your follow-up first — Enter runs nothing without it");
-      setDeskSel(4);
+      setDeskSel(5);
       return;
     }
     // The composed task — parent header, the previous result whole, the
@@ -5429,7 +5548,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     // the history starts at "drafting" and does not say what was asked or who is
     // doing it.
     setOpenedFrom("start");
-    addLog(`${next === "answer" ? "general question" : "repository"} · ${cfg.models.drafter.ref} -> ${cfg.models.reviewer.ref}`);
+    addLog(`${next === "answer" ? "general question" : "repository"} · ${cfg.models.drafter.ref} + ${cfg.models.reviewer.ref}${cfg.models.peer ? ` + ${cfg.models.peer.ref}` : ""} (parallel takes)`);
     addLog(
       pendingContinue
         ? `continuing ${pendingContinue.name} · follow-up: ${followUp}`
@@ -5449,6 +5568,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     setWasDone(false);
     setGate(null);
     setTail(null);
+    setCouncil(null);
     // `head` too: returning to the question desk from a finished run leaves the
     // old head in state, and the head effect skips while one is set — so a new
     // run would open straight onto the previous run's gate.
@@ -5462,9 +5582,9 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     setPhase("running");
   }
 
-  /* Run the head of the pipeline once the user commits a task. */
+  /* Run the council once the user commits a task: parallel takes, then synthesis. */
   useEffect(() => {
-    if (phase !== "running" || !cfg || head) return;
+    if (phase !== "running" || !cfg || council) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -5481,9 +5601,8 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         const reporting: Reporting = {
           onCall: (info) => addLog(callLine(info)),
           onNote: (text) => addLog(text),
-          onApprove: requestApproval,
         };
-        const result = await runHead(
+        const takes = await runTakes(
           repo,
           runTask,
           criteria.text,
@@ -5493,8 +5612,23 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
           reporting,
         );
         if (cancelled) return;
-        setHead(result);
-        setPhase("gate");
+        const tail = await runSynthesis(
+          repo,
+          takes.paths,
+          runTask,
+          criteria.text,
+          takes.takes,
+          cfg.models,
+          effectiveMode,
+          reporting,
+        );
+        if (cancelled) return;
+        setCouncil({ takes: takes.takes, final: tail.final, learned: tail.learned, patch: tail.patch, dir: takes.paths.dir });
+        setRunModels(cfg.models);
+        setHead(null);
+        setTail(null);
+        setWasDone(true);
+        setPhase("result");
       } catch (e) {
         if (cancelled) return;
         setError(`${e instanceof Error ? e.message : String(e)}\n\nthe run is recorded as failed — ` +
@@ -5505,7 +5639,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     return () => {
       cancelled = true;
     };
-  }, [phase, head, repo, runTask, cfg, effectiveMode]);
+  }, [phase, council, repo, runTask, cfg, effectiveMode]);
 
   async function finishGate(all: GateAnswer[]) {
     if (!head || !cfg) return;
@@ -5735,9 +5869,31 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         setPhase("error");
         return;
       }
+      // Council runs (takes + final) open straight to the result. Legacy
+      // gate runs still open through the old artifacts.
+      try {
+        const c = await loadCouncil(p);
+        setCouncil({ takes: c.takes, final: c.final, learned: c.learned, patch: c.patch, dir: p.dir });
+        setHead(null);
+        setTail(null);
+        setWasDone(state.state === "done");
+        setRunModels(state.models);
+        setRunMode(state.mode);
+        setRunTask(state.task);
+        setAnswers([]);
+        setGateCustom(null);
+        setIndex(0);
+        setSelection(0);
+        setPanel(null);
+        setPhase("result");
+        return;
+      } catch {
+        /* not a council run — fall through to the legacy artifacts */
+      }
       const art = await loadArtifacts(p);
       // Not logged: the gate and result screens show this run's own task,
       // models and state, and a log line would follow every later screen.
+      setCouncil(null);
       setHead(headFromArtifacts(repo, p, art));
       setPreviousGate(art.gate);
       setReopened(true);
@@ -5769,6 +5925,10 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
    * nothing moved, no model call is spent — the run stands as it is.
    */
   function startRevisit() {
+    if (council) {
+      setNotice("no gate to revisit — council runs finish in one pass");
+      return;
+    }
     if (!head || !gate) return;
     setPreviousGate(gate);
     // The result screen only exists for a finished run, so this is always a
@@ -5805,6 +5965,24 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
    * never enters the prompt field. Ctrl+L re-reads it from the desk.
    */
   function startContinue() {
+    if (panel) return;
+    if (council) {
+      const parentName = path.basename(council.dir);
+      setNotice(null);
+      const parentMode = runMode ?? mode;
+      if (parentMode !== mode) {
+        setMode(parentMode);
+        if (cfg) void persist(cfg, parentMode);
+      }
+      setPendingContinue({ name: parentName, dir: council.dir, mode: parentMode, result: council.final });
+      setTask("");
+      setDeskSel(5);
+      setOpenedFrom("start");
+      setPanel(null);
+      addLog(`continuing run ${parentName} — type your follow-up, then Enter runs it`);
+      setPhase("start");
+      return;
+    }
     if (!head || !tail || panel) return;
     const parentName = path.basename(head.paths.dir);
     setNotice(null);
@@ -5817,7 +5995,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     }
     setPendingContinue({ name: parentName, dir: head.paths.dir, mode: parentMode, result: tail.plan });
     setTask("");
-    setDeskSel(4);
+    setDeskSel(5);
     setOpenedFrom("start");
     setPanel(null);
     addLog(`continuing run ${parentName} — type your follow-up, then Enter runs it`);
@@ -5892,7 +6070,16 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
    * reader could see — which is why it is a panel now (`x`). The copies ask for
    * it: `Y` is "the whole result", and the diff is part of it.
    */
-  function resultReport(includeDiff = false) {
+  function resultReport(includeDiff = false): any {
+    if (council) {
+      return {
+        final: council.final,
+        learned: council.learned,
+        takes: council.takes,
+        patch: includeDiff ? council.patch : council.patch,
+        ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
+      };
+    }
     if (!tail || !head) return null;
     return {
       plan: tail.plan,
@@ -5905,6 +6092,19 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       checks: head.checks,
       ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
       includeDiff,
+      ...(runTask ? { question: runTask, questionLabel: effectiveMode === "answer" ? "question" : "task" } : {}),
+    };
+  }
+
+  function councilReport() {
+    if (!council) return null;
+    return {
+      final: council.final,
+      learned: council.learned,
+      takes: council.takes,
+      patch: council.patch,
+      ...(runModels ? { models: runModels } : cfg ? { models: cfg.models } : {}),
+      ...(runTask ? { question: runTask, questionLabel: effectiveMode === "answer" ? "question" : "task" } : {}),
     };
   }
 
@@ -5917,6 +6117,18 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
    * when the answer is going somewhere to be discussed.
    */
   async function copyOut(whole = false) {
+    if (council) {
+      const report = councilReport()!;
+      const text = whole ? renderCouncil(report) : council.final;
+      const file = whole ? `${council.dir}/result.md` : `${council.dir}/answer.md`;
+      try {
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(file, `${text}\n`);
+      } catch {}
+      const result = await copyMarkdown(text, file);
+      setNotice(copyNotice(result, text.length, path.basename(file)));
+      return;
+    }
     if (!tail || !head) return;
     const text = whole ? renderResult(resultReport(true)!) : tail.plan;
     const file = whole ? head.paths.result : head.paths.answer;
@@ -5931,6 +6143,17 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
    * lines changed" is a thing to read, not a section to scroll past.
    */
   function openDiff() {
+    if (council) {
+      const report = councilReport()!;
+      const lines = renderCouncilLines({ ...report, patch: report.patch || undefined }, wrapWidth());
+      setPanel({
+        title: "take 1 → final answer",
+        lines: lines.length
+          ? lines
+          : [spans({ text: "no diff — the synthesis kept take 1 unchanged", dim: true })],
+      });
+      return;
+    }
     const report = resultReport(true);
     if (!report) return;
     const lines = diffPane(report);
@@ -5940,6 +6163,46 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         ? lines
         : [spans({ text: "no diff — the text is unchanged", dim: true })],
     });
+  }
+
+  /** One model's original take, unedited — `1`/`d`, `2`/`R`, `3`. */
+  function openCouncilTake(i: number) {
+    if (!council || !council.takes[i]) {
+      setNotice(i === 2 ? "no third take — this was a two-model run" : "no take here");
+      return;
+    }
+    const take = council.takes[i]!;
+    showPanel(
+      `take ${take.index} — ${take.model.ref}`,
+      renderMarkdownLines(take.text, wrapWidth()),
+    );
+  }
+
+  /** What the peers contributed, plus what happened — behind `i`. */
+  function openCouncilInfo() {
+    if (council) {
+      const report = councilReport()!;
+      showPanel(
+        "what we learned",
+        renderCouncilCommentaryLines(report, wrapWidth()).length
+          ? renderCouncilCommentaryLines(report, wrapWidth())
+          : [spans({ text: "nothing recorded", dim: true })],
+      );
+      return;
+    }
+    void openPanel("info");
+  }
+
+  function openCouncilLog() {
+    showPanel(
+      "run log",
+      (log.length ? log : ["(nothing logged yet)"]).flatMap((line) =>
+        line.startsWith("!")
+          ? [spans({ text: line, color: THEME.warn })]
+          : [spans({ text: line })],
+      ),
+      0,
+    );
   }
 
   /**
@@ -5955,7 +6218,6 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
 
   /** Keys, the draft, the claims, the raw review reply: curiosity and debugging. */
   function openResultPanel(kind: "keys" | "claims" | "raw") {
-    if (!head) return;
     if (kind === "keys") {
       showPanel(
         "keys on this screen",
@@ -5966,6 +6228,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
       );
       return;
     }
+    if (!head) return;
     if (kind === "claims") {
       const lines: StyledLine[] = [
         spans({ text: "VERIFIABLE", bold: true }, " — the reviewer must return a verdict on each"),
@@ -6605,11 +6868,12 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         setSelection={setHomeSel}
         notice={notice}
         onChoose={(i) => chooseHome(i)}
+        standalone={standalone}
       />
     );
   } else if (phase === "settings" && cfg) {
     content = (
-      <Settings selection={settingsSel} saved={saved} pair={currentPairName} aaKey={aaKeySet} refreshDays={refreshDays} highlights={highlights} />
+      <Settings selection={settingsSel} saved={saved} pair={currentPairName} aaKey={aaKeySet} refreshDays={refreshDays} highlights={highlights} hidePairs={standalone} />
     );
   } else if (phase === "aakey") {
     content = <AAKey value={aaKeyInput} caret={aaKeyCaret} busy={aaKeyBusy} notice={notice} hasKey={aaKeySet} />;
@@ -6795,6 +7059,11 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         }}
         onPick={(role) => void openPick(role)}
         onPickPair={() => void openPairs("debate")}
+        onClearPeer={() => {
+          if (!cfg || !cfg.models.peer) return;
+          const next = { ...cfg, models: { drafter: cfg.models.drafter, reviewer: cfg.models.reviewer } };
+          void persist(next, mode).then(() => setNotice('cleared model 3 — back to two takes'));
+        }}
         onSettings={() => void openSettings()}
         onHome={() => openHome()}
       />
@@ -6806,7 +7075,7 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     content = null;
   } else if (phase === "runs") {
     content = runsLoading ? (
-      <Text dimColor>loading past runs…</Text>
+      <Text dimColor>loading past debates…</Text>
     ) : pendingDelete ? (
       <ConfirmDelete
         summary={deletionSummary(
@@ -6873,8 +7142,9 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
         />
       );
     }
-  } else if (phase === "result" && tail && head) {
-    const report = resultReport();
+  } else if (phase === "result" && (council || (tail && head))) {
+    const councilData = council ? councilReport() : null;
+    const report = councilData ?? resultReport();
     // A panel opens over the result and Esc puts it away. The result screen is
     // where a finished run is read, and reading it means being able to look up
     // the draft, the claims and the reviewer's own words without leaving.
@@ -6896,23 +7166,23 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
     ) : report ? (
       <Scroller
         key="result"
-        title="done — ai debate concluded"
-        lines={renderAnswerOnlyLines(report, wrapWidth())}
+        title={councilData ? "done — two takes plus what we learned" : "done — ai debate concluded"}
+        lines={councilData ? renderCouncilAnswerLines(councilData, wrapWidth()) : renderAnswerOnlyLines(report, wrapWidth())}
         notice={notice}
         height={scrollerH}
-        escLabel={openedFrom === "runs" ? "Esc back to the list" : "Esc back"}
+        escLabel="Esc closes panels — never leaves the result"
         escCloses={false}
-        onEsc={goBack}
+        onEsc={() => setNotice("Esc closes panels — X menu · C continue · n new · e edit · q quit")}
         // Short on purpose: the pane's height is the content minus the chrome,
         // and a footer that wraps to two lines takes a row from the text. The
         // rest of the keys are behind `?`.
         footer={[
           ...hints(
             ["C", "continue"],
+            ["X", "menu"],
             ["y", "copy answer"],
-            ["x", "diff + why"],
-            ["i", "at a glance"],
-            ["n", "new question"],
+            ["i", "what we learned"],
+            ["n/e", "new/edit question"],
             ["?", "keys"],
             ["q", "quit"],
           ),
@@ -6926,7 +7196,21 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
             startContinue();
             return true;
           }
+          if (input === "X") {
+            setPanel(null);
+            setPhase("home");
+            return true;
+          }
           if (input === "n") {
+            setTask("");
+            setDeskSel(5);
+            setPhase("start");
+            return true;
+          }
+          if (input === "e") {
+            setTask(questionOf(runTask));
+            setDeskSel(5);
+            setOpenedFrom("start");
             setPhase("start");
             return true;
           }
@@ -6950,27 +7234,36 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
             openResultPanel("keys");
             return true;
           }
-          if (input === "d") {
-            void openPanel("text");
+          if (input === "d" || input === "1") {
+            openCouncilTake(0);
             return true;
           }
-          if (input === "v") {
+          if (input === "R" || input === "2") {
+            openCouncilTake(1);
+            return true;
+          }
+          if (input === "3") {
+            openCouncilTake(2);
+            return true;
+          }
+          if (input === "v" && !councilData) {
             void openPanel("verdicts");
             return true;
           }
           if (input === "i") {
-            void openPanel("info");
+            openCouncilInfo();
             return true;
           }
           if (input === "l") {
+            if (councilData) { openCouncilLog(); return true; }
             void openPanel("log");
             return true;
           }
-          if (input === "c") {
+          if (input === "c" && !councilData) {
             openResultPanel("claims");
             return true;
           }
-          if (input === "R") {
+          if (input === "R" && !councilData) {
             openResultPanel("raw");
             return true;
           }
@@ -7065,7 +7358,8 @@ function App({ repo, altScreen, onRecap }: { repo: string; altScreen: boolean; o
   );
 }
 
-export async function startTui(opts: { repo: string; altScreen?: boolean }): Promise<void> {
+export async function startTui(opts: { repo: string; altScreen?: boolean; initial?: "browser"; standalone?: boolean }): Promise<void> {
+  setToolLabel(opts.standalone ? "ocm" : "adv");
   // Without this the wheel scrolls the terminal's scrollback instead of the
   // pane, and there is no way to ask for it later: the terminal has to be told
   // before it stops handling the wheel itself.
@@ -7080,7 +7374,7 @@ export async function startTui(opts: { repo: string; altScreen?: boolean }): Pro
   let recap: string | null = null;
   const alt = opts.altScreen ?? true;
   try {
-    const app = render(<App repo={opts.repo} altScreen={alt} onRecap={(text) => { recap = text; }} />, {
+    const app = render(<App repo={opts.repo} altScreen={alt} onRecap={(text) => { recap = text; }} initial={opts.initial} standalone={opts.standalone} />, {
       alternateScreen: alt,
     });
     await app.waitUntilExit();
