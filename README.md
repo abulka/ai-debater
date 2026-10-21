@@ -7,8 +7,8 @@ what the peers contributed.
 
 The rule the whole tool is built around: **models answer, the human judges.**
 
-![adv TUI screenshot](docs/screenshot-ai-debater-01.png)
-*Example `adv` TUI screenshot.*
+![adv result screenshot](docs/images/adv-result.png)
+*A finished debate: the question, the synthesised answer, and sources.*
 
 ## The problem
 
@@ -82,6 +82,9 @@ One command, and behind it:
 One pass. The `x` key shows the diff from take 1 to the final answer, so what
 the synthesis changed is visible.
 
+![adv what we learned screenshot](docs/images/adv-what-we-learned.png)
+*The `i` panel: what each take contributed, what happened, and the exact changes.*
+
 **Non-goals.** Not a multi-agent framework, not a replacement for tests, and
 not a code-writing tool — it produces plans and
 answers, and never edits the repository.
@@ -139,6 +142,11 @@ essentials:
 | space · d / D | Runs: tag rows · delete tagged / every run listed |
 | Ctrl+T | Mouse: hand it to the terminal to select text, and take it back |
 
+#### New debate
+
+![adv new debate screenshot](docs/images/adv-new-debate.png)
+*The new-debate desk: preset, models, subject, and the prompt.*
+
 Your models, subject and thresholds follow you between directories: choosing
 them writes only the global `~/.config/adv/config.json` — never anything into
 a repository. The pair you use most is worth a name; pairs live in
@@ -156,7 +164,14 @@ fallback.
 
 `ocm` is the picker from `adv`, standalone: browse every model OpenCode
 knows, ping one, compare benchmarks and prices. No run is started, no
-question is asked.
+question is asked. The same browser is also inside `adv` — home first, then
+`m`.
+
+![ocm models browser, provider view](docs/images/ocm-browser-provider.png)
+*Provider view: favourites first, with price, benchmarks, measured cost and ping status.*
+
+![ocm models browser, value view](docs/images/ocm-browser-value.png)
+*Value view: the same models ranked by measured cost, cheapest first.*
 
 ```sh
 ocm [--dir <repo>] [--no-alt-screen]
