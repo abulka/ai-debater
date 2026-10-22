@@ -75,6 +75,26 @@ describe("classify", () => {
     expect(classify("opencode run timed out after 30000ms").kind).toBe("timeout");
   });
 
+  test("an OpenCode 1 client is named, not blamed on the model", () => {
+    // The original failure: `opencode run --standalone` on v1 printed its help
+    // and exited 1, and the probe recorded a generic `failed` whose detail was
+    // the tail of that help. It is a client-version problem, and the fix is one
+    // command.
+    const v = classify(
+      "adv requires OpenCode 2 (the --standalone flag and the injected agent config are v2 features). " +
+        "This is OpenCode 1.19.3. Upgrade with: opencode upgrade --major",
+    );
+    expect(v.kind).toBe("old-opencode");
+    expect(v.detail).toContain("opencode upgrade --major");
+    expect(SHORT["old-opencode"]).toBe("needs v2");
+  });
+
+  test("the raw v1 help tail is still recognised as a version failure", () => {
+    expect(classify("error: Unknown argument: standalone\n\nopencode run [message..]").kind).toBe(
+      "old-opencode",
+    );
+  });
+
   test("a completed call is ok, because the caller says it completed", () => {
     expect(classify("anything at all", 3200)).toEqual({ kind: "ok", detail: "replied", ms: 3200 });
   });

@@ -3,6 +3,12 @@
 Technical detail for `adv` and `ocm`. The [README](../README.md) is the pitch;
 this is the manual.
 
+`adv` requires **OpenCode 2.x**. It passes `--standalone` and injects agents
+using the v2 config shape; OpenCode 1 treats the flag as unknown, prints its
+help, and exits. A ping on v1 shows `✗ needs v2` (a client problem, not a model
+or credential one). Fix it with `opencode upgrade --major`; a plain
+`opencode upgrade` stays on 1.x.
+
 ## `adv` CLI
 
 ```sh

@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { agentsConfigJson } from "../agents.ts";
+import { assertOpenCode2, OPENCODE_UPGRADE } from "../opencode-version.ts";
 import {
   splitLearned,
   synthesizePrompt,
@@ -195,6 +196,10 @@ export class OpencodeRunRunner implements Runner {
 
   /** Low-level call. */
   async call(opts: CallRequest): Promise<CallResult> {
+    // Checked before spawning, so a v1 CLI never gets a chance to print its
+    // help and have that recorded as a model verdict.
+    await assertOpenCode2();
+
     const args = ["run", "--format", "json", "--model", opts.model, "--agent", opts.agent];
     if (this.standalone) args.push("--standalone");
     if (opts.sessionID) args.push("--session", opts.sessionID);
@@ -234,6 +239,15 @@ export class OpencodeRunRunner implements Runner {
     if (killed) throw new Error(`opencode run timed out after ${this.timeoutMs}ms`);
     if (code !== 0) {
       const raw = (stderr || stdout).slice(-2000);
+      // The preflight should have caught this, but a wrapper on PATH (or a
+      // version check that lied) must still produce the remedy rather than the
+      // tail of a help screen.
+      if (isUsageError(raw)) {
+        throw new Error(
+          `opencode rejected the command line, which is what OpenCode 1 does with ` +
+            `--standalone. adv requires OpenCode 2. Upgrade with: ${OPENCODE_UPGRADE}\n${raw}`,
+        );
+      }
       // The agents come from OPENCODE_CONFIG_CONTENT, so this now means the
       // injected config did not reach the child at all.
       if (/Agent not found/i.test(raw)) {
@@ -245,6 +259,20 @@ export class OpencodeRunRunner implements Runner {
         );
       }
       throw new Error(`opencode run exited ${code}\n${raw}`);
+    }
+
+    // OpenCode 1 does not fail on an unknown agent: it prints a warning and
+    // falls back to the default agent, which is not read-only. That turns a
+    // broken injection into a silent permissions failure, so it is a hard
+    // error here. Model output is JSON events; the warning is a plain line.
+    const fellBack = agentFallback(`${stdout}\n${stderr}`);
+    if (fellBack !== null) {
+      throw new Error(
+        `opencode ran without adv's "${opts.agent}" agent${fellBack ? ` (it reported "${fellBack}" missing)` : ""} ` +
+          `and fell back to the default agent. adv's agents are injected through ` +
+          `OPENCODE_CONFIG_CONTENT; check that nothing stripped or reshaped that variable.\n` +
+          `${(stdout || stderr).slice(-2000)}`,
+      );
     }
 
     const events = parseNdjson(stdout);
@@ -325,6 +353,35 @@ const retryable = (err: unknown): boolean => {
   const message = err instanceof Error ? err.message : String(err);
   return MODEL_TURN_REJECTED.test(message) || TRANSIENT.test(message);
 };
+
+/**
+ * Did the CLI reject our own arguments?
+ *
+ * `opencode run --standalone` on v1 exits 1 above an `Unknown argument:
+ * standalone` line and the whole help screen. That is a version mismatch, not
+ * a provider or model failure, and it must say so.
+ */
+export function isUsageError(text: string): boolean {
+  return /Unknown argument|unknown option/i.test(text);
+}
+
+/**
+ * The name of the agent OpenCode said it could not find, `""` when it only
+ * said it was falling back, or null when there was no warning.
+ *
+ * Only non-JSON lines are inspected: `--format json` puts model prose in JSON
+ * events, and a model quoting this warning must not fail its own run.
+ */
+export function agentFallback(output: string): string | null {
+  for (const line of output.split("\n")) {
+    const text = line.trim();
+    if (!text || text.startsWith("{")) continue;
+    const named = /agent\s+["']?([^"'\s]+)["']?\s+not found/i.exec(text);
+    if (named?.[1]) return named[1];
+    if (/falling back to (the )?default agent/i.test(text)) return "";
+  }
+  return null;
+}
 
 export function parseNdjson(stdout: string): RunEvent[] {
   const events: RunEvent[] = [];

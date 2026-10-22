@@ -39,6 +39,7 @@ import { listModels } from "./models.ts";
 import { loadRefreshDays, refreshDaysMs } from "./prefs.ts";
 import { loadPairs } from "./pairs.ts";
 import { pingModel } from "./probe.ts";
+import { assertOpenCode2 } from "./opencode-version.ts";
 import { initRepo } from "./init.ts";
 import {
   NO_CRITERIA,
@@ -282,6 +283,7 @@ async function runFreshTask(
 }
 
 async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
+  await assertOpenCode2();
   const repo = repoOf(flags);
   const cfg = await loadConfig();
   requireFamily("drafter", flags);
@@ -325,6 +327,7 @@ async function cmdRun(flags: Map<string, string | true>, positional: string[]) {
  * The new run is otherwise normal: fresh takes, fresh synthesis.
  */
 async function cmdContinue(flags: Map<string, string | true>, positional: string[]) {
+  await assertOpenCode2();
   const repo = repoOf(flags);
   const cfg = await loadConfig();
   requireFamily("drafter", flags);
@@ -416,6 +419,9 @@ async function cmdTui(flags: Map<string, string | true>) {
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
     throw new Error('the TUI needs a terminal. Use `adv run "<task>"` for scripted use.');
   }
+  // The TUI can browse models on a v1 install, but it cannot run a debate or a
+  // ping. Say so before drawing a screen whose main keys would all fail.
+  await assertOpenCode2();
   const { startTui } = await import("./tui.tsx");
   const { altScreenEnabled } = await import("./viewport.ts");
   await startTui({
@@ -565,6 +571,9 @@ function usage() {
  * can gate on it.
  */
 async function cmdPing(flags: Map<string, string | true>, positional: string[]) {
+  // Before the first model is named: a v1 client fails every ref identically,
+  // and recording that against each model would be a lie about the models.
+  await assertOpenCode2();
   const repo = repoOf(flags);
   const wanted = positional.filter((p) => !p.startsWith("-"));
   if (wanted.length === 0) throw new Error("usage: adv ping <model-or-pair>… [--full] [--timeout <ms>]");

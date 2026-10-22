@@ -174,6 +174,14 @@ fixtures/toy-repo/  the test problem (a deliberate lie in its README)
 
 ### Things that will bite you if you forget them
 
+- **adv requires OpenCode 2; OpenCode 1 fails in a way that looks like a model
+  problem.** v1 does not know `--standalone`, so it prints its help and exits 1;
+  the probe used to record the tail of that help as a `failed` verdict. v1 also
+  ignores the v2 `agents`/`permissions`/`system` config and silently falls back
+  to the default (non-read-only) agent on an unknown `--agent`. The runner
+  checks `opencode --version` before spawning and `adv` pings show `✗ needs v2`;
+  the remedy is `opencode upgrade --major` (plain `opencode upgrade` stays on
+  1.x). Do not "fix" a v1 failure by relaxing the version check.
 - **`opencode` resolves the project from `$PWD`, not from the process cwd**, and
   `Bun.spawn({ cwd })` does not set `PWD`. Both `--standalone` and an explicit
   `PWD` are required or the agents silently target the wrong project.

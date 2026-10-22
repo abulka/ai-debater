@@ -32,10 +32,18 @@ oscillate instead of converging. What works is narrower and cheaper:
 ## Requirements
 
 - `git` and `curl`.
-- [OpenCode](https://opencode.ai) — every model call goes through
-  `opencode run`, so nothing works without it.
+- [OpenCode](https://opencode.ai) **2.x** — every model call goes through
+  `opencode run`, and `adv` relies on OpenCode 2's `--standalone` flag and v2
+  agent configuration. On OpenCode 1, `adv` prints an upgrade instruction
+  instead of running. Check with `opencode --version`; upgrade with
+  `opencode upgrade --major` (a plain `opencode upgrade` stays on 1.x).
 - [Bun](https://bun.sh) — `adv` runs on Bun's runtime (`Bun.spawn`,
   `Bun.file`), not plain Node. The installer adds it if it is missing.
+
+A ping that reports **`✗ needs v2`** means the OpenCode CLI is 1.x, not that
+the model or your key is bad. Your credential is fine — OpenCode Go shows up in
+`opencode auth list`. Run `opencode upgrade --major` and ping again. The
+installer warns when it finds OpenCode 1 for the same reason.
 
 ## Install
 

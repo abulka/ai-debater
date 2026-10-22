@@ -46,6 +46,7 @@ export type VerdictKind =
   | "throttled"
   | "no-tools"
   | "timeout"
+  | "old-opencode"
   | "failed";
 
 export interface Verdict {
@@ -65,6 +66,15 @@ export interface Verdict {
  * someone looking for a retired model that is perfectly healthy.
  */
 const RULES: { kind: VerdictKind; re: RegExp; detail: string }[] = [
+  {
+    kind: "old-opencode",
+    // Not a model failure at all: adv's plumbing needs OpenCode 2, and v1
+    // answers `--standalone` with its help screen. The runner's preflight
+    // produces the sentence below; the `Unknown argument` fallback catches the
+    // old opaque path in case the check is ever bypassed.
+    re: /requires OpenCode 2|opencode upgrade --major|Unknown argument:?\s+standalone/i,
+    detail: "needs OpenCode 2 — run: opencode upgrade --major",
+  },
   {
     kind: "no-credit",
     re: /credit_balance_exhausted|insufficient[_ ]?(quota|credit|funds)|402|payment required|billing/i,
@@ -358,6 +368,7 @@ export const SHORT: Record<VerdictKind, string> = {
   throttled: "throttled",
   "no-tools": "no tools",
   timeout: "timeout",
+  "old-opencode": "needs v2",
   failed: "failed",
 };
 

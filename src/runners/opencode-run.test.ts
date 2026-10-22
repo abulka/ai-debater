@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { formatUsage, summarizeUsage, type RunEvent } from "./opencode-run.ts";
+import {
+  agentFallback,
+  formatUsage,
+  isUsageError,
+  summarizeUsage,
+  type RunEvent,
+} from "./opencode-run.ts";
 
 const step = (part: NonNullable<RunEvent["part"]>): RunEvent => ({
   type: "step-finish",
@@ -44,5 +50,37 @@ describe("summarizeUsage", () => {
     ]);
     expect(u.cost).toBeCloseTo(0.0003);
     expect(u.costKnown).toBe(true);
+  });
+});
+
+describe("isUsageError", () => {
+  test("OpenCode 1's unknown-argument output is a CLI failure, not a model failure", () => {
+    expect(isUsageError("Unknown argument: standalone")).toBe(true);
+    expect(
+      isUsageError(
+        "opencode run [message..]\n\nOptions:\n  --auto auto-approve permissions that are not explicitly denied",
+      ),
+    ).toBe(false);
+  });
+
+  test("an ordinary provider error is not mistaken for a usage error", () => {
+    expect(isUsageError("model_not_found")).toBe(false);
+  });
+});
+
+describe("agentFallback", () => {
+  test("names the missing agent from the plain-text warning", () => {
+    expect(agentFallback('! agent "adv-writer" not found. Falling back to default agent')).toBe(
+      "adv-writer",
+    );
+  });
+
+  test("a fallback warning without a name is still a failure", () => {
+    expect(agentFallback("! Falling back to default agent")).toBe("");
+  });
+
+  test("the event stream is ignored, and no warning is null", () => {
+    const stream = '{"type":"text","part":{"type":"text","text":"agent \\"adv-writer\\" not found. Falling back to default agent"}}';
+    expect(agentFallback(stream)).toBeNull();
   });
 });

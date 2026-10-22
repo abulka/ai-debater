@@ -44,6 +44,23 @@ os_id() {
   ( [ -r /etc/os-release ] && . /etc/os-release && printf '%s' "${ID:-}" ) 2>/dev/null || true
 }
 
+# The installed opencode's major version, or empty when it cannot be read.
+# adv needs 2: `--standalone` and the v2 agent config do not exist in 1.x.
+opencode_major() {
+  raw=$(opencode --version 2>/dev/null | head -n 1) || return 1
+  major=$(printf '%s\n' "$raw" | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\..*/\1/p')
+  [ -n "$major" ] || return 1
+  printf '%s' "$major"
+}
+
+warn_opencode1() {
+  have opencode || return 0
+  major=$(opencode_major) || return 0
+  [ -n "$major" ] && [ "$major" -lt 2 ] || return 0
+  warn "OpenCode $(opencode --version 2>/dev/null | head -n 1) is v1; adv requires OpenCode 2."
+  warn "Runs and pings will fail until you upgrade: opencode upgrade --major"
+}
+
 # A package-manager hint for the distro in use. Silverblue has no `dnf install`
 # on the host, so it gets a pointer to the base image instead.
 pkg_hint() {
@@ -88,6 +105,10 @@ preflight() {
       die "$f exists and is not a symlink, so the installer will not replace it. Move it aside and re-run."
     fi
   done
+
+  # Not fatal: ocm still browses the catalogue on v1. The warning is repeated
+  # in the summary because the first one can scroll away.
+  warn_opencode1
 }
 
 # Symlink into BIN_DIR. Never replaces a regular file (preflight checked that).
@@ -172,7 +193,9 @@ summary() {
   echo
   if ! have opencode; then
     echo "opencode was not found on PATH. Every model call goes through it:"
-    echo "get it from https://opencode.ai, then run: adv --help"
+    echo "get OpenCode 2 from https://opencode.ai, then run: adv --help"
+  else
+    warn_opencode1
   fi
   if [ "$on_path" = no ]; then
     echo "$BIN_DIR is not on your PATH yet. Open a new terminal (or log in again)."
