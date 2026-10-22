@@ -1,73 +1,214 @@
 #!/bin/sh
-# ai-debater installer — installs the `adv` and `ocm` commands without npm.
+# ai-debater installer: sets up the `adv` and `ocm` commands.
 #
-# Usage:
-#   ./install.sh [--repo <git-url>] [--dir <dest>] [--bin <bin-dir>]
+#   sh install.sh [--dir <path>]
 #
-# Defaults:
-#   --repo  $AI_DEBATER_REPO, or https://github.com/<you>/ai-debater.git
-#   --dir   $AI_DEBATER_DIR, or ~/.local/share/ai-debater
-#   --bin   $AI_DEBATER_BIN, or ~/.local/bin
+# Steps, each checked before the next:
+#   1. prerequisites: git and curl (plus bash and unzip, only if Bun must come
+#      from bun.sh)
+#   2. Bun: used if already on PATH; else `brew install bun` if Homebrew is on
+#      PATH; else bun.sh's installer (into ~/.bun, linked into ~/.local/bin)
+#   3. the repository: cloned if absent; fast-forwarded if it is clean
+#   4. dependencies: bun install --frozen-lockfile --production (runtime only)
+#   5. commands: adv and ocm symlinked into ~/.local/bin
+#   6. verification: adv --help and ocm --help must run
 #
-# What it does:
-#   1. installs Bun (https://bun.sh) if it is missing — `adv` runs on Bun;
-#   2. warns if the `opencode` CLI is missing (needed for every model call);
-#   3. clones the repo, or `git pull`s it if it is already there;
-#   4. runs `bun install`;
-#   5. symlinks `adv` and `ocm` into the bin dir.
-# Re-running it updates an existing install.
+# Edits no shell profile. Re-running it updates an existing install.
+# Remove: rm ~/.local/bin/adv ~/.local/bin/ocm, then delete the checkout.
 set -eu
 
-REPO="${AI_DEBATER_REPO:-https://github.com/abulka/ai-debater.git}"
-DEST="${AI_DEBATER_DIR:-$HOME/.local/share/ai-debater}"
-BIN_DIR="${AI_DEBATER_BIN:-$HOME/.local/bin}"
+REPO="https://github.com/abulka/ai-debater.git"
+DEST="$HOME/.local/share/ai-debater"
+BIN_DIR="$HOME/.local/bin"
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --repo) REPO="$2"; shift 2 ;;
-    --dir) DEST="$2"; shift 2 ;;
-    --bin) BIN_DIR="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
-    *) echo "install.sh: unknown flag $1 (see --help)" >&2; exit 1 ;;
+say()  { printf '==> %s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<EOF
+ai-debater installer: sets up the adv and ocm commands.
+
+  sh install.sh [--dir <path>]
+
+  --dir <path>   where the repository lives
+                 (default: $HOME/.local/share/ai-debater)
+  -h, --help     show this
+
+Edits no shell profile. Re-running it updates an existing install.
+EOF
+}
+
+os_id() {
+  ( [ -r /etc/os-release ] && . /etc/os-release && printf '%s' "${ID:-}" ) 2>/dev/null || true
+}
+
+# A package-manager hint for the distro in use. Silverblue has no `dnf install`
+# on the host, so it gets a pointer to the base image instead.
+pkg_hint() {
+  case "$(os_id)" in
+    ubuntu|debian|linuxmint|pop) echo "sudo apt install $*" ;;
+    fedora)
+      if [ -e /run/ostree-booted ]; then
+        echo "they come with the Silverblue base image (check: rpm -q $*)"
+      else
+        echo "sudo dnf install $*"
+      fi ;;
+    arch|manjaro) echo "sudo pacman -S $*" ;;
+    *) echo "install $* with your package manager" ;;
   esac
-done
+}
 
-case "$REPO" in
-  *"<you>"*)
-    echo "install.sh: set the repo first — pass --repo <git-url> or export AI_DEBATER_REPO" >&2
-    exit 1
-    ;;
-esac
+# Everything that can refuse is checked here, before anything is written.
+preflight() {
+  missing=""
+  for c in git curl; do have "$c" || missing="$missing $c"; done
+  # bun.sh's installer is a bash script that unpacks a zip. Homebrew and an
+  # existing bun need neither.
+  if ! have bun && ! have brew; then
+    for c in bash unzip; do have "$c" || missing="$missing $c"; done
+  fi
+  if [ -n "$missing" ]; then
+    die "missing:$missing. To install: $(pkg_hint $missing)"
+  fi
 
-if ! command -v bun >/dev/null 2>&1; then
-  echo "install.sh: Bun not found — installing via https://bun.sh …"
-  curl -fsSL https://bun.sh/install | bash
-  export PATH="$HOME/.bun/bin:$PATH"
-fi
+  if [ ! -e "$DEST/.git" ] && [ -e "$DEST" ] && [ -n "$(ls -A "$DEST" 2>/dev/null)" ]; then
+    die "$DEST exists and is not an ai-debater checkout. Choose another place with --dir."
+  fi
 
-if ! command -v opencode >/dev/null 2>&1; then
-  echo "install.sh: warning: no \`opencode\` on PATH. Install it (https://opencode.ai)" >&2
-  echo "install.sh: warning: every model call goes through \`opencode run\`, so nothing works without it." >&2
-fi
+  if [ -e "$BIN_DIR" ] && [ ! -d "$BIN_DIR" ]; then
+    die "$BIN_DIR exists and is not a directory."
+  fi
+  names="adv ocm"
+  if ! have bun && ! have brew; then names="$names bun"; fi
+  for n in $names; do
+    f="$BIN_DIR/$n"
+    if [ -e "$f" ] && [ ! -L "$f" ]; then
+      die "$f exists and is not a symlink, so the installer will not replace it. Move it aside and re-run."
+    fi
+  done
+}
 
-if [ -d "$DEST/.git" ]; then
-  echo "install.sh: updating $DEST …"
-  git -C "$DEST" pull --ff-only
-else
-  echo "install.sh: cloning into $DEST …"
-  git clone "$REPO" "$DEST"
-fi
+# Symlink into BIN_DIR. Never replaces a regular file (preflight checked that).
+link() {
+  ln -sfn "$1" "$BIN_DIR/$2"
+}
 
-echo "install.sh: installing dependencies …"
-bun install --cwd "$DEST" --frozen-lockfile
+ensure_bun() {
+  if have bun; then
+    BUN=$(command -v bun)
+    BUN_NOTE="already installed: $BUN (left as it is)"
+  elif have brew; then
+    say "bun: installing with Homebrew"
+    brew install bun </dev/null || die "brew install bun failed (output above)"
+    BUN="$(brew --prefix)/bin/bun"
+    BUN_NOTE="Homebrew: $BUN"
+  else
+    say "bun: installing from bun.sh into ~/.bun"
+    tmp=$(mktemp -d)
+    curl -fsSL -o "$tmp/install.sh" https://bun.sh/install \
+      || { rm -rf "$tmp"; die "could not download the bun installer"; }
+    # SHELL=sh makes bun's installer skip writing to any shell profile.
+    if ! SHELL=sh bash "$tmp/install.sh" >"$tmp/log" 2>&1 </dev/null; then
+      cat "$tmp/log" >&2
+      rm -rf "$tmp"
+      die "the bun installer failed (output above)"
+    fi
+    rm -rf "$tmp"
+    BUN="$HOME/.bun/bin/bun"
+    link "$BUN" bun
+    BUN_NOTE="bun.sh: $BUN, linked as $BIN_DIR/bun"
+  fi
+  [ -x "$BUN" ] || die "bun was not found at $BUN after installation"
+  # adv starts with `#!/usr/bin/env bun`, so bun must be findable by name.
+  PATH="$(dirname "$BUN"):$PATH"
+  export PATH
+}
 
-mkdir -p "$BIN_DIR"
-ln -sf "$DEST/src/cli.ts" "$BIN_DIR/adv"
-ln -sf "$DEST/src/models-cli.ts" "$BIN_DIR/ocm"
-chmod +x "$DEST/src/cli.ts" "$DEST/src/models-cli.ts"
+get_code() {
+  if [ -e "$DEST/.git" ]; then
+    if [ -n "$(git -C "$DEST" status --porcelain)" ]; then
+      warn "$DEST has uncommitted changes, so it was not updated; installing what is there."
+      CODE_NOTE="kept (uncommitted changes)"
+    else
+      say "code: updating $DEST"
+      if git -C "$DEST" pull --ff-only --quiet </dev/null; then
+        CODE_NOTE="updated"
+      else
+        warn "could not fast-forward $DEST (offline, or local commits); installing it as it is."
+        CODE_NOTE="kept (update failed)"
+      fi
+    fi
+  else
+    say "code: cloning into $DEST"
+    mkdir -p "$(dirname "$DEST")"
+    git clone --quiet "$REPO" "$DEST" </dev/null || die "git clone failed"
+    CODE_NOTE="cloned"
+  fi
+}
 
-echo "installed: adv, ocm -> $BIN_DIR"
-case ":$PATH:" in
-  *":$BIN_DIR:"*) ;;
-  *) echo "install.sh: note: $BIN_DIR is not on PATH — add it to your shell profile." >&2 ;;
-esac
+install_deps() {
+  say "deps: bun install --frozen-lockfile --production"
+  (cd "$DEST" && "$BUN" install --frozen-lockfile --production) </dev/null \
+    || die "bun install failed in $DEST (output above)"
+}
+
+verify() {
+  say "check: adv --help, ocm --help"
+  for c in adv ocm; do
+    out=$("$BIN_DIR/$c" --help 2>&1 </dev/null) \
+      || { printf '%s\n' "$out" >&2; die "$c --help failed (output above)"; }
+  done
+}
+
+summary() {
+  echo
+  say "installed"
+  printf '  bun   %s\n' "$BUN_NOTE"
+  printf '  code  %s (%s)\n' "$DEST" "$CODE_NOTE"
+  printf '  adv   %s/adv\n' "$BIN_DIR"
+  printf '  ocm   %s/ocm\n' "$BIN_DIR"
+  echo
+  if ! have opencode; then
+    echo "opencode was not found on PATH. Every model call goes through it:"
+    echo "get it from https://opencode.ai, then run: adv --help"
+  fi
+  if [ "$on_path" = no ]; then
+    echo "$BIN_DIR is not on your PATH yet. Open a new terminal (or log in again)."
+  fi
+  echo "next: cd into a project and run: adv"
+}
+
+main() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir)
+        [ $# -ge 2 ] || die "--dir needs a path"
+        DEST="$2"
+        shift 2
+        ;;
+      -h|--help) usage; return 0 ;;
+      *) die "unknown option: $1 (see --help)" ;;
+    esac
+  done
+  case "$DEST" in
+    /*) ;;
+    *) DEST="$PWD/$DEST" ;;
+  esac
+
+  on_path=no
+  case ":$PATH:" in *":$BIN_DIR:"*) on_path=yes ;; esac
+
+  preflight
+  mkdir -p "$BIN_DIR"
+  ensure_bun
+  get_code
+  install_deps
+  link "$DEST/src/cli.ts" adv
+  link "$DEST/src/models-cli.ts" ocm
+  verify
+  summary
+}
+
+main "$@"

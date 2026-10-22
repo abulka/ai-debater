@@ -31,10 +31,11 @@ oscillate instead of converging. What works is narrower and cheaper:
 
 ## Requirements
 
-- [Bun](https://bun.sh) — `adv` runs on Bun's runtime (`Bun.spawn`,
-  `Bun.file`), not plain Node.
+- `git` and `curl`.
 - [OpenCode](https://opencode.ai) — every model call goes through
   `opencode run`, so nothing works without it.
+- [Bun](https://bun.sh) — `adv` runs on Bun's runtime (`Bun.spawn`,
+  `Bun.file`), not plain Node. The installer adds it if it is missing.
 
 ## Install
 
@@ -44,20 +45,18 @@ No npm account, no registry — install straight from GitHub:
 curl -fsSL https://raw.githubusercontent.com/abulka/ai-debater/main/install.sh | sh
 ```
 
-The script installs Bun if it is missing, warns if `opencode` is missing,
-clones (or updates) the repo into `~/.local/share/ai-debater`, runs
-`bun install`, and symlinks `adv` and `ocm` into `~/.local/bin`. Re-running it
-updates an existing install. It takes `--repo`, `--dir` and `--bin` flags —
-run it with `--help` to see them.
+The installer installs Bun if you don't have it, clones the repo into
+`~/.local/share/ai-debater`, installs runtime dependencies, puts `adv` and
+`ocm` in `~/.local/bin`, and checks that both commands run.
 
-Or by hand:
+It edits no shell profile. If `~/.local/bin` is not on your PATH, open a new
+terminal.
 
-```sh
-git clone https://github.com/abulka/ai-debater.git
-cd ai-debater
-bun install
-bun link                       # once: puts `adv` and `ocm` on PATH
-```
+To uninstall, remove `~/.local/bin/adv` and `~/.local/bin/ocm`, then delete
+`~/.local/share/ai-debater`. Bun is left alone.
+
+Custom locations, manual setup, and distribution notes: [Advanced
+installation](#advanced-installation).
 
 ## `adv` — one question, several models, one answer
 
@@ -128,6 +127,103 @@ Detail — views, ping depths, and which models will actually work:
 A run moves through `created -> taking -> synthesizing -> done`, persisted per
 run under `~/.local/share/adv/runs/`. Full detail:
 [`docs/USAGE.md`](docs/USAGE.md).
+
+## Advanced installation
+
+The installer runs these steps in order and stops before writing anything if a
+check fails:
+
+1. **Prerequisites.** `git` and `curl`; `bash` and `unzip` too when Bun must
+   come from Bun's own installer. On Ubuntu or Debian:
+   `sudo apt install git curl unzip`.
+2. **Bun.** Uses the one on PATH. Otherwise `brew install bun` if Homebrew is
+   installed. Otherwise Bun's installer, into `~/.bun`, with a link at
+   `~/.local/bin/bun`.
+3. **Code.** Clones into `~/.local/share/ai-debater`, or fast-forwards an
+   existing checkout. A checkout with uncommitted changes is never touched.
+4. **Dependencies.** `bun install --frozen-lockfile --production` — runtime
+   dependencies only.
+5. **Commands.** Symlinks `adv` and `ocm` into `~/.local/bin`.
+6. **Check.** Runs `adv --help` and `ocm --help`.
+
+To choose where the code lives, pass `--dir`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/abulka/ai-debater/main/install.sh \
+  | sh -s -- --dir ~/apps/ai-debater
+```
+
+Re-running the installer updates an existing install.
+
+Or by hand, without the installer:
+
+```sh
+git clone https://github.com/abulka/ai-debater.git
+cd ai-debater
+bun install --production
+ln -s "$PWD/src/cli.ts" ~/.local/bin/adv
+ln -s "$PWD/src/models-cli.ts" ~/.local/bin/ocm
+```
+
+`bun link` also works, but puts the commands in `~/.bun/bin`, which is only on
+PATH if that directory was added. Bun's own installer adds it; Homebrew's does
+not.
+
+On Silverblue, `git`, `curl` and `unzip` are in the base image, and none of
+this needs `rpm-ostree` layering. See [Silverblue and
+containers](#silverblue-and-containers).
+
+## Contributing
+
+Working on ai-debater itself:
+
+```sh
+git clone https://github.com/abulka/ai-debater.git ~/Devel/ai-debater
+cd ~/Devel/ai-debater
+bun install                    # includes the dev dependencies
+bun run typecheck
+bun test
+```
+
+Read [`AGENTS.md`](AGENTS.md) before changing anything: it carries the working
+rules, the architecture and the traps. Typecheck and tests are fast and make no
+model calls; `adv run` and `adv continue` do, so ask before running one.
+
+Bun notes for contributors:
+
+- **The checkout is live.** `adv` and `ocm` are symlinks to `src/cli.ts` and
+  `src/models-cli.ts`, and Bun runs the TypeScript directly, so source edits
+  apply on the next run. Dependency changes need one `bun install`.
+- **Don't use the installer as your dev setup.** It installs runtime
+  dependencies only (`--production`). Use `bun install` here.
+- **`bun link` needs `~/.bun/bin` on PATH.** Bun's own installer adds it;
+  Homebrew's does not. Symlinking into `~/.local/bin` works with either.
+- **The typecheck toolchain is dev-only.** `typescript` and `@types/bun` are
+  devDependencies because `tsconfig.json` names `"types": ["bun"]`. Run
+  `bun run typecheck`, not `./node_modules/.bin/tsc` — the shim wants `node`,
+  which a Silverblue host does not need to have.
+
+### Silverblue and containers
+
+Silverblue has no `dnf install` on the host, so nothing here should be layered
+with `rpm-ostree`. `git`, `curl` and `unzip` are in the base image, and Bun
+goes into Homebrew or `~/.bun`.
+
+A distrobox or toolbox container shares `$HOME` and, if you use it,
+`/home/linuxbrew`. The same checkout, `node_modules`, `adv`/`ocm` symlinks,
+Bun, OpenCode and caches are therefore visible on both sides. Develop in
+either:
+
+```sh
+distrobox enter dev
+cd ~/Devel/ai-debater
+bun install
+bun run typecheck && bun test
+```
+
+`adv` runs on Bun inside the container too. A Bun baked into the image (for
+example `/usr/local/bin/bun`) may be shadowed by Homebrew's Bun on PATH; that
+is harmless.
 
 ## Docs
 

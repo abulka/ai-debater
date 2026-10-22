@@ -65,7 +65,8 @@ bun install
 bun run typecheck              # must pass
 bun test                       # must pass
 
-bun link                       # once: puts `adv` and `ocm` on PATH
+ln -s "$PWD/src/cli.ts" ~/.local/bin/adv        # once: on PATH
+ln -s "$PWD/src/models-cli.ts" ~/.local/bin/ocm
 adv                            # TUI for the current directory
 adv --dir /path/to/repo        # TUI for another repo
 
