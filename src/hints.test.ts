@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildHintText, hintRowSpans, hintWidth, wrapHintLines, type HintState } from "./hints.ts";
+import { buildHintText, emptyPickText, hintRowSpans, hintWidth, wrapHintLines, type EmptyPickState, type HintState } from "./hints.ts";
 
 const base: HintState = {
   pickMode: "select",
@@ -99,6 +99,70 @@ describe("buildHintText", () => {
     expect(buildHintText(base)).toContain("N highlighted only");
     expect(buildHintText({ ...base, highlightsOnly: true })).toContain("N show all");
     expect(buildHintText({ ...base, highlightCount: 0 })).not.toContain("N highlighted");
+  });
+});
+
+describe("emptyPickText", () => {
+  const empty: EmptyPickState = {
+    view: "taskcost",
+    rankAcd: false,
+    aaKey: false,
+    hasTaskData: false,
+    hasPriceData: true,
+    ceiling: 0.8,
+    taskCeiling: 0.5,
+    filter: "",
+    filterMode: "and",
+  };
+
+  test("taskcost without an AA key names the key and the ACD alternative", () => {
+    const text = emptyPickText(empty);
+    expect(text).toContain("no AA key");
+    expect(text).toContain("settings → benchmarks");
+    expect(text).toContain("D for ACD");
+  });
+
+  test("taskcost with a key but no measured cost points at a refresh", () => {
+    const text = emptyPickText({ ...empty, aaKey: true });
+    expect(text).toContain("refresh caches in settings");
+    expect(text).toContain("D for ACD");
+  });
+
+  test("data at the wrong ceiling points at the ceiling, and the filter if one is on", () => {
+    const text = emptyPickText({ ...empty, aaKey: true, hasTaskData: true });
+    expect(text).toContain("$0.50/task");
+    expect(text).toContain("widen the ceiling");
+    expect(text).not.toContain("clear the filter");
+    expect(emptyPickText({ ...empty, aaKey: true, hasTaskData: true, filter: "claude" })).toContain(
+      "clear the filter",
+    );
+    // Filter text ignored under OFF is not a reason to clear it.
+    expect(
+      emptyPickText({ ...empty, aaKey: true, hasTaskData: true, filter: "claude", filterMode: "off" }),
+    ).not.toContain("clear the filter");
+  });
+
+  test("the ACD source never suggests D back to AA when there is no AA key", () => {
+    const text = emptyPickText({ ...empty, rankAcd: true });
+    expect(text).toContain("no ACD $/task");
+    expect(text).toContain("refresh caches in settings");
+    expect(text).not.toContain("D for AA");
+    expect(emptyPickText({ ...empty, rankAcd: true, aaKey: true })).toContain("D for AA");
+  });
+
+  test("value separates a missing catalogue from a low ceiling", () => {
+    expect(emptyPickText({ ...empty, view: "value", hasPriceData: false })).toContain(
+      "refresh caches in settings",
+    );
+    const low = emptyPickText({ ...empty, view: "value" });
+    expect(low).toContain("$0.80/M");
+    expect(low).toContain("widen the ceiling");
+  });
+
+  test("intelligence names the filter or the cache, and the provider view names F", () => {
+    expect(emptyPickText({ ...empty, view: "intelligence" })).toContain("refresh caches in settings");
+    expect(emptyPickText({ ...empty, view: "intelligence", filter: "x" })).toBe("no model matches the filter");
+    expect(emptyPickText({ ...empty, view: "provider" })).toContain("provider switches (F)");
   });
 });
 

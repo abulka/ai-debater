@@ -105,7 +105,7 @@ import {
   scrollerHeight,
 } from "./viewport.ts";
 import { copyMarkdown, copyNotice } from "./clipboard.ts";
-import { buildHintText, hintRowSpans, hintWidth, wrapHintLines, type HintState } from "./hints.ts";
+import { buildHintText, emptyPickText, hintRowSpans, hintWidth, wrapHintLines, type HintState } from "./hints.ts";
 import { isKillToEnd, isWordLeft, isWordRight, killToEnd, wordLeft, wordRight } from "./lineedit.ts";
 import type { Mode, ModelRef } from "./runner.ts";
 
@@ -1031,6 +1031,8 @@ function Pick({
   aaKey,
   priceBasis,
   taskCeiling,
+  maxTask,
+  maxOutput,
   hintLines,
   clicksEnabled,
   onSelectRow,
@@ -1088,6 +1090,17 @@ function Pick({
   priceBasis: PriceBasis;
   /** Measured $/task ceiling for the taskcost view's count line. */
   taskCeiling: number;
+  /**
+   * The dearest measured task cost in the cache, or undefined when the active
+   * source measured none. Distinguishes "no data" from "all above the ceiling"
+   * in the empty-list warning.
+   */
+  maxTask: number | undefined;
+  /**
+   * The dearest output price in the catalogue, or undefined when the catalogue
+   * has none. Same purpose for the value view's empty-list warning.
+   */
+  maxOutput: number | undefined;
   /**
    * The hint rows, wrapped to the terminal width by the App (see `hints.ts`).
    * Rendered as-is: each element is one row. Uncapped — narrow terminals show
@@ -1266,7 +1279,21 @@ function Pick({
       process.stdin.off("data", onData);
     };
   }, [clicksEnabled]);
-  const marked = items.length === 0;
+  const empty = items.length === 0;
+  /** Why the list is empty, in one row — the key or data fix, not a silent blank. */
+  const emptyText = empty
+    ? emptyPickText({
+        view,
+        rankAcd,
+        aaKey,
+        hasTaskData: maxTask !== undefined,
+        hasPriceData: maxOutput !== undefined,
+        ceiling,
+        taskCeiling,
+        filter,
+        filterMode,
+      })
+    : null;
   // Counted over the view's own items, so the number stays true when the
   // filter, the view, or H narrows what is on screen. Split by source when
   // Artificial Analysis is in the merge, so a screen mixing two sources says so.
@@ -1518,48 +1545,56 @@ function Pick({
             </Box>
           );
         })}
-        {rows.length === 0 && <Text dimColor>no match</Text>}
+        {empty && emptyText && (
+          <Text color={THEME.warn} wrap="truncate">
+            {emptyText}
+          </Text>
+        )}
       </Box>
       <Box marginTop={1}>
         {/* Truncated, not wrapped: these lines are the content's chrome, counted
             as one row each by the viewport budget, and a wrap would take a row
             from the list. The view rides in the accent colour: it is the mode,
             and the mode should read at a glance. */}
+        {/* The view and its ceiling always render, even over an empty list:
+            hiding the mode was how an empty taskcost view read as "V did
+            nothing". `nothing to choose` is a marker inside the line now, not
+            a replacement for it — the warning above the line says why. */}
         <Line
           wrap="truncate"
-          spans={
-            marked
-              ? [{ text: "nothing to choose", dim: true }]
-              : [
-                  {
-                    text:
-                      `${items.length} model(s) · ${index + 1} of ${items.length}` +
-                      (rankAcd && view !== "provider"
-                        ? ` · ${rankedAcd} ranked with AI Coding Daily`
-                        : ` · ${split.total} scored` +
-                          `${split.aa > 0 ? ` (${split.aa} Artificial Analysis + ${split.openrouter} OpenRouter)` : ""}`) +
-                      `${view === "taskcost" ? ` · ${measured} with ${rankAcd ? "ACD task cost" : "task cost"}` : ""} · `,
-                    dim: true,
-                  },
-                  { text: `view: ${view}`, color: THEME.accent },
-                  // Its own span, with its own leading separator: folded into
-                  // the view span it read `view: intelligencerank: …`.
-                  ...(rankText ? [{ text: rankText, color: THEME.accent } as const] : []),
-                  {
-                    text:
-                      `${providerLock ? ` · locked to: ${providerLock}` : ""}` +
-                      `${disabledCount > 0 ? ` · ${disabledCount} provider${disabledCount === 1 ? "" : "s"} off (F)` : ""}` +
-                      `${view === "value" ? ` ≤ $${ceiling.toFixed(2)}` : ""}` +
-                      `${view === "taskcost" ? ` ≤ $${taskCeiling.toFixed(2)}/task${rankAcd ? " (ACD)" : ""}` : ""}` +
-                      `${priceBasis === "high" ? " · price: high tier" : ""}` +
-                      `${hideUnscored ? " · hiding unscored" : ""}` +
-                      `${!highlightsOn && highlightCount > 0 ? " · highlights off (M)" : ""}` +
-                      `${highlightsOnly ? " · highlighted only (N)" : ""}` +
-                      `${!aaKey ? " · OpenRouter scores only — key: settings → benchmarks" : ""}`,
-                    dim: true,
-                  },
-                ]
-          }
+          spans={[
+            {
+              text:
+                `${items.length} model(s)` +
+                (empty
+                  ? " · nothing to choose"
+                  : ` · ${index + 1} of ${items.length}` +
+                    (rankAcd && view !== "provider"
+                      ? ` · ${rankedAcd} ranked with AI Coding Daily`
+                      : ` · ${split.total} scored` +
+                        `${split.aa > 0 ? ` (${split.aa} Artificial Analysis + ${split.openrouter} OpenRouter)` : ""}`) +
+                    `${view === "taskcost" ? ` · ${measured} with ${rankAcd ? "ACD task cost" : "task cost"}` : ""}`) +
+                " · ",
+              dim: true,
+            },
+            { text: `view: ${view}`, color: THEME.accent },
+            // Its own span, with its own leading separator: folded into
+            // the view span it read `view: intelligencerank: …`.
+            ...(rankText ? [{ text: rankText, color: THEME.accent } as const] : []),
+            {
+              text:
+                `${providerLock ? ` · locked to: ${providerLock}` : ""}` +
+                `${disabledCount > 0 ? ` · ${disabledCount} provider${disabledCount === 1 ? "" : "s"} off (F)` : ""}` +
+                `${view === "value" ? ` ≤ $${ceiling.toFixed(2)}` : ""}` +
+                `${view === "taskcost" ? ` ≤ $${taskCeiling.toFixed(2)}/task${rankAcd ? " (ACD)" : ""}` : ""}` +
+                `${priceBasis === "high" ? " · price: high tier" : ""}` +
+                `${hideUnscored ? " · hiding unscored" : ""}` +
+                `${!highlightsOn && highlightCount > 0 ? " · highlights off (M)" : ""}` +
+                `${highlightsOnly ? " · highlighted only (N)" : ""}` +
+                `${!aaKey ? " · OpenRouter scores only — key: settings → benchmarks" : ""}`,
+              dim: true,
+            },
+          ]}
         />
       </Box>
       {/* The hints, wrapped to the width by the App: one element is one row,
@@ -1734,6 +1769,10 @@ function providerLines(
   lines.push([
     {
       text: "V cycles provider · intelligence · value (cheap per output token, under the ceiling) · taskcost (cheap per measured task, under its own ceiling). < > move the ceiling of the cheap view on screen.",
+      dim: true,
+    },
+    {
+      text: "taskcost needs Artificial Analysis's measured $/task — without an AA key that view is empty. D switches the taskcost view to AI Coding Daily's $/task, a different measurement that arrives keyless.",
       dim: true,
     },
   ]);
@@ -5747,6 +5786,8 @@ function App({ repo, altScreen, onRecap, initial, standalone }: { repo: string; 
         buildStep={buildStep}
         priceBasis={priceBasis}
         taskCeiling={taskCeiling}
+        maxTask={maxTask}
+        maxOutput={maxOutput}
         hintLines={hintLines}
         clicksEnabled={mouseReporting && altScreen}
         rules={highlightsOn ? hlRules : []}

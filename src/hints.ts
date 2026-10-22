@@ -1,6 +1,68 @@
 import type { FilterMode, PickerView } from "./models.ts";
 
 /**
+ * What the picker says in place of an empty list.
+ *
+ * An empty view is not self-explanatory: `taskcost` without an AA key has no
+ * measured cost to show, and a ceiling can exclude every row. The reason and
+ * the way out belong on the screen, not only behind `?` — the footer and the
+ * list are where a reader looks first. This struct is everything needed to
+ * tell the three empty cases apart: no data at all (a key or a refresh), data
+ * present but filtered out (a ceiling or the text filter), or nothing in the
+ * catalogue to begin with.
+ */
+export interface EmptyPickState {
+  view: PickerView;
+  /** `D` is on: taskcost reads AI Coding Daily's $/task, not AA's. */
+  rankAcd: boolean;
+  /** An AA key is stored. Without one, AA task $ is absent from the cache. */
+  aaKey: boolean;
+  /** Any model carries a measured task cost in the loaded cache, for the active source. */
+  hasTaskData: boolean;
+  /** Any model carries an output price in the loaded catalogue. */
+  hasPriceData: boolean;
+  ceiling: number;
+  taskCeiling: number;
+  filter: string;
+  filterMode: FilterMode;
+}
+
+/**
+ * The one-row warning under an empty model list. Kept short enough to read
+ * before a narrow terminal truncates it: the first clause says what is
+ * missing, the rest says which key fixes it.
+ */
+export function emptyPickText(s: EmptyPickState): string {
+  const filtered = s.filterMode !== "off" && s.filter.trim() !== "";
+  const clear = filtered ? " · clear the filter" : "";
+  if (s.view === "taskcost") {
+    if (!s.hasTaskData) {
+      if (s.rankAcd) {
+        return s.aaKey
+          ? "no ACD $/task in the cached leaderboard — refresh caches in settings, or D for AA task $"
+          : "no ACD $/task in the cached leaderboard — refresh caches in settings";
+      }
+      return s.aaKey
+        ? "no AA task $ in the benchmark cache — refresh caches in settings, or D for ACD $/task"
+        : "no AA key — set one in settings → benchmarks, or D for ACD $/task";
+    }
+    return s.rankAcd
+      ? `no ACD $/task at or under $${s.taskCeiling.toFixed(2)} — press > to widen the ceiling${clear}`
+      : `no task $ at or under $${s.taskCeiling.toFixed(2)}/task — press > to widen the ceiling${clear}`;
+  }
+  if (s.view === "value") {
+    if (!s.hasPriceData) return "no output prices in the catalogue — refresh caches in settings";
+    return `no output price at or under $${s.ceiling.toFixed(2)}/M — press > to widen the ceiling${clear}`;
+  }
+  if (s.view === "intelligence") {
+    return filtered
+      ? "no model matches the filter"
+      : "no scored models in the benchmark cache — refresh caches in settings";
+  }
+  return filtered ? "no model matches the filter" : "no models available — check the provider switches (F)";
+}
+
+/**
  * What the picker's hint area says. One struct in, one string out — the App
  * computes the wrapped rows for the viewport budget and `Pick` renders them,
  * so the budget and the screen can never disagree about how many rows hints
